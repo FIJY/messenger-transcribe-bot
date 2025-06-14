@@ -74,8 +74,10 @@ def init_services(app):
         raise
 
 
+# Создание экземпляра приложения для Gunicorn
+app = create_app()
+
 if __name__ == '__main__':
-    app = create_app()
     port = int(os.environ.get('PORT', 5000))
 
     logging.info(f"Starting Messenger Transcribe Bot on port {port}")
