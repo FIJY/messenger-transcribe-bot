@@ -2,6 +2,7 @@ import os
 import tempfile
 import logging
 import io
+import openai
 
 logger = logging.getLogger(__name__)
 
@@ -13,15 +14,15 @@ class TranscribeService:
 
         if not self.openai_api_key:
             logger.warning("OPENAI_API_KEY not found, using mock transcription")
-            self.client = None
+            self.client_ready = False
         else:
             try:
-                from openai import OpenAI
-                self.client = OpenAI(api_key=self.openai_api_key)
+                openai.api_key = self.openai_api_key
+                self.client_ready = True
                 logger.info("OpenAI Whisper API initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize OpenAI client: {e}")
-                self.client = None
+                self.client_ready = False
 
         # Поддерживаемые языки
         self.supported_languages = {
@@ -39,7 +40,7 @@ class TranscribeService:
 
     def transcribe(self, audio_data):
         """Транскрибировать аудио данные через OpenAI API"""
-        if not self.client:
+        if not self.client_ready:
             return self._mock_transcription()
 
         try:
@@ -50,9 +51,9 @@ class TranscribeService:
 
             logger.info("Starting transcription with OpenAI API")
 
-            # Отправляем на транскрипцию
+            # Отправляем на транскрипцию (старый API)
             with open(tmp_file_path, 'rb') as audio_file:
-                transcript = self.client.audio.transcriptions.create(
+                transcript = openai.Audio.transcribe(
                     model="whisper-1",
                     file=audio_file,
                     response_format="json"
@@ -62,7 +63,7 @@ class TranscribeService:
             os.unlink(tmp_file_path)
 
             # Определяем язык
-            detected_language = getattr(transcript, 'language', 'unknown')
+            detected_language = transcript.get('language', 'unknown')
             language_name = self.supported_languages.get(
                 detected_language,
                 f"Detected: {detected_language}"
@@ -72,7 +73,7 @@ class TranscribeService:
 
             return {
                 'success': True,
-                'text': transcript.text.strip(),
+                'text': transcript['text'].strip(),
                 'language': language_name,
                 'language_code': detected_language,
                 'duration': 0
@@ -94,7 +95,7 @@ class TranscribeService:
 
     def translate_to_english(self, audio_data):
         """Транскрибировать и перевести в английский"""
-        if not self.client:
+        if not self.client_ready:
             return {
                 'success': True,
                 'text': '🔧 Translation service will be available after API setup.',
@@ -109,7 +110,7 @@ class TranscribeService:
             logger.info("Starting translation with OpenAI API")
 
             with open(tmp_file_path, 'rb') as audio_file:
-                translation = self.client.audio.translations.create(
+                translation = openai.Audio.translate(
                     model="whisper-1",
                     file=audio_file,
                     response_format="json"
@@ -119,8 +120,8 @@ class TranscribeService:
 
             return {
                 'success': True,
-                'text': translation.text.strip(),
-                'original_language': getattr(translation, 'language', 'unknown')
+                'text': translation['text'].strip(),
+                'original_language': translation.get('language', 'unknown')
             }
 
         except Exception as e:
