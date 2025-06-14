@@ -3,7 +3,7 @@ requests==2.31.0
 pymongo==4.4.1
 python-dotenv==1.0.0
 gunicorn==21.2.0
-openai==1.3.5
+openai==1.51.2
 
 # Временно отключены для деплоя (включить позже):
 # openai-whisper==20231117

@@ -2,7 +2,6 @@ import os
 import tempfile
 import logging
 import io
-from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +16,7 @@ class TranscribeService:
             self.client = None
         else:
             try:
+                from openai import OpenAI
                 self.client = OpenAI(api_key=self.openai_api_key)
                 logger.info("OpenAI Whisper API initialized successfully")
             except Exception as e:
