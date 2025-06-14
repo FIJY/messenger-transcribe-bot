@@ -1,0 +1,16 @@
+https://cloud.mongodb.com/v2/684ab437ee405306279a51f9#/overview?automateSecurity=true
+
+fijyfijy
+VMfvm2ZxI1fSu313
+
+botuser
+BotPass123!
+
+python -m pip install "pymongo[srv]"==3.12
+
+mongodb+srv://botuser:<db_password>@cluster0.e8lea4z.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
+
+12345
+
+
+https://messenger-transcribe-bot.onrender.com

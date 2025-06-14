@@ -1,30 +1,9 @@
-# Core dependencies
-Flask==2.3.3
+flask==2.3.2
 requests==2.31.0
+pymongo==4.4.1
 python-dotenv==1.0.0
 gunicorn==21.2.0
-
-# Database
-pymongo==4.5.0
-dnspython==2.4.2  # Для MongoDB Atlas
-
-# Audio processing
-openai-whisper==20230918
-pydub==0.25.1
-ffmpeg-python==0.2.0
-
-# Additional dependencies for Whisper
-torch==2.0.1
-torchaudio==2.0.2
-numpy==1.24.3
-
-# Payment processing (optional, зависит от выбранного метода)
-# stripe==6.5.0  # Если будете использовать Stripe
-# paypalrestsdk==1.13.1  # Старый SDK PayPal
-
-# Utilities
-python-dateutil==2.8.2
-
-# For production
-redis==5.0.0  # Для кеширования и очередей
-celery==5.3.1  # Для фоновых задач (опционально)
+# Временно отключены для деплоя:
+# openai-whisper
+# pydub
+# ffmpeg-python
