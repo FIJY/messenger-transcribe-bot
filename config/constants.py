@@ -1,5 +1,5 @@
 # Лимиты для бесплатных пользователей
-FREE_DAILY_LIMIT = 3
+FREE_DAILY_LIMIT = 3000
 MAX_AUDIO_DURATION = 300  # 5 минут в секундах
 MAX_PREMIUM_AUDIO_DURATION = 600  # 10 минут для премиум
 
