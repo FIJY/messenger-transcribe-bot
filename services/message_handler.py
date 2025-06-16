@@ -23,11 +23,11 @@ class MessageHandler:
             if 'message' in messaging_event and 'text' in messaging_event['message']:
                 self.handle_text_message(sender_id, messaging_event['message']['text'])
 
-            # Обработка аудио
+            # Обработка аудио и видео
             elif 'message' in messaging_event and 'attachments' in messaging_event['message']:
                 for attachment in messaging_event['message']['attachments']:
-                    if attachment['type'] == 'audio':
-                        self.handle_audio_message(sender_id, attachment['payload']['url'])
+                    if attachment['type'] in ['audio', 'video']:
+                        self.handle_media_message(sender_id, attachment['payload']['url'], attachment['type'])
 
             # Обработка postback (кнопки)
             elif 'postback' in messaging_event:
@@ -45,7 +45,8 @@ class MessageHandler:
             ('/start', 'start', 'привет', 'hello', 'សួស្តី'): self.send_welcome_message,
             ('/help', 'help', 'помощь'): self.send_help_message,
             ('/status', 'status', 'статус'): self.send_status_message,
-            ('/subscribe', 'subscribe', 'подписка'): self.send_subscription_options
+            ('/subscribe', 'subscribe', 'подписка'): self.send_subscription_options,
+            ('/reset', 'reset', 'сброс'): self.reset_user_limits
         }
 
         # Поиск команды
@@ -56,12 +57,12 @@ class MessageHandler:
 
         # Если команда не найдена
         self.send_text_message(sender_id,
-                               "Отправьте мне голосовое сообщение, и я переведу его в текст! 🎤\n"
-                               "Send me a voice message and I'll transcribe it! 🎤\n"
-                               "ផ្ញើសារជាសំឡេងមកខ្ញុំ ខ្ញុំនឹងបកប្រែជាអក្សរ! 🎤")
+                               "Отправьте мне голосовое сообщение или видео, и я переведу их в текст! 🎤📹\n"
+                               "Send me a voice message or video and I'll transcribe it! 🎤📹\n"
+                               "ផ្ញើសារជាសំឡេងឬវីដេអូមកខ្ញុំ ខ្ញុំនឹងបកប្រែជាអក្សរ! 🎤📹")
 
-    def handle_audio_message(self, sender_id, audio_url):
-        """Обработка аудио сообщений"""
+    def handle_media_message(self, sender_id, media_url, media_type):
+        """Обработка аудио/видео сообщений"""
         # Проверка лимитов пользователя
         user = self.db.get_or_create_user(sender_id)
 
@@ -69,40 +70,80 @@ class MessageHandler:
             self.send_limit_exceeded_message(sender_id)
             return
 
-        # Отправка сообщения о начале обработки
-        self.send_text_message(sender_id, "🎧 Обрабатываю ваше аудио... / Processing... / កំពុងដំណើរការ...")
+        # Определяем тип файла для сообщения
+        media_emoji = "🎥" if media_type == 'video' else "🎧"
+        media_name = "видео" if media_type == 'video' else "аудио"
+
+        # 1. Отправка сообщения о начале обработки
+        self.send_text_message(sender_id,
+                               f"{media_emoji} Обрабатываю ваше {media_name}... / Processing... / កំពុងដំណើរការ...")
 
         try:
-            # Скачивание аудио
-            audio_data = self.download_audio(audio_url)
+            # Скачивание медиа файла
+            media_data = self.download_audio(media_url)
 
-            # Транскрипция
-            transcription = self.transcriber.transcribe(audio_data)
+            # Транскрипция с учетом типа подписки
+            transcription = self.transcriber.transcribe(
+                media_data,
+                user_subscription=user['subscription_type'],
+                media_type=media_type
+            )
 
             if transcription['success']:
                 # Обновление статистики пользователя
                 self.db.increment_user_usage(sender_id)
 
-                # Отправка результата
-                message = f"📝 **Язык/Language/ភាសា**: {transcription['language']}\n\n"
+                # 2. Отправка результата транскрипции
+                duration_text = ""
+                if transcription.get('duration', 0) > 0:
+                    minutes = transcription['duration'] // 60
+                    seconds = transcription['duration'] % 60
+                    duration_text = f" ({minutes}:{seconds:02d})"
+
+                message = f"📝 **Язык/Language/ភាសា**: {transcription['language']}{duration_text}\n\n"
                 message += f"**Текст/Text/អត្ថបទ**:\n{transcription['text']}"
 
                 self.send_text_message(sender_id, message)
 
-                # Добавление промо для бесплатных пользователей
+                # 3. Добавление промо для бесплатных пользователей
                 if user['subscription_type'] == 'free':
                     remaining = FREE_DAILY_LIMIT - self.db.get_daily_usage(sender_id)
+                    max_duration = MAX_AUDIO_DURATION_FREE // 60  # в минутах
                     self.send_text_message(sender_id,
                                            f"✅ Осталось бесплатных транскрипций сегодня: {remaining}\n"
-                                           f"🌟 Получите безлимитный доступ - /subscribe")
+                                           f"⏱️ Лимит длительности: {max_duration} минут\n"
+                                           f"🌟 Premium: 60 минут + безлимитно - /subscribe")
+                else:
+                    max_duration = MAX_AUDIO_DURATION_PREMIUM // 60
+                    self.send_text_message(sender_id,
+                                           f"⭐ Premium активен - лимит {max_duration} минут на файл")
             else:
                 self.send_text_message(sender_id,
-                                       "❌ Не удалось распознать аудио. Попробуйте записать четче или проверьте качество записи.")
+                                       f"❌ {transcription['error']}")
 
         except Exception as e:
-            logger.error(f"Error processing audio: {e}")
+            logger.error(f"Error processing {media_type}: {e}")
             self.send_text_message(sender_id,
-                                   "❌ Произошла ошибка при обработке. Пожалуйста, попробуйте позже.")
+                                   f"❌ Произошла ошибка при обработке {media_name}. Пожалуйста, попробуйте позже.")
+
+    def reset_user_limits(self, sender_id):
+        """Сброс лимитов для тестирования"""
+        from datetime import datetime, timedelta
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Удаляем записи транскрипций за сегодня
+        self.db.transcriptions.delete_many({
+            "user_id": sender_id,
+            "created_at": {"$gte": today_start}
+        })
+
+        # Обновляем пользователя
+        self.db.users.update_one(
+            {"user_id": sender_id},
+            {"$set": {"total_transcriptions": 0}}
+        )
+
+        self.send_text_message(sender_id, "✅ Лимиты сброшены! Можете тестировать.")
 
     def handle_postback(self, sender_id, payload):
         """Обработка нажатий на кнопки"""
@@ -131,10 +172,10 @@ class MessageHandler:
         message = {
             "text": (
                 "👋 Добро пожаловать в Audio Transcribe Bot!\n\n"
-                "🎤 Я могу превратить ваши голосовые сообщения в текст на любом языке.\n\n"
-                "📝 Просто отправьте мне аудио сообщение!\n\n"
-                "🆓 Бесплатно: 3 транскрипции в день\n"
-                "⭐ Премиум: Безлимитный доступ\n\n"
+                "🎤 Я могу превратить ваши голосовые сообщения и видео в текст на любом языке.\n\n"
+                "📝 Просто отправьте мне аудио или видео!\n\n"
+                "🆓 Бесплатно: 10 транскрипций в день, до 5 минут\n"
+                "⭐ Премиум: Безлимитный доступ, до 60 минут\n\n"
                 "Команды:\n"
                 "/help - Помощь\n"
                 "/status - Ваш статус\n"
@@ -173,7 +214,8 @@ class MessageHandler:
             "/start - Начало работы\n"
             "/help - Эта справка\n"
             "/status - Ваш статус\n"
-            "/subscribe - Премиум подписка"
+            "/subscribe - Премиум подписка\n"
+            "/reset - Сброс лимитов (тест)"
         )
         self.send_text_message(sender_id, message)
 
@@ -188,7 +230,7 @@ class MessageHandler:
                     "buttons": [
                         {
                             "type": "web_url",
-                            "url": f"{os.getenv('PAYMENT_URL')}?user_id={sender_id}",
+                            "url": "https://your-payment-site.com/subscribe",
                             "title": "💳 Оформить подписку"
                         },
                         {
