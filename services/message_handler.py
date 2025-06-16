@@ -1,7 +1,7 @@
 import os
 import logging
 import requests
-from config.constants import FREE_DAILY_LIMIT, MAX_AUDIO_DURATION
+from config.constants import FREE_DAILY_LIMIT, MAX_AUDIO_DURATION_FREE, MAX_AUDIO_DURATION_PREMIUM
 
 logger = logging.getLogger(__name__)
 
