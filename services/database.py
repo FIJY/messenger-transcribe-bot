@@ -61,59 +61,74 @@ class Database:
             logger.warning(f"Failed to create indexes: {e}")
 
     def get_or_create_user(self, user_id):
-        """Получить или создать пользователя"""
+        """
+        Получение или создание пользователя
+
+        Args:
+            user_id: ID пользователя из Messenger
+
+        Returns:
+            dict: Документ пользователя
+        """
         try:
             user = self.users.find_one({"user_id": user_id})
 
             if not user:
-                # Создание нового пользователя
-                user_data = {
+                user = {
                     "user_id": user_id,
-                    "subscription_type": "free",
                     "created_at": datetime.utcnow(),
+                    "subscription_type": "free",
+                    "subscription_expires": None,
                     "total_transcriptions": 0,
-                    "subscription_expires": None
+                    "last_activity": datetime.utcnow()
                 }
-
-                self.users.insert_one(user_data)
+                self.users.insert_one(user)
                 logger.info(f"Created new user: {user_id}")
-                return user_data
+            else:
+                # Обновляем последнюю активность
+                self.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"last_activity": datetime.utcnow()}}
+                )
 
             return user
 
         except Exception as e:
-            logger.error(f"Error getting/creating user {user_id}: {e}")
-            # Возвращаем пользователя по умолчанию в случае ошибки
-            return {
-                "user_id": user_id,
-                "subscription_type": "free",
-                "total_transcriptions": 0
-            }
+            logger.error(f"Error in get_or_create_user: {e}")
+            return None
 
     def get_daily_usage(self, user_id):
-        """Получить количество транскрипций за сегодня"""
+        """
+        Получение количества транскрипций пользователя за сегодня
+
+        Args:
+            user_id: ID пользователя
+
+        Returns:
+            int: Количество транскрипций
+        """
         try:
             today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-            today_end = today_start + timedelta(days=1)
 
             count = self.transcriptions.count_documents({
                 "user_id": user_id,
-                "created_at": {
-                    "$gte": today_start,
-                    "$lt": today_end
-                }
+                "created_at": {"$gte": today_start}
             })
 
             return count
 
         except Exception as e:
-            logger.error(f"Error getting daily usage for {user_id}: {e}")
+            logger.error(f"Error in get_daily_usage: {e}")
             return 0
 
     def increment_user_usage(self, user_id):
-        """Увеличить счетчик использования пользователя"""
+        """
+        Увеличение счетчика использования
+
+        Args:
+            user_id: ID пользователя
+        """
         try:
-            # Обновляем общий счетчик
             self.users.update_one(
                 {"user_id": user_id},
                 {
@@ -121,22 +136,20 @@ class Database:
                     "$set": {"last_activity": datetime.utcnow()}
                 }
             )
-
-            # Записываем транскрипцию
-            transcription_record = {
-                "user_id": user_id,
-                "created_at": datetime.utcnow(),
-                "type": "audio_transcription"
-            }
-
-            self.transcriptions.insert_one(transcription_record)
             logger.info(f"Incremented usage for user {user_id}")
 
         except Exception as e:
-            logger.error(f"Error incrementing usage for {user_id}: {e}")
+            logger.error(f"Error in increment_user_usage: {e}")
 
     def update_subscription(self, user_id, subscription_type, expires_at=None):
-        """Обновить подписку пользователя"""
+        """
+        Обновление подписки пользователя
+
+        Args:
+            user_id: ID пользователя
+            subscription_type: Тип подписки ('free' или 'premium')
+            expires_at: Дата окончания подписки
+        """
         try:
             update_data = {
                 "subscription_type": subscription_type,
@@ -146,41 +159,52 @@ class Database:
             if expires_at:
                 update_data["subscription_expires"] = expires_at
 
-            result = self.users.update_one(
+            self.users.update_one(
                 {"user_id": user_id},
                 {"$set": update_data}
             )
 
-            if result.modified_count > 0:
-                logger.info(f"Updated subscription for user {user_id}: {subscription_type}")
-                return True
-
-            return False
+            logger.info(f"Updated subscription for user {user_id} to {subscription_type}")
 
         except Exception as e:
-            logger.error(f"Error updating subscription for {user_id}: {e}")
-            return False
+            logger.error(f"Error in update_subscription: {e}")
 
     def record_payment(self, user_id, transaction_id, amount, currency="USD"):
-        """Записать платеж"""
+        """
+        Запись платежа
+
+        Args:
+            user_id: ID пользователя
+            transaction_id: ID транзакции
+            amount: Сумма платежа
+            currency: Валюта
+        """
         try:
-            payment_record = {
+            payment = {
                 "user_id": user_id,
                 "transaction_id": transaction_id,
                 "amount": amount,
                 "currency": currency,
-                "status": "completed",
-                "created_at": datetime.utcnow()
+                "created_at": datetime.utcnow(),
+                "status": "completed"
             }
 
-            self.payments.insert_one(payment_record)
+            self.payments.insert_one(payment)
             logger.info(f"Recorded payment for user {user_id}: {amount} {currency}")
 
         except Exception as e:
-            logger.error(f"Error recording payment for {user_id}: {e}")
+            logger.error(f"Error in record_payment: {e}")
 
     def get_user_stats(self, user_id):
-        """Получить статистику пользователя"""
+        """
+        Получение статистики пользователя
+
+        Args:
+            user_id: ID пользователя
+
+        Returns:
+            dict: Статистика использования
+        """
         try:
             user = self.get_or_create_user(user_id)
             daily_usage = self.get_daily_usage(user_id)
@@ -193,20 +217,24 @@ class Database:
             })
 
             return {
-                "subscription_type": user.get("subscription_type", "free"),
                 "total_transcriptions": user.get("total_transcriptions", 0),
                 "daily_usage": daily_usage,
                 "monthly_usage": monthly_usage,
-                "created_at": user.get("created_at"),
-                "subscription_expires": user.get("subscription_expires")
+                "subscription_type": user.get("subscription_type", "free"),
+                "member_since": user.get("created_at", datetime.utcnow())
             }
 
         except Exception as e:
-            logger.error(f"Error getting stats for {user_id}: {e}")
-            return None
+            logger.error(f"Error in get_user_stats: {e}")
+            return {}
 
     def cleanup_old_records(self, days=90):
-        """Очистка старых записей (для экономии места)"""
+        """
+        Очистка старых записей
+
+        Args:
+            days: Количество дней для хранения
+        """
         try:
             cutoff_date = datetime.utcnow() - timedelta(days=days)
 
@@ -215,16 +243,21 @@ class Database:
                 "created_at": {"$lt": cutoff_date}
             })
 
-            logger.info(f"Cleaned up {result.deleted_count} old transcription records")
+            logger.info(f"Deleted {result.deleted_count} old transcriptions")
 
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            logger.error(f"Error in cleanup_old_records: {e}")
 
     def get_bot_statistics(self):
-        """Получить общую статистику бота"""
+        """
+        Получение общей статистики бота
+
+        Returns:
+            dict: Общая статистика
+        """
         try:
             total_users = self.users.count_documents({})
-            premium_users = self.users.count_documents({"subscription_type": "premium"})
+            total_transcriptions = self.transcriptions.count_documents({})
 
             # Активные пользователи за последние 7 дней
             week_ago = datetime.utcnow() - timedelta(days=7)
@@ -232,15 +265,118 @@ class Database:
                 "last_activity": {"$gte": week_ago}
             })
 
-            total_transcriptions = self.transcriptions.count_documents({})
+            # Премиум пользователи
+            premium_users = self.users.count_documents({
+                "subscription_type": "premium"
+            })
 
             return {
                 "total_users": total_users,
-                "premium_users": premium_users,
                 "active_users_week": active_users,
+                "premium_users": premium_users,
                 "total_transcriptions": total_transcriptions
             }
 
         except Exception as e:
-            logger.error(f"Error getting bot statistics: {e}")
+            logger.error(f"Error in get_bot_statistics: {e}")
+            return {}
+
+    def save_transcription(self, user_id, media_type, media_url, transcription,
+                           translation=None, language=None, duration_seconds=0):
+        """
+        Сохранение транскрипции в базу данных
+
+        Args:
+            user_id: ID пользователя
+            media_type: Тип медиа ('audio' или 'video')
+            media_url: URL исходного файла
+            transcription: Текст транскрипции
+            translation: Текст перевода (опционально)
+            language: Определенный язык
+            duration_seconds: Длительность в секундах
+
+        Returns:
+            str: ID созданной записи
+        """
+        try:
+            transcription_doc = {
+                "user_id": user_id,
+                "media_type": media_type,
+                "media_url": media_url,
+                "transcription": transcription,
+                "translation": translation,
+                "language": language,
+                "duration_seconds": duration_seconds,
+                "created_at": datetime.utcnow()
+            }
+
+            result = self.transcriptions.insert_one(transcription_doc)
+            logger.info(f"Saved transcription for user {user_id}")
+
+            return str(result.inserted_id)
+
+        except Exception as e:
+            logger.error(f"Failed to save transcription: {e}")
             return None
+
+    def update_transcription_translation(self, transcription_id, translation):
+        """
+        Обновление перевода для существующей транскрипции
+
+        Args:
+            transcription_id: ID транскрипции
+            translation: Текст перевода
+
+        Returns:
+            bool: Успешность операции
+        """
+        try:
+            from bson import ObjectId
+
+            result = self.transcriptions.update_one(
+                {"_id": ObjectId(transcription_id)},
+                {"$set": {
+                    "translation": translation,
+                    "translated_at": datetime.utcnow()
+                }}
+            )
+
+            return result.modified_count > 0
+
+        except Exception as e:
+            logger.error(f"Failed to update translation: {e}")
+            return False
+
+    def get_active_users_today(self):
+        """
+        Получение количества активных пользователей за сегодня
+
+        Returns:
+            int: Количество активных пользователей
+        """
+        try:
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
+            active_users = self.transcriptions.distinct(
+                "user_id",
+                {"created_at": {"$gte": today_start}}
+            )
+
+            return len(active_users)
+
+        except Exception as e:
+            logger.error(f"Failed to get active users: {e}")
+            return 0
+
+    def check_connection(self):
+        """
+        Проверка соединения с базой данных
+
+        Returns:
+            bool: True если соединение активно
+        """
+        try:
+            self.client.admin.command('ping')
+            return True
+        except Exception:
+            return False

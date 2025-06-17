@@ -13,160 +13,114 @@ class TranslationService:
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
         self.audio_processor = AudioProcessor()
 
-        if not self.openai_api_key:
-            logger.warning("OPENAI_API_KEY not found")
-            self.client_ready = False
+        if self.openai_api_key:
+            openai.api_key = self.openai_api_key
+            logger.info("Translation service initialized with OpenAI API")
         else:
-            try:
-                openai.api_key = self.openai_api_key
-                self.client_ready = True
-                logger.info("OpenAI Translation API initialized")
-            except Exception as e:
-                logger.error(f"Failed to initialize OpenAI: {e}")
-                self.client_ready = False
+            logger.warning("OPENAI_API_KEY not found, translation will not work")
 
     def translate_from_url(self, media_url, media_type='audio', user_subscription='free'):
-        """Перевод медиа по URL"""
-        if not self.client_ready:
-            return self._mock_result()
+        """
+        Перевод медиа файла по URL на английский
 
-        temp_file_path = None
+        Args:
+            media_url: URL медиа файла
+            media_type: Тип медиа ('audio' или 'video')
+            user_subscription: Тип подписки пользователя
+
+        Returns:
+            dict: Результат перевода
+        """
         try:
             # 1. Скачиваем файл
             media_data = self.audio_processor.download_media(media_url)
+            if not media_data:
+                return {
+                    'success': False,
+                    'error': 'Failed to download media file'
+                }
 
             # 2. Валидируем файл
-            estimated_duration = self.audio_processor.validate_media_file(
+            validation = self.audio_processor.validate_media(
                 media_data, media_type, user_subscription
             )
 
-            # 3. Создаем временный файл
-            temp_file_path = self.audio_processor.create_temp_file(media_data, media_type)
-
-            # 4. Переводим
-            result = self._translate_file(temp_file_path)
-
-            # 5. Обрабатываем результат
-            if result['success']:
-                result.update({
-                    'duration': estimated_duration,
-                    'media_type': media_type
-                })
-
-            return result
-
-        except ValueError as e:
-            return {'success': False, 'error': str(e)}
-        except Exception as e:
-            logger.error(f"Translation error: {e}")
-            return {'success': False, 'error': 'Ошибка перевода. Попробуйте позже.'}
-        finally:
-            if temp_file_path:
-                self.audio_processor.cleanup_temp_file(temp_file_path)
-
-    def translate_from_data(self, media_data, media_type='audio', user_subscription='free'):
-        """Перевод медиа из данных в памяти"""
-        if not self.client_ready:
-            return self._mock_result()
-
-        temp_file_path = None
-        try:
-            # 1. Валидируем файл
-            estimated_duration = self.audio_processor.validate_media_file(
-                media_data, media_type, user_subscription
-            )
-
-            # 2. Создаем временный файл
-            temp_file_path = self.audio_processor.create_temp_file(media_data, media_type)
+            if not validation['is_valid']:
+                return {
+                    'success': False,
+                    'error': validation['error']
+                }
 
             # 3. Переводим
-            result = self._translate_file(temp_file_path)
+            return self.translate_from_data(media_data, media_type, user_subscription)
 
-            # 4. Обрабатываем результат
-            if result['success']:
-                result.update({
-                    'duration': estimated_duration,
-                    'media_type': media_type
-                })
-
-            return result
-
-        except ValueError as e:
-            return {'success': False, 'error': str(e)}
         except Exception as e:
-            logger.error(f"Translation error: {e}")
-            return {'success': False, 'error': 'Ошибка перевода. Попробуйте позже.'}
-        finally:
-            if temp_file_path:
-                self.audio_processor.cleanup_temp_file(temp_file_path)
+            logger.error(f"Translation error: {str(e)}")
+            return {
+                'success': False,
+                'error': f"Translation failed: {str(e)}"
+            }
 
-    def _translate_file(self, file_path):
-        """Внутренний метод перевода файла"""
+    def translate_from_data(self, media_data, media_type='audio', user_subscription='free'):
+        """
+        Перевод из данных файла
+
+        Args:
+            media_data: Байты медиа файла
+            media_type: Тип медиа
+            user_subscription: Тип подписки
+
+        Returns:
+            dict: Результат перевода
+        """
+        if not self.openai_api_key:
+            return {
+                'success': False,
+                'error': 'Translation service not configured'
+            }
+
+        temp_file_path = None
+
         try:
+            # 1. Создаем временный файл
+            extension = 'mp4' if media_type == 'video' else 'mp3'
+            temp_file_path = self.audio_processor.save_temp_file(media_data, extension)
+
+            if not temp_file_path:
+                return {
+                    'success': False,
+                    'error': 'Failed to create temporary file'
+                }
+
+            # 2. Переводим через OpenAI
             logger.info("Starting OpenAI translation")
 
-            with open(file_path, 'rb') as audio_file:
-                translation = openai.Audio.translate(
+            with open(temp_file_path, 'rb') as audio_file:
+                response = openai.Audio.translate(
                     model="whisper-1",
                     file=audio_file,
-                    response_format="json"
+                    response_format="verbose_json"
                 )
 
-            translated_text = translation['text'].strip()
-            original_language = translation.get('language', 'unknown')
-
+            original_language = response.get('language', 'unknown')
             logger.info(f"Translation completed. Original language: {original_language}")
 
             return {
                 'success': True,
-                'translated_text': translated_text,
+                'text': response['text'],
                 'original_language': original_language,
                 'target_language': 'en',
-                'raw_response': translation
+                'duration': response.get('duration')
             }
 
         except Exception as e:
-            logger.error(f"OpenAI translation API error: {e}")
-            return self._handle_api_error(e)
-
-    def _handle_api_error(self, error):
-        """Обработка ошибок OpenAI API"""
-        error_message = str(error)
-
-        if "insufficient_quota" in error_message:
+            logger.error(f"Translation error: {str(e)}")
             return {
                 'success': False,
-                'error': 'Превышена квота OpenAI API. Попробуйте позже.'
-            }
-        elif "invalid_request_error" in error_message:
-            return {
-                'success': False,
-                'error': 'Неподдерживаемый формат файла для перевода.'
-            }
-        elif "rate_limit" in error_message:
-            return {
-                'success': False,
-                'error': 'Превышен лимит запросов. Попробуйте через минуту.'
-            }
-        else:
-            return {
-                'success': False,
-                'error': 'Ошибка перевода. Попробуйте позже.'
+                'error': f"OpenAI API error: {str(e)}"
             }
 
-    def _mock_result(self):
-        """Заглушка когда API недоступен"""
-        return {
-            'success': True,
-            'translated_text': '🔧 Настройте OPENAI_API_KEY для включения перевода.',
-            'original_language': 'unknown',
-            'target_language': 'en'
-        }
-
-    def get_api_status(self):
-        """Статус API"""
-        return {
-            'translation_available': self.client_ready,
-            'target_languages': ['en'],  # OpenAI Whisper переводит только на английский
-            'supported_formats': self.audio_processor.supported_formats
-        }
+        finally:
+            # Очищаем временный файл
+            if temp_file_path:
+                self.audio_processor.cleanup_temp_file(temp_file_path)

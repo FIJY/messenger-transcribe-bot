@@ -95,37 +95,36 @@ class MessageHandler:
         self.send_text_message(sender_id,
                                f"{emoji} Обрабатываю ваше {media_type}... / Processing... / កំពុងដំណើរការ...")
 
-        # Обрабатываем медиа с транскрипцией и переводом
+        # Обрабатываем медиа БЕЗ перевода сначала
         result = self.media_handler.process_media_url(
             media_url,
             media_type,
             user['subscription_type'],
-            include_translation=True  # Включаем перевод
+            include_translation=False  # НЕ включаем перевод автоматически
         )
 
         if result['success']:
-            # Форматируем результат
+            # Показываем только транскрипцию
             message_text = f"📝 {result['language']}: {result['text']}"
-
-            # Если есть перевод
-            if result.get('translation'):
-                message_text += f"\n🌍 English: {result['translation']}"
-
             self.send_text_message(sender_id, message_text)
 
             # Записываем транскрипцию в БД
-            self.db.save_transcription(
+            transcription_id = self.db.save_transcription(
                 user_id=sender_id,
                 media_type=media_type,
                 media_url=media_url,
                 transcription=result['text'],
-                translation=result.get('translation'),
+                translation=None,  # Пока без перевода
                 language=result['language'],
                 duration_seconds=result.get('duration_seconds', 0)
             )
 
             # Увеличиваем счетчик использования
-            self.db.increment_usage(sender_id)
+            self.db.increment_user_usage(sender_id)
+
+            # Если язык НЕ английский, предлагаем перевод
+            if result['language_code'] != 'en':
+                self.send_translation_offer(sender_id, media_url, transcription_id)
 
             # Отправляем информацию о лимитах
             self.send_usage_info(sender_id, user)
