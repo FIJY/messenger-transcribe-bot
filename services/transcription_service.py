@@ -11,179 +11,134 @@ class TranscriptionService:
     """Сервис для транскрипции аудио/видео"""
 
     def __init__(self):
-        self.openai_api_key = os.getenv('OPENAI_API_KEY')
+        self.api_key = os.getenv('OPENAI_API_KEY')
         self.audio_processor = AudioProcessor()
         self.language_detector = LanguageDetector()
 
-        if not self.openai_api_key:
-            logger.warning("OPENAI_API_KEY not found")
-            self.client_ready = False
+        if self.api_key:
+            openai.api_key = self.api_key
+            logger.info("OpenAI Whisper API initialized successfully")
         else:
-            try:
-                openai.api_key = self.openai_api_key
-                self.client_ready = True
-                logger.info("OpenAI Transcription API initialized")
-            except Exception as e:
-                logger.error(f"Failed to initialize OpenAI: {e}")
-                self.client_ready = False
+            logger.warning("OPENAI_API_KEY not found, transcription will not work")
 
     def transcribe_from_url(self, media_url, media_type='audio', user_subscription='free'):
-        """Транскрипция медиа по URL"""
-        if not self.client_ready:
-            return self._mock_result()
+        """
+        Транскрипция медиа файла по URL
 
-        temp_file_path = None
+        Args:
+            media_url: URL медиа файла
+            media_type: Тип медиа ('audio' или 'video')
+            user_subscription: Тип подписки пользователя
+
+        Returns:
+            dict: Результат транскрипции
+        """
         try:
             # 1. Скачиваем файл
             media_data = self.audio_processor.download_media(media_url)
+            if not media_data:
+                return {
+                    'success': False,
+                    'error': 'Failed to download media file'
+                }
 
             # 2. Валидируем файл
-            estimated_duration = self.audio_processor.validate_media_file(
+            validation = self.audio_processor.validate_media(
                 media_data, media_type, user_subscription
             )
 
-            # 3. Создаем временный файл
-            temp_file_path = self.audio_processor.create_temp_file(media_data, media_type)
-
-            # 4. Транскрибируем
-            result = self._transcribe_file(temp_file_path)
-
-            # 5. Обрабатываем результат
-            if result['success']:
-                # Улучшаем определение языка
-                language_analysis = self.language_detector.analyze_text_language(
-                    result['text'], result.get('language_code')
-                )
-
-                result.update({
-                    'language': self.language_detector.get_language_name(language_analysis['final_language']),
-                    'language_code': language_analysis['final_language'],
-                    'language_confidence': language_analysis['confidence'],
-                    'duration': estimated_duration,
-                    'media_type': media_type
-                })
-
-            return result
-
-        except ValueError as e:
-            return {'success': False, 'error': str(e)}
-        except Exception as e:
-            logger.error(f"Transcription error: {e}")
-            return {'success': False, 'error': 'Ошибка транскрипции. Попробуйте позже.'}
-        finally:
-            if temp_file_path:
-                self.audio_processor.cleanup_temp_file(temp_file_path)
-
-    def transcribe_from_data(self, media_data, media_type='audio', user_subscription='free'):
-        """Транскрипция медиа из данных в памяти"""
-        if not self.client_ready:
-            return self._mock_result()
-
-        temp_file_path = None
-        try:
-            # 1. Валидируем файл
-            estimated_duration = self.audio_processor.validate_media_file(
-                media_data, media_type, user_subscription
-            )
-
-            # 2. Создаем временный файл
-            temp_file_path = self.audio_processor.create_temp_file(media_data, media_type)
+            if not validation['is_valid']:
+                return {
+                    'success': False,
+                    'error': validation['error']
+                }
 
             # 3. Транскрибируем
-            result = self._transcribe_file(temp_file_path)
+            return self.transcribe_from_data(media_data, media_type, user_subscription)
 
-            # 4. Обрабатываем результат
-            if result['success']:
-                language_analysis = self.language_detector.analyze_text_language(
-                    result['text'], result.get('language_code')
-                )
-
-                result.update({
-                    'language': self.language_detector.get_language_name(language_analysis['final_language']),
-                    'language_code': language_analysis['final_language'],
-                    'language_confidence': language_analysis['confidence'],
-                    'duration': estimated_duration,
-                    'media_type': media_type
-                })
-
-            return result
-
-        except ValueError as e:
-            return {'success': False, 'error': str(e)}
         except Exception as e:
-            logger.error(f"Transcription error: {e}")
-            return {'success': False, 'error': 'Ошибка транскрипции. Попробуйте позже.'}
-        finally:
-            if temp_file_path:
-                self.audio_processor.cleanup_temp_file(temp_file_path)
+            logger.error(f"Transcription error: {str(e)}")
+            return {
+                'success': False,
+                'error': f"Transcription failed: {str(e)}"
+            }
 
-    def _transcribe_file(self, file_path):
-        """Внутренний метод транскрипции файла"""
+    def transcribe_from_data(self, media_data, media_type='audio', user_subscription='free'):
+        """
+        Транскрипция из данных файла
+
+        Args:
+            media_data: Байты медиа файла
+            media_type: Тип медиа
+            user_subscription: Тип подписки
+
+        Returns:
+            dict: Результат транскрипции
+        """
+        if not self.api_key:
+            return {
+                'success': False,
+                'error': 'Настройте OPENAI_API_KEY для включения транскрипции.',
+                'text': 'Настройте OPENAI_API_KEY для включения транскрипции.',
+                'language_info': {
+                    'api_detected': 'unknown',
+                    'final_language': 'unknown',
+                    'display_name': 'System Message'
+                }
+            }
+
+        temp_file_path = None
+
         try:
-            logger.info("Starting OpenAI transcription")
+            # 1. Создаем временный файл (используем save_temp_file вместо create_temp_file)
+            extension = 'mp4' if media_type == 'video' else 'mp3'
+            temp_file_path = self.audio_processor.save_temp_file(media_data, extension)
 
-            with open(file_path, 'rb') as audio_file:
-                transcript = openai.Audio.transcribe(
+            if not temp_file_path:
+                return {
+                    'success': False,
+                    'error': 'Failed to create temporary file'
+                }
+
+            # 2. Транскрибируем через OpenAI
+            logger.info(f"Starting OpenAI transcription")
+
+            with open(temp_file_path, 'rb') as audio_file:
+                response = openai.Audio.transcribe(
                     model="whisper-1",
                     file=audio_file,
-                    response_format="json"
+                    response_format="verbose_json"
                 )
 
-            text = transcript['text'].strip()
-            language_code = transcript.get('language', 'unknown')
+            # 3. Анализируем язык
+            detected_language = response.get('language', 'unknown')
+            logger.info(f"Transcription completed. Detected language: {detected_language}")
 
-            logger.info(f"Transcription completed. Detected language: {language_code}")
+            language_info = self.language_detector.analyze_language(
+                response['text'],
+                detected_language
+            )
 
             return {
                 'success': True,
-                'text': text,
-                'language_code': language_code,
-                'raw_response': transcript
+                'text': response['text'],
+                'language_info': language_info,
+                'duration': response.get('duration'),
+                'segments': response.get('segments', [])
             }
 
         except Exception as e:
-            logger.error(f"OpenAI API error: {e}")
-            return self._handle_api_error(e)
-
-    def _handle_api_error(self, error):
-        """Обработка ошибок OpenAI API"""
-        error_message = str(error)
-
-        if "insufficient_quota" in error_message:
+            logger.error(f"Transcription error: {str(e)}")
             return {
                 'success': False,
-                'error': 'Превышена квота OpenAI API. Попробуйте позже.'
-            }
-        elif "invalid_request_error" in error_message:
-            return {
-                'success': False,
-                'error': 'Неподдерживаемый формат файла.'
-            }
-        elif "rate_limit" in error_message:
-            return {
-                'success': False,
-                'error': 'Превышен лимит запросов. Попробуйте через минуту.'
-            }
-        else:
-            return {
-                'success': False,
-                'error': 'Ошибка транскрипции. Попробуйте позже.'
+                'error': f"OpenAI API error: {str(e)}"
             }
 
-    def _mock_result(self):
-        """Заглушка когда API недоступен"""
-        return {
-            'success': True,
-            'text': '🔧 Настройте OPENAI_API_KEY для включения транскрипции.',
-            'language': 'System Message',
-            'language_code': 'sys',
-            'duration': 0,
-            'media_type': 'audio'
-        }
+        finally:
+            # Очищаем временный файл
+            if temp_file_path:
+                self.audio_processor.cleanup_temp_file(temp_file_path)
 
-    def get_api_status(self):
-        """Статус API"""
-        return {
-            'transcription_available': self.client_ready,
-            'supported_formats': self.audio_processor.supported_formats
-        }
+    def get_supported_languages(self):
+        """Получить список поддерживаемых языков"""
+        return self.language_detector.supported_languages
