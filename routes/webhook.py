@@ -7,45 +7,41 @@ webhook_bp = Blueprint('webhook', __name__)
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-VERIFY_TOKEN = os.getenv('VERIFY_TOKEN')
+VERIFY_TOKEN = os.getenv('VERIFY_TOKEN', '12345')
 
 
-@webhook_bp.route('', methods=['GET'])
+@webhook_bp.route('/webhook', methods=['GET'])
 def verify_webhook():
-    """Верификация webhook для Facebook"""
+    """Верификация webhook от Facebook"""
+    mode = request.args.get('hub.mode')
     token = request.args.get('hub.verify_token')
     challenge = request.args.get('hub.challenge')
 
-    logger.info(f"Webhook verification request with token: {token}")
+    if mode and token:
+        if mode == 'subscribe' and token == VERIFY_TOKEN:
+            logger.info('Webhook verified')
+            return challenge, 200
+        else:
+            logger.error('Webhook verification failed')
+            return 'Forbidden', 403
 
-    if token == VERIFY_TOKEN:
-        logger.info('Webhook verified successfully')
-        return challenge
-
-    logger.warning('Invalid verification token')
-    return 'Invalid token', 403
+    return 'Bad Request', 400
 
 
-@webhook_bp.route('', methods=['POST'])
+@webhook_bp.route('/webhook', methods=['POST'])
 def handle_webhook():
     """Обработка входящих сообщений"""
-    try:
-        data = request.json
+    data = request.get_json()
+
+    if data and data.get('object') == 'page':
         logger.info(f"Received webhook data: {data}")
 
-        if data.get('object') == 'page':
-            handler = MessageHandler(
-                db=current_app.db,
-                transcriber=current_app.transcriber,
-                payment=current_app.payment
-            )
+        # Получаем обработчик сообщений из контекста приложения
+        message_handler = current_app.config['message_handler']
 
-            for entry in data['entry']:
-                for messaging_event in entry['messaging']:
-                    handler.handle_messaging_event(messaging_event)
+        # Обрабатываем webhook
+        message_handler.handle_webhook(data)
 
-        return 'OK', 200
+        return 'ok', 200
 
-    except Exception as e:
-        logger.error(f"Error handling webhook: {e}")
-        return 'Error', 500
+    return 'Bad Request', 400

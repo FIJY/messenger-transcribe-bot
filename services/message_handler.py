@@ -1,171 +1,185 @@
+# services/message_handler.py - с новой архитектурой
 import os
 import logging
 import requests
 from config.constants import FREE_DAILY_LIMIT, MAX_AUDIO_DURATION_FREE, MAX_AUDIO_DURATION_PREMIUM
+from .media_handler import MediaHandler
 
 logger = logging.getLogger(__name__)
 
 
 class MessageHandler:
-    def __init__(self, db, transcriber, payment):
+    def __init__(self, db, payment):
         self.db = db
-        self.transcriber = transcriber
+        self.media_handler = MediaHandler()  # Используем новый MediaHandler
         self.payment = payment
         self.page_access_token = os.getenv('PAGE_ACCESS_TOKEN')
-        self.webhook_url = "https://graph.facebook.com/v18.0/me/messages"
+        self.graph_url = "https://graph.facebook.com/v17.0/me"
 
-    def handle_messaging_event(self, messaging_event):
-        """Обработка одного события сообщения"""
-        sender_id = messaging_event['sender']['id']
-
+    def handle_webhook(self, data):
+        """Обработка входящих webhook событий"""
         try:
-            # Обработка текстовых команд
-            if 'message' in messaging_event and 'text' in messaging_event['message']:
-                self.handle_text_message(sender_id, messaging_event['message']['text'])
+            for entry in data.get('entry', []):
+                for messaging_event in entry.get('messaging', []):
+                    sender_id = messaging_event['sender']['id']
 
-            # Обработка аудио и видео
-            elif 'message' in messaging_event and 'attachments' in messaging_event['message']:
-                for attachment in messaging_event['message']['attachments']:
-                    if attachment['type'] in ['audio', 'video']:
-                        self.handle_media_message(sender_id, attachment['payload']['url'], attachment['type'])
+                    # Обработка текстовых сообщений
+                    if 'message' in messaging_event and 'text' in messaging_event['message']:
+                        self.handle_text_message(sender_id, messaging_event['message']['text'])
 
-            # Обработка postback (кнопки)
-            elif 'postback' in messaging_event:
-                self.handle_postback(sender_id, messaging_event['postback']['payload'])
+                    # Обработка аудио и видео
+                    elif 'message' in messaging_event and 'attachments' in messaging_event['message']:
+                        for attachment in messaging_event['message']['attachments']:
+                            if attachment['type'] in ['audio', 'video']:
+                                media_url = attachment['payload'].get('url')
+                                if media_url:
+                                    self.handle_media_message(sender_id, media_url, attachment['type'])
+
+                    # Обработка postback (кнопок)
+                    elif 'postback' in messaging_event:
+                        self.handle_postback(sender_id, messaging_event['postback']['payload'])
 
         except Exception as e:
-            logger.error(f"Error handling messaging event: {e}")
-            self.send_text_message(sender_id, "❌ Произошла ошибка. Попробуйте позже.")
+            logger.error(f"Error handling webhook: {str(e)}")
 
     def handle_text_message(self, sender_id, text):
         """Обработка текстовых команд"""
-        text_lower = text.lower()
+        text_lower = text.lower().strip()
 
-        commands = {
-            ('/start', 'start', 'привет', 'hello', 'សួស្តី'): self.send_welcome_message,
-            ('/help', 'help', 'помощь'): self.send_help_message,
-            ('/status', 'status', 'статус'): self.send_status_message,
-            ('/subscribe', 'subscribe', 'подписка'): self.send_subscription_options,
-            ('/reset', 'reset', 'сброс'): self.reset_user_limits
-        }
+        # Команда помощи
+        if text_lower in ['/help', 'help', 'помощь', 'ជំនួយ']:
+            self.send_help_message(sender_id)
 
-        # Поиск команды
-        for command_variants, handler in commands.items():
-            if text_lower in command_variants:
-                handler(sender_id)
-                return
+        # Команда статуса
+        elif text_lower in ['/status', 'status', 'статус', 'ស្ថានភាព']:
+            self.send_status_message(sender_id)
 
-        # Если команда не найдена
-        self.send_text_message(sender_id,
-                               "Отправьте мне голосовое сообщение или видео, и я переведу их в текст! 🎤📹\n"
-                               "Send me a voice message or video and I'll transcribe it! 🎤📹\n"
-                               "ផ្ញើសារជាសំឡេងឬវីដេអូមកខ្ញុំ ខ្ញុំនឹងបកប្រែជាអក្សរ! 🎤📹")
+        # Команда подписки
+        elif text_lower in ['/subscribe', 'subscribe', 'подписка', 'ជាវ']:
+            self.send_subscription_message(sender_id)
+
+        # Команда сброса лимитов (для тестирования)
+        elif text_lower in ['/reset', 'reset', 'сброс']:
+            from datetime import datetime, timedelta
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
+            # Удаляем записи транскрипций за сегодня
+            self.db.transcriptions.delete_many({
+                "user_id": sender_id,
+                "created_at": {"$gte": today_start}
+            })
+
+            self.send_text_message(sender_id, "✅ Лимиты сброшены! Можете тестировать.")
+
+        # Команда старт
+        elif text_lower in ['/start', 'start', 'привет', 'hi', 'hello', 'សួស្តី']:
+            self.send_welcome_message(sender_id)
+
+        else:
+            # Если команда не найдена
+            self.send_text_message(sender_id,
+                                   "Отправьте мне голосовое сообщение или видео, и я переведу их в текст! 🎤📹\n"
+                                   "Send me a voice message or video and I'll transcribe it! 🎤📹\n"
+                                   "សូមផ្ញើសារជាសំឡេង ឬវីដេអូមកខ្ញុំ ហើយខ្ញុំនឹងបកប្រែវាជាអត្ថបទ! 🎤📹")
 
     def handle_media_message(self, sender_id, media_url, media_type):
         """Обработка аудио/видео сообщений"""
         # Проверка лимитов пользователя
         user = self.db.get_or_create_user(sender_id)
 
-        if not self.check_user_limits(user):
-            self.send_limit_exceeded_message(sender_id)
+        if not self.check_user_limits(sender_id, user):
             return
 
-        # Определяем тип файла для сообщения
-        media_emoji = "🎥" if media_type == 'video' else "🎧"
-        media_name = "видео" if media_type == 'video' else "аудио"
-
-        # 1. Отправка сообщения о начале обработки
+        # Отправляем сообщение о начале обработки
+        emoji = "🎧" if media_type == "audio" else "🎥"
         self.send_text_message(sender_id,
-                               f"{media_emoji} Обрабатываю ваше {media_name}... / Processing... / កំពុងដំណើរការ...")
+                               f"{emoji} Обрабатываю ваше {media_type}... / Processing... / កំពុងដំណើរការ...")
 
-        try:
-            # Скачивание медиа файла
-            media_data = self.download_audio(media_url)
-
-            # Транскрипция с учетом типа подписки
-            transcription = self.transcriber.transcribe(
-                media_data,
-                user_subscription=user['subscription_type'],
-                media_type=media_type
-            )
-
-            if transcription['success']:
-                # Обновление статистики пользователя
-                self.db.increment_user_usage(sender_id)
-
-                # 2. Отправка результата транскрипции
-                duration_text = ""
-                if transcription.get('duration', 0) > 0:
-                    minutes = transcription['duration'] // 60
-                    seconds = transcription['duration'] % 60
-                    duration_text = f" ({minutes}:{seconds:02d})"
-
-                message = f"📝 **Язык/Language/ភាសា**: {transcription['language']}{duration_text}\n\n"
-                message += f"**Текст/Text/អត្ថបទ**:\n{transcription['text']}"
-
-                self.send_text_message(sender_id, message)
-
-                # 3. Добавление промо для бесплатных пользователей
-                if user['subscription_type'] == 'free':
-                    remaining = FREE_DAILY_LIMIT - self.db.get_daily_usage(sender_id)
-                    max_duration = MAX_AUDIO_DURATION_FREE // 60  # в минутах
-                    self.send_text_message(sender_id,
-                                           f"✅ Осталось бесплатных транскрипций сегодня: {remaining}\n"
-                                           f"⏱️ Лимит длительности: {max_duration} минут\n"
-                                           f"🌟 Premium: 60 минут + безлимитно - /subscribe")
-                else:
-                    max_duration = MAX_AUDIO_DURATION_PREMIUM // 60
-                    self.send_text_message(sender_id,
-                                           f"⭐ Premium активен - лимит {max_duration} минут на файл")
-            else:
-                self.send_text_message(sender_id,
-                                       f"❌ {transcription['error']}")
-
-        except Exception as e:
-            logger.error(f"Error processing {media_type}: {e}")
-            self.send_text_message(sender_id,
-                                   f"❌ Произошла ошибка при обработке {media_name}. Пожалуйста, попробуйте позже.")
-
-    def reset_user_limits(self, sender_id):
-        """Сброс лимитов для тестирования"""
-        from datetime import datetime, timedelta
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-
-        # Удаляем записи транскрипций за сегодня
-        self.db.transcriptions.delete_many({
-            "user_id": sender_id,
-            "created_at": {"$gte": today_start}
-        })
-
-        # Обновляем пользователя
-        self.db.users.update_one(
-            {"user_id": sender_id},
-            {"$set": {"total_transcriptions": 0}}
+        # Обрабатываем медиа с транскрипцией и переводом
+        result = self.media_handler.process_media_url(
+            media_url,
+            media_type,
+            user['subscription_type'],
+            include_translation=True  # Включаем перевод
         )
 
-        self.send_text_message(sender_id, "✅ Лимиты сброшены! Можете тестировать.")
+        if result['success']:
+            # Форматируем результат
+            message_text = f"📝 {result['language']}: {result['text']}"
+
+            # Если есть перевод
+            if result.get('translation'):
+                message_text += f"\n🌍 English: {result['translation']}"
+
+            self.send_text_message(sender_id, message_text)
+
+            # Записываем транскрипцию в БД
+            self.db.save_transcription(
+                user_id=sender_id,
+                media_type=media_type,
+                media_url=media_url,
+                transcription=result['text'],
+                translation=result.get('translation'),
+                language=result['language'],
+                duration_seconds=result.get('duration_seconds', 0)
+            )
+
+            # Увеличиваем счетчик использования
+            self.db.increment_usage(sender_id)
+
+            # Отправляем информацию о лимитах
+            self.send_usage_info(sender_id, user)
+        else:
+            self.send_text_message(sender_id,
+                                   f"❌ Ошибка: {result['error']}\n"
+                                   f"❌ Error: {result['error']}\n"
+                                   f"❌ កំហុស: {result['error']}")
+
+    def check_user_limits(self, sender_id, user):
+        """Проверка лимитов пользователя"""
+        if user['subscription_type'] == 'free':
+            daily_usage = self.db.get_daily_usage(sender_id)
+            if daily_usage >= FREE_DAILY_LIMIT:
+                self.send_limit_reached_message(sender_id)
+                return False
+        return True
+
+    def send_usage_info(self, sender_id, user):
+        """Отправка информации об использовании"""
+        if user['subscription_type'] == 'free':
+            daily_usage = self.db.get_daily_usage(sender_id)
+            remaining = FREE_DAILY_LIMIT - daily_usage
+
+            self.send_text_message(sender_id,
+                                   f"✅ Осталось бесплатных транскрипций сегодня: {remaining}\n"
+                                   f"Получите безлимитный доступ - /subscribe")
 
     def handle_postback(self, sender_id, payload):
         """Обработка нажатий на кнопки"""
-        handlers = {
-            'SUBSCRIBE': self.send_subscription_options,
-            'STATUS': self.send_status_message,
-            'BACK_TO_MENU': self.send_welcome_message
-        }
+        if payload == 'GET_STARTED':
+            self.send_welcome_message(sender_id)
+        elif payload == 'SUBSCRIBE':
+            self.send_subscription_message(sender_id)
+        elif payload == 'HELP':
+            self.send_help_message(sender_id)
 
-        handler = handlers.get(payload)
-        if handler:
-            handler(sender_id)
-        else:
-            logger.warning(f"Unknown postback payload: {payload}")
+    def send_text_message(self, recipient_id, text):
+        """Отправка текстового сообщения"""
+        try:
+            response = requests.post(
+                f"{self.graph_url}/messages",
+                params={"access_token": self.page_access_token},
+                json={
+                    "recipient": {"id": recipient_id},
+                    "message": {"text": text}
+                }
+            )
 
-    def check_user_limits(self, user):
-        """Проверка лимитов пользователя"""
-        if user['subscription_type'] == 'premium':
-            return True
+            if response.status_code != 200:
+                logger.error(f"Failed to send message: {response.text}")
 
-        daily_usage = self.db.get_daily_usage(user['user_id'])
-        return daily_usage < FREE_DAILY_LIMIT
+        except Exception as e:
+            logger.error(f"Error sending message: {str(e)}")
 
     def send_welcome_message(self, sender_id):
         """Отправка приветственного сообщения"""
@@ -174,109 +188,102 @@ class MessageHandler:
                 "👋 Добро пожаловать в Audio Transcribe Bot!\n\n"
                 "🎤 Я могу превратить ваши голосовые сообщения и видео в текст на любом языке.\n\n"
                 "📝 Просто отправьте мне аудио или видео!\n\n"
-                "🆓 Бесплатно: 10 транскрипций в день, до 5 минут\n"
-                "⭐ Премиум: Безлимитный доступ, до 60 минут\n\n"
+                "🆓 Бесплатно: 10 транскрипций в день (до 5 минут)\n"
+                "⭐ Премиум: Безлимитный доступ (до 60 минут)\n\n"
                 "Команды:\n"
                 "/help - Помощь\n"
                 "/status - Ваш статус\n"
                 "/subscribe - Подписка"
-            ),
-            "quick_replies": [
-                {
-                    "content_type": "text",
-                    "title": "📊 Мой статус",
-                    "payload": "STATUS"
-                },
-                {
-                    "content_type": "text",
-                    "title": "⭐ Подписка",
-                    "payload": "SUBSCRIBE"
-                }
-            ]
+            )
         }
-        self.send_message(sender_id, message)
+
+        try:
+            response = requests.post(
+                f"{self.graph_url}/messages",
+                params={"access_token": self.page_access_token},
+                json={
+                    "recipient": {"id": sender_id},
+                    "message": message
+                }
+            )
+
+            if response.status_code != 200:
+                logger.error(f"Failed to send welcome message: {response.text}")
+
+        except Exception as e:
+            logger.error(f"Error sending welcome message: {str(e)}")
 
     def send_help_message(self, sender_id):
-        """Отправка сообщения помощи"""
-        message = (
-            "🔧 **Как пользоваться ботом:**\n\n"
-            "1️⃣ Отправьте голосовое сообщение\n"
-            "2️⃣ Получите текст на том же языке\n\n"
-            "🌍 **Поддерживаемые языки:**\n"
-            "• Кхмерский (ខ្មែរ)\n"
-            "• English\n"
-            "• Русский\n"
-            "• 中文\n"
-            "• ไทย\n"
-            "• Tiếng Việt\n"
-            "• И многие другие!\n\n"
-            "📝 **Команды:**\n"
-            "/start - Начало работы\n"
-            "/help - Эта справка\n"
-            "/status - Ваш статус\n"
-            "/subscribe - Премиум подписка\n"
-            "/reset - Сброс лимитов (тест)"
+        """Отправка справочного сообщения"""
+        help_text = (
+            "📖 Как использовать бота:\n\n"
+            "1️⃣ Отправьте голосовое сообщение или видео\n"
+            "2️⃣ Бот автоматически распознает язык\n"
+            "3️⃣ Получите текст и перевод на английский\n\n"
+            "💡 Советы для лучшего качества:\n"
+            "• Говорите четко и не слишком быстро\n"
+            "• Избегайте шумных мест\n"
+            "• Держите микрофон близко\n\n"
+            "🌍 Поддерживаемые языки:\n"
+            "Русский, English, ភាសាខ្មែរ, 中文, Español, Français и 90+ других\n\n"
+            "⏱ Лимиты:\n"
+            "• Бесплатно: до 5 минут\n"
+            "• Premium: до 60 минут\n\n"
+            "/status - проверить ваш статус\n"
+            "/subscribe - получить Premium"
         )
-        self.send_text_message(sender_id, message)
 
-    def send_subscription_options(self, sender_id):
-        """Отправка вариантов подписки"""
-        message = {
-            "attachment": {
-                "type": "template",
-                "payload": {
-                    "template_type": "button",
-                    "text": "⭐ Premium подписка - $4.99/месяц\n\n✅ Безлимитные транскрипции\n✅ Приоритетная обработка\n✅ Файлы до 10 минут\n✅ История транскрипций",
-                    "buttons": [
-                        {
-                            "type": "web_url",
-                            "url": "https://your-payment-site.com/subscribe",
-                            "title": "💳 Оформить подписку"
-                        },
-                        {
-                            "type": "postback",
-                            "title": "🔙 Назад",
-                            "payload": "BACK_TO_MENU"
-                        }
-                    ]
-                }
-            }
-        }
-        self.send_message(sender_id, message)
+        self.send_text_message(sender_id, help_text)
 
     def send_status_message(self, sender_id):
         """Отправка статуса пользователя"""
         user = self.db.get_or_create_user(sender_id)
         daily_usage = self.db.get_daily_usage(sender_id)
 
-        if user['subscription_type'] == 'premium':
-            status = "⭐ Premium"
-            limit_text = "Безлимитные транскрипции"
-        else:
-            status = "🆓 Free"
+        if user['subscription_type'] == 'free':
             remaining = FREE_DAILY_LIMIT - daily_usage
-            limit_text = f"Осталось сегодня: {remaining}/{FREE_DAILY_LIMIT}"
+            limit_info = f"Транскрипций сегодня: {daily_usage}\nОсталось сегодня: {remaining}/{FREE_DAILY_LIMIT}"
+            max_duration = MAX_AUDIO_DURATION_FREE // 60
+        else:
+            limit_info = "Безлимитные транскрипции"
+            max_duration = MAX_AUDIO_DURATION_PREMIUM // 60
 
-        total_transcriptions = user.get('total_transcriptions', 0)
-
-        message = (
-            f"📊 **Ваш статус**\n\n"
-            f"Тип аккаунта: {status}\n"
-            f"Транскрипций сегодня: {daily_usage}\n"
-            f"{limit_text}\n"
-            f"Всего транскрипций: {total_transcriptions}"
+        status_text = (
+            f"📊 Ваш статус\n\n"
+            f"Тип аккаунта: {user['subscription_type'].title()}\n"
+            f"{limit_info}\n"
+            f"Всего транскрипций: {user.get('total_transcriptions', 0)}\n"
+            f"Макс. длительность: {max_duration} минут"
         )
 
-        self.send_text_message(sender_id, message)
+        self.send_text_message(sender_id, status_text)
 
-    def send_limit_exceeded_message(self, sender_id):
-        """Сообщение о превышении лимита"""
+    def send_subscription_message(self, sender_id):
+        """Отправка информации о подписке"""
+        # Временная заглушка для подписки
+        subscription_text = (
+            "⭐ Premium Подписка\n\n"
+            "✅ Безлимитные транскрипции\n"
+            "✅ Файлы до 60 минут\n"
+            "✅ Приоритетная обработка\n"
+            "✅ История транскрипций\n\n"
+            "💰 Цена: $4.99/месяц\n\n"
+            "🔜 Платежная система скоро будет доступна!"
+        )
+
+        self.send_text_message(sender_id, subscription_text)
+
+    def send_limit_reached_message(self, sender_id):
+        """Сообщение о достижении лимита"""
         message = {
             "attachment": {
                 "type": "template",
                 "payload": {
                     "template_type": "button",
-                    "text": "⚠️ Вы достигли дневного лимита бесплатных транскрипций.\n\nПолучите безлимитный доступ с Premium подпиской!",
+                    "text": (
+                        "🚫 Вы достигли дневного лимита бесплатных транскрипций.\n\n"
+                        "Получите безлимитный доступ с Premium подпиской!"
+                    ),
                     "buttons": [
                         {
                             "type": "postback",
@@ -287,35 +294,22 @@ class MessageHandler:
                 }
             }
         }
-        self.send_message(sender_id, message)
 
-    def send_text_message(self, recipient_id, text):
-        """Отправка текстового сообщения"""
-        message = {"text": text}
-        self.send_message(recipient_id, message)
+        try:
+            response = requests.post(
+                f"{self.graph_url}/messages",
+                params={"access_token": self.page_access_token},
+                json={
+                    "recipient": {"id": sender_id},
+                    "message": message
+                }
+            )
 
-    def send_message(self, recipient_id, message):
-        """Базовая функция отправки сообщений"""
-        payload = {
-            "recipient": {"id": recipient_id},
-            "message": message
-        }
+            if response.status_code != 200:
+                logger.error(f"Failed to send message: {response.text}")
+                # Fallback на простое сообщение
+                self.send_text_message(sender_id,
+                                       "🚫 Вы достигли дневного лимита.\nПолучите Premium - /subscribe")
 
-        headers = {"Content-Type": "application/json"}
-        params = {"access_token": self.page_access_token}
-
-        response = requests.post(
-            self.webhook_url,
-            params=params,
-            headers=headers,
-            json=payload
-        )
-
-        if response.status_code != 200:
-            logger.error(f"Failed to send message: {response.text}")
-
-    def download_audio(self, url):
-        """Скачивание аудио файла"""
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.content
+        except Exception as e:
+            logger.error(f"Error sending limit message: {str(e)}")

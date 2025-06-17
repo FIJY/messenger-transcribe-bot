@@ -9,47 +9,46 @@ logger = logging.getLogger(__name__)
 def health_check():
     """Проверка здоровья сервиса"""
     try:
-        # Проверка состояния сервисов
-        db_status = "connected" if hasattr(current_app, 'db') and current_app.db else "error"
-        transcriber_status = "initialized" if hasattr(current_app,
-                                                      'transcriber') and current_app.transcriber else "error"
-        payment_status = "initialized" if hasattr(current_app, 'payment') and current_app.payment else "error"
-
-        overall_status = "healthy" if all([
-            db_status == "connected",
-            transcriber_status == "initialized",
-            payment_status == "initialized"
-        ]) else "degraded"
+        # Проверка статуса базы данных
+        message_handler = current_app.config.get('message_handler')
+        if message_handler and message_handler.db:
+            db_status = message_handler.db.check_connection()
+        else:
+            db_status = False
 
         return jsonify({
-            "status": overall_status,
+            "status": "healthy" if db_status else "degraded",
             "services": {
-                "database": db_status,
-                "transcriber": transcriber_status,
-                "payment": payment_status
-            },
-            "version": "1.0.0"
-        })
+                "database": "connected" if db_status else "disconnected",
+                "webhook": "active",
+                "transcription": "ready"
+            }
+        }), 200 if db_status else 503
 
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
+        logger.error(f"Health check failed: {str(e)}")
         return jsonify({
-            "status": "error",
+            "status": "unhealthy",
             "error": str(e)
         }), 500
 
 
 @api_bp.route('/stats')
 def get_stats():
-    """Получение статистики бота"""
+    """Получение статистики сервиса"""
     try:
-        # Здесь можно добавить получение статистики из БД
-        return jsonify({
-            "total_users": 0,
-            "total_transcriptions": 0,
-            "daily_active_users": 0
-        })
+        message_handler = current_app.config.get('message_handler')
+        if not message_handler or not message_handler.db:
+            return jsonify({"error": "Service not initialized"}), 503
+
+        stats = {
+            "total_users": message_handler.db.users.count_documents({}),
+            "total_transcriptions": message_handler.db.transcriptions.count_documents({}),
+            "active_today": message_handler.db.get_active_users_today()
+        }
+
+        return jsonify(stats), 200
 
     except Exception as e:
-        logger.error(f"Failed to get stats: {e}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Failed to get stats: {str(e)}")
+        return jsonify({"error": "Failed to retrieve statistics"}), 500

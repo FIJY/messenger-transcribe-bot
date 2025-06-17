@@ -3,59 +3,95 @@ FREE_DAILY_LIMIT = 10
 MAX_AUDIO_DURATION_FREE = 300  # 5 минут в секундах для бесплатных
 MAX_AUDIO_DURATION_PREMIUM = 3600  # 60 минут в секундах для премиум
 
+# Размер файла
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+
 # Типы подписок
 SUBSCRIPTION_TYPES = {
     'free': {
         'name': 'Free',
         'daily_limit': FREE_DAILY_LIMIT,
         'max_duration': MAX_AUDIO_DURATION_FREE,
-        'price': 0
+        'features': [
+            'До 10 транскрипций в день',
+            'Файлы до 5 минут',
+            'Автоопределение языка',
+            'Базовая поддержка'
+        ]
     },
     'premium': {
         'name': 'Premium',
-        'daily_limit': None,  # Безлимитно
+        'daily_limit': None,  # Безлимит
         'max_duration': MAX_AUDIO_DURATION_PREMIUM,
+        'features': [
+            'Безлимитные транскрипции',
+            'Файлы до 60 минут',
+            'Приоритетная обработка',
+            'История транскрипций',
+            'API доступ'
+        ],
         'price': 4.99
     }
 }
 
-# Поддерживаемые форматы медиа
-SUPPORTED_MEDIA_FORMATS = [
-    'audio/mpeg',
-    'audio/mp3',
-    'audio/wav',
-    'audio/ogg',
-    'audio/m4a',
-    'audio/aac',
-    'video/mp4',
-    'video/mpeg',
-    'video/quicktime',
-    'video/x-msvideo'  # .avi
-]
-
-# Сообщения для разных языков
-MESSAGES = {
-    'welcome': {
-        'en': "👋 Welcome to Audio Transcribe Bot!\n\n🎤 I can convert your voice messages and videos to text in any language.\n\n📝 Just send me an audio or video message!",
-        'ru': "👋 Добро пожаловать в Audio Transcribe Bot!\n\n🎤 Я могу превратить ваши голосовые сообщения и видео в текст на любом языке.\n\n📝 Просто отправьте мне аудио или видео!",
-        'km': "👋 ស្វាគមន៍មកកាន់ Audio Transcribe Bot!\n\n🎤 ខ្ញុំអាចបំលែងសារជាសំឡេងនិងវីដេអូរបស់អ្នកទៅជាអត្ថបទ។\n\n📝 គ្រាន់តែផ្ញើសារជាសំឡេងឬវីដេអូមកខ្ញុំ!"
-    },
-    'processing': {
-        'en': "🎧 Processing your media... Please wait.",
-        'ru': "🎧 Обрабатываю ваш файл... Пожалуйста, подождите.",
-        'km': "🎧 កំពុងដំណើរការឯកសាររបស់អ្នក... សូមរង់ចាំ។"
-    },
-    'error': {
-        'en': "❌ Error processing media. Please try again.",
-        'ru': "❌ Ошибка при обработке файла. Попробуйте еще раз.",
-        'km': "❌ មានបញ្ហាក្នុងការដំណើរការ។ សូមព្យាយាមម្តងទៀត។"
-    }
+# Поддерживаемые языки
+SUPPORTED_LANGUAGES = {
+    'af': 'Afrikaans',
+    'ar': 'العربية',
+    'hy': 'Հայերեն',
+    'az': 'Azərbaycan',
+    'be': 'Беларуская',
+    'bs': 'Bosanski',
+    'bg': 'Български',
+    'ca': 'Català',
+    'zh': '中文',
+    'hr': 'Hrvatski',
+    'cs': 'Čeština',
+    'da': 'Dansk',
+    'nl': 'Nederlands',
+    'en': 'English',
+    'et': 'Eesti',
+    'fi': 'Suomi',
+    'fr': 'Français',
+    'gl': 'Galego',
+    'de': 'Deutsch',
+    'el': 'Ελληνικά',
+    'he': 'עברית',
+    'hi': 'हिन्दी',
+    'hu': 'Magyar',
+    'is': 'Íslenska',
+    'id': 'Indonesia',
+    'it': 'Italiano',
+    'ja': '日本語',
+    'kn': 'ಕನ್ನಡ',
+    'kk': 'Қазақ',
+    'km': 'ខ្មែរ',
+    'ko': '한국어',
+    'lv': 'Latviešu',
+    'lt': 'Lietuvių',
+    'mk': 'Македонски',
+    'ms': 'Melayu',
+    'mr': 'मराठी',
+    'mi': 'Māori',
+    'ne': 'नेपाली',
+    'no': 'Norsk',
+    'fa': 'فارسی',
+    'pl': 'Polski',
+    'pt': 'Português',
+    'ro': 'Română',
+    'ru': 'Русский',
+    'sr': 'Српски',
+    'sk': 'Slovenčina',
+    'sl': 'Slovenščina',
+    'es': 'Español',
+    'sw': 'Kiswahili',
+    'sv': 'Svenska',
+    'tl': 'Tagalog',
+    'ta': 'தமிழ்',
+    'th': 'ไทย',
+    'tr': 'Türkçe',
+    'uk': 'Українська',
+    'ur': 'اردو',
+    'vi': 'Tiếng Việt',
+    'cy': 'Cymraeg'
 }
-
-# API версии и endpoints
-API_VERSION = "v1.0.0"
-FACEBOOK_GRAPH_API_VERSION = "v18.0"
-
-# Размеры файлов
-MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB для OpenAI API
-MAX_FREE_FILE_SIZE = 25 * 1024 * 1024  # 25 MB одинаково для всех
