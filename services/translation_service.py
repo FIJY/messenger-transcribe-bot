@@ -1,126 +1,238 @@
-import os
-import logging
 import openai
-from .audio_processor import AudioProcessor
+import logging
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
 class TranslationService:
-    """Сервис для перевода аудио/видео на английский"""
+    def __init__(self, api_key: str):
+        self.client = openai.OpenAI(api_key=api_key)
 
-    def __init__(self):
-        self.openai_api_key = os.getenv('OPENAI_API_KEY')
-        self.audio_processor = AudioProcessor()
+        # Маппинг языков для лучшего качества перевода
+        self.language_names = {
+            'km': 'Khmer (Cambodian)',
+            'th': 'Thai',
+            'vi': 'Vietnamese',
+            'zh': 'Chinese',
+            'ja': 'Japanese',
+            'ko': 'Korean',
+            'en': 'English',
+            'ru': 'Russian',
+            'fr': 'French',
+            'es': 'Spanish',
+            'de': 'German',
+            'ar': 'Arabic',
+            'he': 'Hebrew',
+            'it': 'Italian',
+            'pt': 'Portuguese',
+            'nl': 'Dutch',
+            'pl': 'Polish',
+            'tr': 'Turkish',
+            'sv': 'Swedish',
+            'no': 'Norwegian',
+            'da': 'Danish',
+            'fi': 'Finnish',
+            'cs': 'Czech',
+            'sk': 'Slovak',
+            'hu': 'Hungarian',
+            'ro': 'Romanian',
+            'bg': 'Bulgarian',
+            'hr': 'Croatian',
+            'sr': 'Serbian',
+            'sl': 'Slovenian',
+            'et': 'Estonian',
+            'lv': 'Latvian',
+            'lt': 'Lithuanian',
+            'uk': 'Ukrainian',
+            'be': 'Belarusian',
+            'mk': 'Macedonian',
+            'mt': 'Maltese',
+            'is': 'Icelandic',
+            'ga': 'Irish',
+            'cy': 'Welsh',
+            'eu': 'Basque',
+            'ca': 'Catalan',
+            'gl': 'Galician',
+            'af': 'Afrikaans',
+            'sw': 'Swahili',
+            'am': 'Amharic',
+            'hi': 'Hindi',
+            'bn': 'Bengali',
+            'ur': 'Urdu',
+            'pa': 'Punjabi',
+            'gu': 'Gujarati',
+            'or': 'Odia',
+            'ta': 'Tamil',
+            'te': 'Telugu',
+            'kn': 'Kannada',
+            'ml': 'Malayalam',
+            'si': 'Sinhala',
+            'my': 'Myanmar (Burmese)',
+            'lo': 'Lao',
+            'ka': 'Georgian',
+            'hy': 'Armenian',
+            'az': 'Azerbaijani',
+            'kk': 'Kazakh',
+            'ky': 'Kyrgyz',
+            'tg': 'Tajik',
+            'uz': 'Uzbek',
+            'mn': 'Mongolian',
+            'ne': 'Nepali',
+            'ms': 'Malay',
+            'id': 'Indonesian',
+            'tl': 'Filipino',
+            'haw': 'Hawaiian',
+            'mi': 'Maori',
+            'yi': 'Yiddish',
+            'la': 'Latin',
+            'eo': 'Esperanto'
+        }
 
-        if self.openai_api_key:
-            openai.api_key = self.openai_api_key
-            logger.info("Translation service initialized with OpenAI API")
-        else:
-            logger.warning("OPENAI_API_KEY not found, translation will not work")
-
-    def translate_from_url(self, media_url, media_type='audio', user_subscription='free'):
+    def translate_text(self, text: str, source_language: str, target_language: str) -> Optional[str]:
         """
-        Перевод медиа файла по URL на английский
+        Переводит текст с одного языка на другой используя OpenAI API
 
         Args:
-            media_url: URL медиа файла
-            media_type: Тип медиа ('audio' или 'video')
-            user_subscription: Тип подписки пользователя
+            text: текст для перевода
+            source_language: исходный язык (код ISO 639-1)
+            target_language: целевой язык (код ISO 639-1)
 
         Returns:
-            dict: Результат перевода
+            Переведенный текст или None при ошибке
         """
-        try:
-            # 1. Скачиваем файл
-            media_data = self.audio_processor.download_media(media_url)
-            if not media_data:
-                return {
-                    'success': False,
-                    'error': 'Failed to download media file'
-                }
+        if not text or not text.strip():
+            logger.warning("Пустой текст для перевода")
+            return None
 
-            # 2. Валидируем файл
-            validation = self.audio_processor.validate_media(
-                media_data, media_type, user_subscription
+        if source_language == target_language:
+            logger.info("Исходный и целевой языки одинаковые, возвращаем оригинальный текст")
+            return text
+
+        try:
+            # Получаем названия языков
+            source_name = self.language_names.get(source_language, source_language)
+            target_name = self.language_names.get(target_language, target_language)
+
+            # Создаем промпт для перевода
+            system_prompt = f"""You are a professional translator. Translate the given text from {source_name} to {target_name}.
+
+Rules:
+1. Provide only the translation, no explanations
+2. Maintain the original meaning and tone
+3. Preserve formatting (line breaks, punctuation)
+4. If the text contains names, places, or technical terms, keep them as appropriate
+5. For languages with different scripts, use the correct script for the target language"""
+
+            user_prompt = f"Translate this text from {source_name} to {target_name}:\n\n{text}"
+
+            # Выполняем запрос к OpenAI
+            response = self.client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,  # Низкая температура для более точных переводов
+                max_tokens=2000
             )
 
-            if not validation['is_valid']:
-                return {
-                    'success': False,
-                    'error': validation['error']
-                }
+            translation = response.choices[0].message.content.strip()
 
-            # 3. Переводим
-            return self.translate_from_data(media_data, media_type, user_subscription)
+            if not translation:
+                logger.error("Получен пустой перевод от OpenAI")
+                return None
 
+            logger.info(f"Успешный перевод с {source_language} на {target_language}")
+            return translation
+
+        except openai.OpenAIError as e:
+            logger.error(f"Ошибка OpenAI API при переводе: {e}")
+            return None
         except Exception as e:
-            logger.error(f"Translation error: {str(e)}")
-            return {
-                'success': False,
-                'error': f"Translation failed: {str(e)}"
-            }
+            logger.error(f"Неожиданная ошибка при переводе: {e}")
+            return None
 
-    def translate_from_data(self, media_data, media_type='audio', user_subscription='free'):
+    def detect_language(self, text: str) -> Optional[str]:
         """
-        Перевод из данных файла
+        Определяет язык текста используя OpenAI API
 
         Args:
-            media_data: Байты медиа файла
-            media_type: Тип медиа
-            user_subscription: Тип подписки
+            text: текст для анализа
 
         Returns:
-            dict: Результат перевода
+            Код языка ISO 639-1 или None при ошибке
         """
-        if not self.openai_api_key:
-            return {
-                'success': False,
-                'error': 'Translation service not configured'
-            }
-
-        temp_file_path = None
+        if not text or not text.strip():
+            return None
 
         try:
-            # 1. Создаем временный файл
-            extension = 'mp4' if media_type == 'video' else 'mp3'
-            temp_file_path = self.audio_processor.save_temp_file(media_data, extension)
+            prompt = f"""Identify the language of the following text and respond with only the ISO 639-1 language code (2 letters, lowercase).
 
-            if not temp_file_path:
-                return {
-                    'success': False,
-                    'error': 'Failed to create temporary file'
-                }
+Text: {text[:500]}"""  # Ограничиваем длину для экономии токенов
 
-            # 2. Переводим через OpenAI
-            logger.info("Starting OpenAI translation")
+            response = self.client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=10
+            )
 
-            with open(temp_file_path, 'rb') as audio_file:
-                response = openai.Audio.translate(
-                    model="whisper-1",
-                    file=audio_file,
-                    response_format="verbose_json"
-                )
+            language_code = response.choices[0].message.content.strip().lower()
 
-            original_language = response.get('language', 'unknown')
-            logger.info(f"Translation completed. Original language: {original_language}")
+            # Проверяем что это валидный код языка
+            if len(language_code) == 2 and language_code.isalpha():
+                return language_code
 
-            return {
-                'success': True,
-                'text': response['text'],
-                'original_language': original_language,
-                'target_language': 'en',
-                'duration': response.get('duration')
-            }
+            logger.warning(f"Невалидный код языка от OpenAI: {language_code}")
+            return None
 
         except Exception as e:
-            logger.error(f"Translation error: {str(e)}")
-            return {
-                'success': False,
-                'error': f"OpenAI API error: {str(e)}"
-            }
+            logger.error(f"Ошибка при определении языка: {e}")
+            return None
 
-        finally:
-            # Очищаем временный файл
-            if temp_file_path:
-                self.audio_processor.cleanup_temp_file(temp_file_path)
+    def get_supported_languages(self) -> list:
+        """
+        Возвращает список поддерживаемых языков
+
+        Returns:
+            Список кодов языков ISO 639-1
+        """
+        return list(self.language_names.keys())
+
+    def get_language_name(self, language_code: str) -> str:
+        """
+        Получает полное название языка по коду
+
+        Args:
+            language_code: код языка ISO 639-1
+
+        Returns:
+            Полное название языка
+        """
+        return self.language_names.get(language_code, language_code.upper())
+
+    @staticmethod
+    def is_translation_needed(source_lang: str, target_lang: str, text: str) -> bool:
+        """
+        Определяет, нужен ли перевод
+
+        Args:
+            source_lang: исходный язык
+            target_lang: целевой язык
+            text: текст для анализа
+
+        Returns:
+            True если перевод нужен
+        """
+        if source_lang == target_lang:
+            return False
+
+        if not text or len(text.strip()) < 3:
+            return False
+
+        # Не переводим если текст состоит только из чисел/символов
+        if not any(c.isalpha() for c in text):
+            return False
+
+        return True

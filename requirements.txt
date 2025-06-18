@@ -1,16 +1,6 @@
-flask==2.3.2
-requests==2.31.0
-pymongo==4.4.1
-python-dotenv==1.0.0
-gunicorn==21.2.0
-openai==0.28.1
-
-# Временно отключены для деплоя (включить позже):
-# openai-whisper==20231117
-# pydub==0.25.1
-# ffmpeg-python==0.2.0
-
-# Дополнительные зависимости для масштабирования:
-# stripe==7.0.0  # Для платежей
-# celery==5.3.4  # Для фоновых задач
-# redis==5.0.1   # Для очередей задач
+Flask==3.0.3
+requests==2.32.3
+pymongo==4.10.1
+openai==1.54.4
+gunicorn==23.0.0
+python-dotenv==1.0.1
