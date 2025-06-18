@@ -1,382 +1,482 @@
 import os
 import logging
 from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
 from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+from pymongo.errors import PyMongoError
 
 logger = logging.getLogger(__name__)
 
 
 class Database:
     def __init__(self):
-        """Инициализация подключения к MongoDB"""
+        self.mongodb_uri = os.getenv('MONGODB_URI')
+        if not self.mongodb_uri:
+            raise ValueError("MONGODB_URI environment variable is required")
+
+        self.client = None
+        self.db = None
+        self.connect()
+
+    def connect(self):
+        """Подключение к MongoDB"""
         try:
-            mongodb_uri = os.getenv('MONGODB_URI')
-            if not mongodb_uri:
-                raise ValueError("MONGODB_URI environment variable is not set")
+            self.client = MongoClient(self.mongodb_uri)
+            self.db = self.client.messenger_transcribe_bot
 
-            self.client = MongoClient(
-                mongodb_uri,
-                serverSelectionTimeoutMS=5000,  # 5 second timeout
-                connectTimeoutMS=5000,
-                maxPoolSize=10
-            )
-
-            # Тест подключения
+            # Проверяем подключение
             self.client.admin.command('ping')
-            logger.info("Database connected successfully")
+            logger.info("Successfully connected to MongoDB")
 
-            self.db = self.client.transcribe_bot
-            self.users = self.db.users
-            self.transcriptions = self.db.transcriptions
-            self.payments = self.db.payments
-
-            # Создание индексов
+            # Создаем индексы
             self._create_indexes()
 
-        except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-            logger.error(f"Failed to connect to database: {e}")
-            raise
         except Exception as e:
-            logger.error(f"Database initialization error: {e}")
+            logger.error(f"Failed to connect to MongoDB: {e}")
             raise
 
     def _create_indexes(self):
-        """Создание индексов для оптимизации запросов"""
+        """Создает необходимые индексы"""
         try:
             # Индекс для пользователей
-            self.users.create_index("user_id", unique=True)
+            self.db.users.create_index("user_id", unique=True)
+            self.db.users.create_index("created_at")
 
             # Индексы для транскрипций
-            self.transcriptions.create_index([("user_id", 1), ("created_at", -1)])
-            self.transcriptions.create_index("created_at")
-
-            # Индексы для платежей
-            self.payments.create_index("user_id")
-            self.payments.create_index("transaction_id", unique=True)
+            self.db.transcriptions.create_index([("user_id", 1), ("created_at", -1)])
+            self.db.transcriptions.create_index("created_at")
 
             logger.info("Database indexes created successfully")
-
         except Exception as e:
             logger.warning(f"Failed to create indexes: {e}")
 
-    def get_or_create_user(self, user_id):
+    def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         """
-        Получение или создание пользователя
+        Получает пользователя по ID
 
         Args:
-            user_id: ID пользователя из Messenger
+            user_id: Facebook user ID
 
         Returns:
-            dict: Документ пользователя
+            Данные пользователя или None если не найден
         """
         try:
-            user = self.users.find_one({"user_id": user_id})
-
-            if not user:
-                user = {
-                    "user_id": user_id,
-                    "created_at": datetime.utcnow(),
-                    "subscription_type": "free",
-                    "subscription_expires": None,
-                    "total_transcriptions": 0,
-                    "last_activity": datetime.utcnow()
-                }
-                self.users.insert_one(user)
-                logger.info(f"Created new user: {user_id}")
-            else:
-                # Обновляем последнюю активность
-                self.users.update_one(
+            user = self.db.users.find_one({"user_id": user_id})
+            if user:
+                # Сбрасываем дневной счетчик если прошел день
+                self._reset_daily_usage_if_needed(user)
+                # Обновляем last_seen
+                self.db.users.update_one(
                     {"user_id": user_id},
-                    {"$set": {"last_activity": datetime.utcnow()}}
+                    {"$set": {"last_seen": datetime.utcnow()}}
                 )
-
             return user
-
-        except Exception as e:
-            logger.error(f"Error in get_or_create_user: {e}")
+        except PyMongoError as e:
+            logger.error(f"Error getting user {user_id}: {e}")
             return None
 
-    def get_daily_usage(self, user_id):
+    def create_user(self, user_id: str, **kwargs) -> Dict[str, Any]:
         """
-        Получение количества транскрипций пользователя за сегодня
+        Создает нового пользователя
 
         Args:
-            user_id: ID пользователя
+            user_id: Facebook user ID
+            **kwargs: дополнительные поля пользователя
 
         Returns:
-            int: Количество транскрипций
+            Данные созданного пользователя
         """
         try:
-            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-
-            count = self.transcriptions.count_documents({
+            now = datetime.utcnow()
+            user_data = {
                 "user_id": user_id,
-                "created_at": {"$gte": today_start}
-            })
-
-            return count
-
-        except Exception as e:
-            logger.error(f"Error in get_daily_usage: {e}")
-            return 0
-
-    def increment_user_usage(self, user_id):
-        """
-        Увеличение счетчика использования
-
-        Args:
-            user_id: ID пользователя
-        """
-        try:
-            self.users.update_one(
-                {"user_id": user_id},
-                {
-                    "$inc": {"total_transcriptions": 1},
-                    "$set": {"last_activity": datetime.utcnow()}
-                }
-            )
-            logger.info(f"Incremented usage for user {user_id}")
-
-        except Exception as e:
-            logger.error(f"Error in increment_user_usage: {e}")
-
-    def update_subscription(self, user_id, subscription_type, expires_at=None):
-        """
-        Обновление подписки пользователя
-
-        Args:
-            user_id: ID пользователя
-            subscription_type: Тип подписки ('free' или 'premium')
-            expires_at: Дата окончания подписки
-        """
-        try:
-            update_data = {
-                "subscription_type": subscription_type,
-                "subscription_updated": datetime.utcnow()
+                "created_at": now,
+                "last_seen": now,
+                "daily_usage": 0,
+                "daily_reset_date": now.date().isoformat(),
+                "total_transcriptions": 0,
+                "is_premium": False,
+                "preferred_language": "en",
+                **kwargs
             }
 
-            if expires_at:
-                update_data["subscription_expires"] = expires_at
+            result = self.db.users.insert_one(user_data)
+            user_data["_id"] = result.inserted_id
 
-            self.users.update_one(
+            logger.info(f"Created new user: {user_id}")
+            return user_data
+
+        except PyMongoError as e:
+            logger.error(f"Error creating user {user_id}: {e}")
+            raise
+
+    def update_user(self, user_id: str, update_data: Dict[str, Any]) -> bool:
+        """
+        Обновляет данные пользователя
+
+        Args:
+            user_id: Facebook user ID
+            update_data: данные для обновления
+
+        Returns:
+            True если обновление прошло успешно
+        """
+        try:
+            update_data["last_seen"] = datetime.utcnow()
+
+            result = self.db.users.update_one(
                 {"user_id": user_id},
                 {"$set": update_data}
             )
 
-            logger.info(f"Updated subscription for user {user_id} to {subscription_type}")
+            return result.modified_count > 0
 
-        except Exception as e:
-            logger.error(f"Error in update_subscription: {e}")
+        except PyMongoError as e:
+            logger.error(f"Error updating user {user_id}: {e}")
+            return False
 
-    def record_payment(self, user_id, transaction_id, amount, currency="USD"):
+    def increment_usage(self, user_id: str) -> bool:
         """
-        Запись платежа
+        Увеличивает счетчик использования для пользователя
 
         Args:
-            user_id: ID пользователя
-            transaction_id: ID транзакции
-            amount: Сумма платежа
-            currency: Валюта
-        """
-        try:
-            payment = {
-                "user_id": user_id,
-                "transaction_id": transaction_id,
-                "amount": amount,
-                "currency": currency,
-                "created_at": datetime.utcnow(),
-                "status": "completed"
-            }
-
-            self.payments.insert_one(payment)
-            logger.info(f"Recorded payment for user {user_id}: {amount} {currency}")
-
-        except Exception as e:
-            logger.error(f"Error in record_payment: {e}")
-
-    def get_user_stats(self, user_id):
-        """
-        Получение статистики пользователя
-
-        Args:
-            user_id: ID пользователя
+            user_id: Facebook user ID
 
         Returns:
-            dict: Статистика использования
+            True если обновление прошло успешно
         """
         try:
-            user = self.get_or_create_user(user_id)
-            daily_usage = self.get_daily_usage(user_id)
+            today = datetime.utcnow().date().isoformat()
+
+            result = self.db.users.update_one(
+                {"user_id": user_id},
+                {
+                    "$inc": {
+                        "daily_usage": 1,
+                        "total_transcriptions": 1
+                    },
+                    "$set": {
+                        "daily_reset_date": today,
+                        "last_seen": datetime.utcnow()
+                    }
+                }
+            )
+
+            logger.info(f"Incremented usage for user {user_id}")
+            return result.modified_count > 0
+
+        except PyMongoError as e:
+            logger.error(f"Error incrementing usage for user {user_id}: {e}")
+            return False
+
+    def save_transcription(self, user_id: str, transcription: str, detected_language: str,
+                           file_type: str = "unknown", translation: Optional[str] = None) -> bool:
+        """
+        Сохраняет результат транскрипции
+
+        Args:
+            user_id: Facebook user ID
+            transcription: текст транскрипции
+            detected_language: определенный язык
+            file_type: тип файла (audio/video)
+            translation: перевод (если есть)
+
+        Returns:
+            True если сохранение прошло успешно
+        """
+        try:
+            transcription_data = {
+                "user_id": user_id,
+                "transcription": transcription,
+                "detected_language": detected_language,
+                "file_type": file_type,
+                "translation": translation,
+                "created_at": datetime.utcnow(),
+                "character_count": len(transcription)
+            }
+
+            result = self.db.transcriptions.insert_one(transcription_data)
+
+            logger.info(f"Saved transcription for user {user_id}")
+            return result.inserted_id is not None
+
+        except PyMongoError as e:
+            logger.error(f"Error saving transcription for user {user_id}: {e}")
+            return False
+
+    def get_last_transcription(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Получает последнюю транскрипцию пользователя
+
+        Args:
+            user_id: Facebook user ID
+
+        Returns:
+            Данные последней транскрипции или None
+        """
+        try:
+            transcription = self.db.transcriptions.find_one(
+                {"user_id": user_id},
+                sort=[("created_at", -1)]
+            )
+            return transcription
+        except PyMongoError as e:
+            logger.error(f"Error getting last transcription for user {user_id}: {e}")
+            return None
+
+    def get_user_transcriptions(self, user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Получает последние транскрипции пользователя
+
+        Args:
+            user_id: Facebook user ID
+            limit: максимальное количество записей
+
+        Returns:
+            Список транскрипций
+        """
+        try:
+            transcriptions = list(
+                self.db.transcriptions.find(
+                    {"user_id": user_id}
+                ).sort("created_at", -1).limit(limit)
+            )
+            return transcriptions
+        except PyMongoError as e:
+            logger.error(f"Error getting transcriptions for user {user_id}: {e}")
+            return []
+
+    def get_usage_stats(self, user_id: str) -> Dict[str, Any]:
+        """
+        Получает статистику использования пользователя
+
+        Args:
+            user_id: Facebook user ID
+
+        Returns:
+            Словарь со статистикой
+        """
+        try:
+            user = self.get_user(user_id)
+            if not user:
+                return {}
+
+            # Статистика по языкам
+            language_stats = list(
+                self.db.transcriptions.aggregate([
+                    {"$match": {"user_id": user_id}},
+                    {"$group": {
+                        "_id": "$detected_language",
+                        "count": {"$sum": 1}
+                    }},
+                    {"$sort": {"count": -1}}
+                ])
+            )
 
             # Статистика за последние 30 дней
             thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-            monthly_usage = self.transcriptions.count_documents({
+            recent_count = self.db.transcriptions.count_documents({
                 "user_id": user_id,
                 "created_at": {"$gte": thirty_days_ago}
             })
 
             return {
+                "daily_usage": user.get("daily_usage", 0),
                 "total_transcriptions": user.get("total_transcriptions", 0),
-                "daily_usage": daily_usage,
-                "monthly_usage": monthly_usage,
-                "subscription_type": user.get("subscription_type", "free"),
-                "member_since": user.get("created_at", datetime.utcnow())
+                "is_premium": user.get("is_premium", False),
+                "language_stats": language_stats,
+                "recent_30_days": recent_count,
+                "created_at": user.get("created_at"),
+                "last_seen": user.get("last_seen")
             }
 
-        except Exception as e:
-            logger.error(f"Error in get_user_stats: {e}")
+        except PyMongoError as e:
+            logger.error(f"Error getting usage stats for user {user_id}: {e}")
             return {}
 
-    def cleanup_old_records(self, days=90):
+    def get_global_stats(self) -> Dict[str, Any]:
         """
-        Очистка старых записей
-
-        Args:
-            days: Количество дней для хранения
-        """
-        try:
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
-
-            # Удаляем старые транскрипции
-            result = self.transcriptions.delete_many({
-                "created_at": {"$lt": cutoff_date}
-            })
-
-            logger.info(f"Deleted {result.deleted_count} old transcriptions")
-
-        except Exception as e:
-            logger.error(f"Error in cleanup_old_records: {e}")
-
-    def get_bot_statistics(self):
-        """
-        Получение общей статистики бота
+        Получает глобальную статистику сервиса
 
         Returns:
-            dict: Общая статистика
+            Словарь с глобальной статистикой
         """
         try:
-            total_users = self.users.count_documents({})
-            total_transcriptions = self.transcriptions.count_documents({})
+            total_users = self.db.users.count_documents({})
+            total_transcriptions = self.db.transcriptions.count_documents({})
 
             # Активные пользователи за последние 7 дней
             week_ago = datetime.utcnow() - timedelta(days=7)
-            active_users = self.users.count_documents({
-                "last_activity": {"$gte": week_ago}
+            active_users = self.db.users.count_documents({
+                "last_seen": {"$gte": week_ago}
             })
 
-            # Премиум пользователи
-            premium_users = self.users.count_documents({
-                "subscription_type": "premium"
-            })
+            # Статистика по языкам
+            language_stats = list(
+                self.db.transcriptions.aggregate([
+                    {"$group": {
+                        "_id": "$detected_language",
+                        "count": {"$sum": 1}
+                    }},
+                    {"$sort": {"count": -1}},
+                    {"$limit": 10}
+                ])
+            )
 
             return {
                 "total_users": total_users,
-                "active_users_week": active_users,
-                "premium_users": premium_users,
-                "total_transcriptions": total_transcriptions
+                "total_transcriptions": total_transcriptions,
+                "active_users_7_days": active_users,
+                "top_languages": language_stats
             }
 
-        except Exception as e:
-            logger.error(f"Error in get_bot_statistics: {e}")
+        except PyMongoError as e:
+            logger.error(f"Error getting global stats: {e}")
             return {}
 
-    def save_transcription(self, user_id, media_type, media_url, transcription,
-                           translation=None, language=None, duration_seconds=0):
+    def _reset_daily_usage_if_needed(self, user: Dict[str, Any]) -> bool:
         """
-        Сохранение транскрипции в базу данных
+        Сбрасывает дневной счетчик если прошел день
 
         Args:
-            user_id: ID пользователя
-            media_type: Тип медиа ('audio' или 'video')
-            media_url: URL исходного файла
-            transcription: Текст транскрипции
-            translation: Текст перевода (опционально)
-            language: Определенный язык
-            duration_seconds: Длительность в секундах
+            user: данные пользователя
 
         Returns:
-            str: ID созданной записи
+            True если счетчик был сброшен
         """
         try:
-            transcription_doc = {
-                "user_id": user_id,
-                "media_type": media_type,
-                "media_url": media_url,
-                "transcription": transcription,
-                "translation": translation,
-                "language": language,
-                "duration_seconds": duration_seconds,
-                "created_at": datetime.utcnow()
-            }
+            today = datetime.utcnow().date().isoformat()
+            last_reset = user.get("daily_reset_date")
 
-            result = self.transcriptions.insert_one(transcription_doc)
-            logger.info(f"Saved transcription for user {user_id}")
+            if last_reset != today:
+                self.db.users.update_one(
+                    {"user_id": user["user_id"]},
+                    {
+                        "$set": {
+                            "daily_usage": 0,
+                            "daily_reset_date": today
+                        }
+                    }
+                )
+                logger.info(f"Reset daily usage for user {user['user_id']}")
+                return True
 
-            return str(result.inserted_id)
+            return False
 
         except Exception as e:
-            logger.error(f"Failed to save transcription: {e}")
-            return None
+            logger.error(f"Error resetting daily usage: {e}")
+            return False
 
-    def update_transcription_translation(self, transcription_id, translation):
+    def set_premium_status(self, user_id: str, is_premium: bool) -> bool:
         """
-        Обновление перевода для существующей транскрипции
+        Устанавливает премиум статус пользователя
 
         Args:
-            transcription_id: ID транскрипции
-            translation: Текст перевода
+            user_id: Facebook user ID
+            is_premium: премиум статус
 
         Returns:
-            bool: Успешность операции
+            True если обновление прошло успешно
         """
         try:
-            from bson import ObjectId
-
-            result = self.transcriptions.update_one(
-                {"_id": ObjectId(transcription_id)},
-                {"$set": {
-                    "translation": translation,
-                    "translated_at": datetime.utcnow()
-                }}
+            result = self.db.users.update_one(
+                {"user_id": user_id},
+                {
+                    "$set": {
+                        "is_premium": is_premium,
+                        "premium_updated_at": datetime.utcnow()
+                    }
+                }
             )
 
+            logger.info(f"Updated premium status for user {user_id}: {is_premium}")
             return result.modified_count > 0
 
-        except Exception as e:
-            logger.error(f"Failed to update translation: {e}")
+        except PyMongoError as e:
+            logger.error(f"Error updating premium status for user {user_id}: {e}")
             return False
 
-    def get_active_users_today(self):
+    def cleanup_old_transcriptions(self, days_old: int = 90) -> int:
         """
-        Получение количества активных пользователей за сегодня
+        Удаляет старые транскрипции
+
+        Args:
+            days_old: количество дней после которых удалять записи
 
         Returns:
-            int: Количество активных пользователей
+            Количество удаленных записей
         """
         try:
-            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            cutoff_date = datetime.utcnow() - timedelta(days=days_old)
 
-            active_users = self.transcriptions.distinct(
-                "user_id",
-                {"created_at": {"$gte": today_start}}
-            )
+            result = self.db.transcriptions.delete_many({
+                "created_at": {"$lt": cutoff_date}
+            })
 
-            return len(active_users)
+            deleted_count = result.deleted_count
+            if deleted_count > 0:
+                logger.info(f"Cleaned up {deleted_count} old transcriptions")
 
-        except Exception as e:
-            logger.error(f"Failed to get active users: {e}")
+            return deleted_count
+
+        except PyMongoError as e:
+            logger.error(f"Error cleaning up old transcriptions: {e}")
             return 0
 
-    def check_connection(self):
+    def get_daily_usage_report(self, date: Optional[datetime] = None) -> Dict[str, Any]:
         """
-        Проверка соединения с базой данных
+        Получает отчет об использовании за день
+
+        Args:
+            date: дата для отчета (по умолчанию сегодня)
 
         Returns:
-            bool: True если соединение активно
+            Отчет за день
         """
         try:
-            self.client.admin.command('ping')
-            return True
-        except Exception:
-            return False
+            if date is None:
+                date = datetime.utcnow()
+
+            start_of_day = datetime.combine(date.date(), datetime.min.time())
+            end_of_day = start_of_day + timedelta(days=1)
+
+            # Транскрипции за день
+            daily_transcriptions = self.db.transcriptions.count_documents({
+                "created_at": {
+                    "$gte": start_of_day,
+                    "$lt": end_of_day
+                }
+            })
+
+            # Новые пользователи за день
+            new_users = self.db.users.count_documents({
+                "created_at": {
+                    "$gte": start_of_day,
+                    "$lt": end_of_day
+                }
+            })
+
+            # Активные пользователи за день
+            active_users = self.db.users.count_documents({
+                "last_seen": {
+                    "$gte": start_of_day,
+                    "$lt": end_of_day
+                }
+            })
+
+            return {
+                "date": date.date().isoformat(),
+                "daily_transcriptions": daily_transcriptions,
+                "new_users": new_users,
+                "active_users": active_users
+            }
+
+        except PyMongoError as e:
+            logger.error(f"Error getting daily usage report: {e}")
+            return {}
+
+    def close(self):
+        """Закрывает соединение с базой данных"""
+        if self.client:
+            self.client.close()
+            logger.info("MongoDB connection closed")
