@@ -1,7 +1,6 @@
-import openai
-import os
 import logging
-from typing import Optional
+from deep_translator import GoogleTranslator
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -9,160 +8,246 @@ logger = logging.getLogger(__name__)
 class TranslationService:
     def __init__(self):
         """Инициализация сервиса перевода"""
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is required")
+        # deep-translator не требует специальной инициализации
+        self.supported_languages = self._get_supported_languages()
+        logger.info("TranslationService успешно инициализирован")
 
-        self.client = openai.OpenAI(api_key=api_key)
-        logger.info("TranslationService initialized with OpenAI API")
-
-        # Маппинг языков для лучшего качества перевода
-        self.language_names = {
-            'km': 'Khmer (Cambodian)',
-            'th': 'Thai',
-            'vi': 'Vietnamese',
-            'zh': 'Chinese',
-            'ja': 'Japanese',
-            'ko': 'Korean',
-            'en': 'English',
-            'ru': 'Russian',
-            'fr': 'French',
-            'es': 'Spanish',
-            'de': 'German',
-            'ar': 'Arabic',
-            'he': 'Hebrew',
-            'it': 'Italian',
-            'pt': 'Portuguese',
-            'nl': 'Dutch',
-            'pl': 'Polish',
-            'tr': 'Turkish',
-            'sv': 'Swedish',
-            'no': 'Norwegian',
-            'da': 'Danish',
-            'fi': 'Finnish',
-            'cs': 'Czech',
-            'sk': 'Slovak',
-            'hu': 'Hungarian',
-            'ro': 'Romanian',
-            'bg': 'Bulgarian',
-            'hr': 'Croatian',
-            'sr': 'Serbian',
-            'sl': 'Slovenian',
-            'et': 'Estonian',
-            'lv': 'Latvian',
-            'lt': 'Lithuanian',
-            'uk': 'Ukrainian',
-            'be': 'Belarusian',
-            'mk': 'Macedonian',
-            'mt': 'Maltese',
-            'is': 'Icelandic',
-            'ga': 'Irish',
-            'cy': 'Welsh',
-            'eu': 'Basque',
-            'ca': 'Catalan',
-            'gl': 'Galician',
-            'af': 'Afrikaans',
-            'sw': 'Swahili',
-            'am': 'Amharic',
-            'hi': 'Hindi',
-            'bn': 'Bengali',
-            'ur': 'Urdu',
-            'pa': 'Punjabi',
-            'gu': 'Gujarati',
-            'or': 'Odia',
-            'ta': 'Tamil',
-            'te': 'Telugu',
-            'kn': 'Kannada',
-            'ml': 'Malayalam',
-            'si': 'Sinhala',
-            'my': 'Myanmar (Burmese)',
-            'lo': 'Lao',
-            'ka': 'Georgian',
-            'hy': 'Armenian',
-            'az': 'Azerbaijani',
-            'kk': 'Kazakh',
-            'ky': 'Kyrgyz',
-            'tg': 'Tajik',
-            'uz': 'Uzbek',
-            'mn': 'Mongolian',
-            'ne': 'Nepali',
-            'ms': 'Malay',
-            'id': 'Indonesian',
-            'tl': 'Filipino'
-        }
-
-    def translate_text(self, text: str, source_language: str, target_language: str) -> Optional[str]:
+    async def translate_text(self, text: str, target_language: str, source_language: Optional[str] = None) -> Dict[
+        str, Any]:
         """
-        Переводит текст с одного языка на другой используя OpenAI API
+        Перевод текста на указанный язык
 
         Args:
-            text: текст для перевода
-            source_language: исходный язык (код ISO 639-1)
-            target_language: целевой язык (код ISO 639-1)
+            text: Текст для перевода
+            target_language: Целевой язык (код ISO 639-1)
+            source_language: Исходный язык (опционально, автоопределение)
 
         Returns:
-            Переведенный текст или None при ошибке
+            Dict с результатом перевода
         """
-        if not text or not text.strip():
-            logger.warning("Пустой текст для перевода")
-            return None
+        try:
+            if not text or not text.strip():
+                return {
+                    "success": False,
+                    "error": "Пустой текст для перевода"
+                }
 
-        if source_language == target_language:
-            logger.info("Исходный и целевой языки одинаковые, возвращаем оригинальный текст")
+            # Проверяем поддержку целевого языка
+            if target_language not in self.supported_languages:
+                return {
+                    "success": False,
+                    "error": f"Язык '{target_language}' не поддерживается"
+                }
+
+            # Если исходный язык не указан, используем автоопределение
+            if source_language:
+                if source_language not in self.supported_languages:
+                    source_language = 'auto'
+            else:
+                source_language = 'auto'
+
+            logger.info(f"Переводим с '{source_language}' на '{target_language}'")
+
+            # Выполняем перевод
+            translator = GoogleTranslator(source=source_language, target=target_language)
+            translated_text = translator.translate(text)
+
+            if not translated_text:
+                return {
+                    "success": False,
+                    "error": "Не удалось выполнить перевод"
+                }
+
+            logger.info("Перевод успешно выполнен")
+
+            return {
+                "success": True,
+                "original_text": text,
+                "translated_text": translated_text,
+                "source_language": source_language,
+                "target_language": target_language
+            }
+
+        except Exception as e:
+            logger.error(f"Ошибка при переводе: {e}")
+            return {
+                "success": False,
+                "error": f"Ошибка перевода: {str(e)}",
+                "original_text": text
+            }
+
+    def translate_sync(self, text: str, target_language: str, source_language: Optional[str] = None) -> str:
+        """
+        Синхронный перевод текста (для обратной совместимости)
+
+        Args:
+            text: Текст для перевода
+            target_language: Целевой язык
+            source_language: Исходный язык (опционально)
+
+        Returns:
+            Переведенный текст или исходный текст при ошибке
+        """
+        try:
+            translator = GoogleTranslator(
+                source=source_language or 'auto',
+                target=target_language
+            )
+            result = translator.translate(text)
+            return result if result else text
+
+        except Exception as e:
+            logger.error(f"Ошибка синхронного перевода: {e}")
             return text
 
-        try:
-            # Получаем названия языков
-            source_name = self.language_names.get(source_language, source_language)
-            target_name = self.language_names.get(target_language, target_language)
-
-            # Создаем промпт для перевода
-            system_prompt = f"""You are a professional translator. Translate the given text from {source_name} to {target_name}.
-
-Rules:
-1. Provide only the translation, no explanations
-2. Maintain the original meaning and tone
-3. Preserve formatting (line breaks, punctuation)
-4. If the text contains names, places, or technical terms, keep them as appropriate
-5. For languages with different scripts, use the correct script for the target language"""
-
-            user_prompt = f"Translate this text from {source_name} to {target_name}:\n\n{text}"
-
-            # Выполняем запрос к OpenAI
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,  # Низкая температура для более точных переводов
-                max_tokens=2000
-            )
-
-            translation = response.choices[0].message.content.strip()
-
-            if not translation:
-                logger.error("Получен пустой перевод от OpenAI")
-                return None
-
-            logger.info(f"Успешный перевод с {source_language} на {target_language}")
-            return translation
-
-        except openai.OpenAIError as e:
-            logger.error(f"Ошибка OpenAI API при переводе: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка при переводе: {e}")
-            return None
-
-    def get_language_name(self, language_code: str) -> str:
+    def detect_language(self, text: str) -> Optional[str]:
         """
-        Получает полное название языка по коду
+        Определение языка текста
 
         Args:
-            language_code: код языка ISO 639-1
+            text: Текст для анализа
 
         Returns:
-            Полное название языка
+            Код языка или None при ошибке
         """
-        return self.language_names.get(language_code, language_code.upper())
+        try:
+            # Используем Google Translator для определения языка
+            translator = GoogleTranslator(source='auto', target='en')
+            # Попробуем перевести короткий фрагмент для определения языка
+            test_text = text[:100] if len(text) > 100 else text
+
+            # В deep-translator нет прямого метода определения языка,
+            # но мы можем использовать наш LanguageDetector
+            from services.language_detector import LanguageDetector
+            detector = LanguageDetector()
+            result = detector.analyze_language(test_text)
+
+            return result.get('language', 'en')
+
+        except Exception as e:
+            logger.error(f"Ошибка определения языка: {e}")
+            return None
+
+    def _get_supported_languages(self) -> Dict[str, str]:
+        """Получение списка поддерживаемых языков"""
+        # Основные языки, поддерживаемые Google Translate
+        return {
+            'af': 'Afrikaans',
+            'sq': 'Albanian',
+            'am': 'Amharic',
+            'ar': 'Arabic',
+            'hy': 'Armenian',
+            'az': 'Azerbaijani',
+            'eu': 'Basque',
+            'be': 'Belarusian',
+            'bn': 'Bengali',
+            'bs': 'Bosnian',
+            'bg': 'Bulgarian',
+            'ca': 'Catalan',
+            'ceb': 'Cebuano',
+            'zh': 'Chinese',
+            'zh-cn': 'Chinese (Simplified)',
+            'zh-tw': 'Chinese (Traditional)',
+            'co': 'Corsican',
+            'hr': 'Croatian',
+            'cs': 'Czech',
+            'da': 'Danish',
+            'nl': 'Dutch',
+            'en': 'English',
+            'eo': 'Esperanto',
+            'et': 'Estonian',
+            'tl': 'Filipino',
+            'fi': 'Finnish',
+            'fr': 'French',
+            'fy': 'Frisian',
+            'gl': 'Galician',
+            'ka': 'Georgian',
+            'de': 'German',
+            'el': 'Greek',
+            'gu': 'Gujarati',
+            'ht': 'Haitian Creole',
+            'ha': 'Hausa',
+            'haw': 'Hawaiian',
+            'he': 'Hebrew',
+            'hi': 'Hindi',
+            'hmn': 'Hmong',
+            'hu': 'Hungarian',
+            'is': 'Icelandic',
+            'ig': 'Igbo',
+            'id': 'Indonesian',
+            'ga': 'Irish',
+            'it': 'Italian',
+            'ja': 'Japanese',
+            'jw': 'Javanese',
+            'kn': 'Kannada',
+            'kk': 'Kazakh',
+            'km': 'Khmer',
+            'rw': 'Kinyarwanda',
+            'ko': 'Korean',
+            'ku': 'Kurdish',
+            'ky': 'Kyrgyz',
+            'lo': 'Lao',
+            'la': 'Latin',
+            'lv': 'Latvian',
+            'lt': 'Lithuanian',
+            'lb': 'Luxembourgish',
+            'mk': 'Macedonian',
+            'mg': 'Malagasy',
+            'ms': 'Malay',
+            'ml': 'Malayalam',
+            'mt': 'Maltese',
+            'mi': 'Maori',
+            'mr': 'Marathi',
+            'mn': 'Mongolian',
+            'my': 'Myanmar (Burmese)',
+            'ne': 'Nepali',
+            'no': 'Norwegian',
+            'ny': 'Nyanja (Chichewa)',
+            'or': 'Odia (Oriya)',
+            'ps': 'Pashto',
+            'fa': 'Persian',
+            'pl': 'Polish',
+            'pt': 'Portuguese',
+            'pa': 'Punjabi',
+            'ro': 'Romanian',
+            'ru': 'Russian',
+            'sm': 'Samoan',
+            'gd': 'Scots Gaelic',
+            'sr': 'Serbian',
+            'st': 'Sesotho',
+            'sn': 'Shona',
+            'sd': 'Sindhi',
+            'si': 'Sinhala (Sinhalese)',
+            'sk': 'Slovak',
+            'sl': 'Slovenian',
+            'so': 'Somali',
+            'es': 'Spanish',
+            'su': 'Sundanese',
+            'sw': 'Swahili',
+            'sv': 'Swedish',
+            'tg': 'Tajik',
+            'ta': 'Tamil',
+            'tt': 'Tatar',
+            'te': 'Telugu',
+            'th': 'Thai',
+            'tr': 'Turkish',
+            'tk': 'Turkmen',
+            'uk': 'Ukrainian',
+            'ur': 'Urdu',
+            'ug': 'Uyghur',
+            'uz': 'Uzbek',
+            'vi': 'Vietnamese',
+            'cy': 'Welsh',
+            'xh': 'Xhosa',
+            'yi': 'Yiddish',
+            'yo': 'Yoruba',
+            'zu': 'Zulu'
+        }
+
+    def get_language_name(self, language_code: str) -> str:
+        """Получение названия языка по коду"""
+        return self.supported_languages.get(language_code, f"Unknown ({language_code})")
+
+    def is_language_supported(self, language_code: str) -> bool:
+        """Проверка поддержки языка"""
+        return language_code in self.supported_languages
