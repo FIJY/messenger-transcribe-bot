@@ -1,4 +1,5 @@
 import openai
+import os
 import logging
 from typing import Optional
 
@@ -6,8 +7,14 @@ logger = logging.getLogger(__name__)
 
 
 class TranslationService:
-    def __init__(self, api_key: str):
+    def __init__(self):
+        """Инициализация сервиса перевода"""
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
+
         self.client = openai.OpenAI(api_key=api_key)
+        logger.info("TranslationService initialized with OpenAI API")
 
         # Маппинг языков для лучшего качества перевода
         self.language_names = {
@@ -81,12 +88,7 @@ class TranslationService:
             'ne': 'Nepali',
             'ms': 'Malay',
             'id': 'Indonesian',
-            'tl': 'Filipino',
-            'haw': 'Hawaiian',
-            'mi': 'Maori',
-            'yi': 'Yiddish',
-            'la': 'Latin',
-            'eo': 'Esperanto'
+            'tl': 'Filipino'
         }
 
     def translate_text(self, text: str, source_language: str, target_language: str) -> Optional[str]:
@@ -153,53 +155,6 @@ Rules:
             logger.error(f"Неожиданная ошибка при переводе: {e}")
             return None
 
-    def detect_language(self, text: str) -> Optional[str]:
-        """
-        Определяет язык текста используя OpenAI API
-
-        Args:
-            text: текст для анализа
-
-        Returns:
-            Код языка ISO 639-1 или None при ошибке
-        """
-        if not text or not text.strip():
-            return None
-
-        try:
-            prompt = f"""Identify the language of the following text and respond with only the ISO 639-1 language code (2 letters, lowercase).
-
-Text: {text[:500]}"""  # Ограничиваем длину для экономии токенов
-
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=10
-            )
-
-            language_code = response.choices[0].message.content.strip().lower()
-
-            # Проверяем что это валидный код языка
-            if len(language_code) == 2 and language_code.isalpha():
-                return language_code
-
-            logger.warning(f"Невалидный код языка от OpenAI: {language_code}")
-            return None
-
-        except Exception as e:
-            logger.error(f"Ошибка при определении языка: {e}")
-            return None
-
-    def get_supported_languages(self) -> list:
-        """
-        Возвращает список поддерживаемых языков
-
-        Returns:
-            Список кодов языков ISO 639-1
-        """
-        return list(self.language_names.keys())
-
     def get_language_name(self, language_code: str) -> str:
         """
         Получает полное название языка по коду
@@ -211,28 +166,3 @@ Text: {text[:500]}"""  # Ограничиваем длину для эконом
             Полное название языка
         """
         return self.language_names.get(language_code, language_code.upper())
-
-    @staticmethod
-    def is_translation_needed(source_lang: str, target_lang: str, text: str) -> bool:
-        """
-        Определяет, нужен ли перевод
-
-        Args:
-            source_lang: исходный язык
-            target_lang: целевой язык
-            text: текст для анализа
-
-        Returns:
-            True если перевод нужен
-        """
-        if source_lang == target_lang:
-            return False
-
-        if not text or len(text.strip()) < 3:
-            return False
-
-        # Не переводим если текст состоит только из чисел/символов
-        if not any(c.isalpha() for c in text):
-            return False
-
-        return True

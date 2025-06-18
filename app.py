@@ -36,8 +36,8 @@ def create_app():
         db = Database()
 
         # Основные сервисы
-        transcription_service = TranscriptionService(os.getenv('OPENAI_API_KEY'))
-        translation_service = TranslationService(os.getenv('OPENAI_API_KEY'))
+        transcription_service = TranscriptionService()
+        translation_service = TranslationService()
 
         # Медиа обработчик
         media_handler = MediaHandler(transcription_service, translation_service)
