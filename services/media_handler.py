@@ -117,7 +117,8 @@ class MediaHandler:
                 'translation': None
             }
 
-    def _improve_khmer_transcription(self, transcription: str) -> str:
+    @staticmethod
+    def _improve_khmer_transcription(transcription: str) -> str:
         """
         Улучшает транскрипцию кхмерского языка
         """

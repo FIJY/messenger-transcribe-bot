@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
@@ -68,7 +68,7 @@ class Database:
                 # Обновляем last_seen
                 self.db.users.update_one(
                     {"user_id": user_id},
-                    {"$set": {"last_seen": datetime.utcnow()}}
+                    {"$set": {"last_seen": datetime.now(timezone.utc)}}
                 )
             return user
         except PyMongoError as e:
@@ -87,7 +87,7 @@ class Database:
             Данные созданного пользователя
         """
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             user_data = {
                 "user_id": user_id,
                 "created_at": now,
@@ -122,7 +122,7 @@ class Database:
             True если обновление прошло успешно
         """
         try:
-            update_data["last_seen"] = datetime.utcnow()
+            update_data["last_seen"] = datetime.now(timezone.utc)
 
             result = self.db.users.update_one(
                 {"user_id": user_id},
@@ -146,7 +146,7 @@ class Database:
             True если обновление прошло успешно
         """
         try:
-            today = datetime.utcnow().date().isoformat()
+            today = datetime.now(timezone.utc).date().isoformat()
 
             result = self.db.users.update_one(
                 {"user_id": user_id},
@@ -157,7 +157,7 @@ class Database:
                     },
                     "$set": {
                         "daily_reset_date": today,
-                        "last_seen": datetime.utcnow()
+                        "last_seen": datetime.now(timezone.utc)
                     }
                 }
             )
@@ -191,7 +191,7 @@ class Database:
                 "detected_language": detected_language,
                 "file_type": file_type,
                 "translation": translation,
-                "created_at": datetime.utcnow(),
+                "created_at": datetime.now(timezone.utc),
                 "character_count": len(transcription)
             }
 
@@ -274,7 +274,7 @@ class Database:
             )
 
             # Статистика за последние 30 дней
-            thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+            thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
             recent_count = self.db.transcriptions.count_documents({
                 "user_id": user_id,
                 "created_at": {"$gte": thirty_days_ago}
@@ -306,7 +306,7 @@ class Database:
             total_transcriptions = self.db.transcriptions.count_documents({})
 
             # Активные пользователи за последние 7 дней
-            week_ago = datetime.utcnow() - timedelta(days=7)
+            week_ago = datetime.now(timezone.utc) - timedelta(days=7)
             active_users = self.db.users.count_documents({
                 "last_seen": {"$gte": week_ago}
             })
@@ -345,7 +345,7 @@ class Database:
             True если счетчик был сброшен
         """
         try:
-            today = datetime.utcnow().date().isoformat()
+            today = datetime.now(timezone.utc).date().isoformat()
             last_reset = user.get("daily_reset_date")
 
             if last_reset != today:
@@ -384,7 +384,7 @@ class Database:
                 {
                     "$set": {
                         "is_premium": is_premium,
-                        "premium_updated_at": datetime.utcnow()
+                        "premium_updated_at": datetime.now(timezone.utc)
                     }
                 }
             )
@@ -407,7 +407,7 @@ class Database:
             Количество удаленных записей
         """
         try:
-            cutoff_date = datetime.utcnow() - timedelta(days=days_old)
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_old)
 
             result = self.db.transcriptions.delete_many({
                 "created_at": {"$lt": cutoff_date}
@@ -435,7 +435,7 @@ class Database:
         """
         try:
             if date is None:
-                date = datetime.utcnow()
+                date = datetime.now(timezone.utc)
 
             start_of_day = datetime.combine(date.date(), datetime.min.time())
             end_of_day = start_of_day + timedelta(days=1)

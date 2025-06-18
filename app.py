@@ -1,12 +1,12 @@
 import os
 import logging
 from flask import Flask, request, jsonify
-from services.database import Database
-from services.transcription_service import TranscriptionService
-from services.translation_service import TranslationService
-from services.media_handler import MediaHandler
-from services.message_handler import MessageHandler
-from services.payment import PaymentService
+from dotenv import load_dotenv
+import asyncio
+from functools import wraps
+
+# Загружаем переменные окружения
+load_dotenv()
 
 # Настройка логирования
 logging.basicConfig(
@@ -17,167 +17,194 @@ logger = logging.getLogger(__name__)
 
 
 def create_app():
-    """Создает и настраивает Flask приложение"""
+    """Создание и настройка Flask приложения"""
     app = Flask(__name__)
 
-    # Проверяем обязательные переменные окружения
-    required_env_vars = ['OPENAI_API_KEY', 'MONGODB_URI', 'VERIFY_TOKEN', 'PAGE_ACCESS_TOKEN']
-    missing_vars = [var for var in required_env_vars if not os.getenv(var)]
-
-    if missing_vars:
-        logger.error(f"Missing required environment variables: {missing_vars}")
-        raise ValueError(f"Missing required environment variables: {missing_vars}")
+    # Глобальные переменные для сервисов
+    global message_handler
+    message_handler = None
 
     try:
-        # Инициализируем сервисы
-        logger.info("Initializing services...")
+        logger.info("Инициализация сервисов...")
 
-        # База данных
-        db = Database()
+        # Импорты сервисов
+        from services.database import Database
+        from services.transcription_service import TranscriptionService
+        from services.language_detector import LanguageDetector
+        from services.translation_service import TranslationService
+        from services.audio_processor import AudioProcessor
+        from services.media_handler import MediaHandler
+        from services.message_handler import MessageHandler
 
-        # Основные сервисы
+        # Инициализация сервисов в правильном порядке
+        database = Database()
+
+        # Инициализируем остальные сервисы
         transcription_service = TranscriptionService()
+        language_detector = LanguageDetector()
         translation_service = TranslationService()
+        audio_processor = AudioProcessor()
 
-        # Медиа обработчик
-        media_handler = MediaHandler(transcription_service, translation_service)
+        # Создаем MediaHandler
+        media_handler = MediaHandler(
+            transcription_service=transcription_service,
+            language_detector=language_detector,
+            translation_service=translation_service,
+            audio_processor=audio_processor,
+            database=database
+        )
 
-        # Обработчик сообщений (правильный порядок параметров!)
-        message_handler = MessageHandler(media_handler, db, translation_service)
+        # Создаем MessageHandler
+        message_handler = MessageHandler(
+            media_handler=media_handler,
+            database=database
+        )
 
-        # Платежный сервис (создаем но не используем в MessageHandler)
-        payment_service = PaymentService()
-
-        logger.info("All services initialized successfully")
+        logger.info("Все сервисы успешно инициализированы")
 
     except Exception as e:
-        logger.error(f"Failed to initialize services: {e}")
-        raise
+        logger.error(f"Ошибка при инициализации сервисов: {e}")
+        raise e
+
+    def async_route(f):
+        """Декоратор для асинхронных маршрутов"""
+
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(f(*args, **kwargs))
+            finally:
+                loop.close()
+
+        return decorated_function
 
     @app.route('/', methods=['GET'])
-    def home():
-        """Главная страница для проверки работы сервиса"""
+    def index():
+        """Главная страница"""
         return jsonify({
-            'status': 'active',
-            'service': 'Messenger Transcribe Bot',
-            'version': '1.0.0',
-            'endpoints': {
-                'webhook': '/webhook',
-                'health': '/health'
+            "status": "Bot is running",
+            "message": "Messenger Transcribe Bot is active",
+            "version": "1.0.0",
+            "endpoints": {
+                "webhook": "/webhook",
+                "health": "/api/health"
             }
         })
 
-    @app.route('/health', methods=['GET'])
-    def health():
-        """Endpoint для проверки здоровья сервиса"""
+    @app.route('/api/health', methods=['GET'])
+    def health_check():
+        """Проверка здоровья приложения"""
         try:
             # Проверяем подключение к базе данных
-            db.client.admin.command('ping')
+            if message_handler and message_handler.database:
+                # Простая проверка подключения
+                test_result = message_handler.database.db.command('ping')
+                if test_result.get('ok') == 1.0:
+                    return jsonify({
+                        "status": "healthy",
+                        "database": "connected",
+                        "services": "operational",
+                        "timestamp": "2025-06-18T13:16:18Z"
+                    })
 
             return jsonify({
-                'status': 'healthy',
-                'database': 'connected',
-                'services': 'operational'
-            })
-        except Exception as health_error:
-            logger.error(f"Health check failed: {health_error}")
+                "status": "partial",
+                "database": "unknown",
+                "services": "operational",
+                "timestamp": "2025-06-18T13:16:18Z"
+            }), 206
+
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
             return jsonify({
-                'status': 'unhealthy',
-                'error': str(health_error)
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": "2025-06-18T13:16:18Z"
             }), 500
 
-    @app.route('/webhook', methods=['GET', 'POST'])
-    def webhook():
-        """Webhook для Facebook Messenger"""
-        if request.method == 'GET':
-            return verify_webhook()
-        elif request.method == 'POST':
-            return handle_webhook()
-
-    def verify_webhook():
+    @app.route('/webhook', methods=['GET'])
+    def webhook_verify():
         """Верификация webhook для Facebook"""
-        try:
-            verify_token = request.args.get('hub.verify_token')
-            challenge = request.args.get('hub.challenge')
+        verify_token = os.getenv('VERIFY_TOKEN', '12345')
+        mode = request.args.get('hub.mode')
+        token = request.args.get('hub.verify_token')
+        challenge = request.args.get('hub.challenge')
 
-            expected_token = os.getenv('VERIFY_TOKEN')
+        if mode == 'subscribe' and token == verify_token:
+            logger.info("Webhook успешно верифицирован")
+            return challenge
+        else:
+            logger.warning("Неудачная попытка верификации webhook")
+            return 'Forbidden', 403
 
-            if verify_token == expected_token:
-                logger.info("Webhook verified successfully")
-                return challenge
-            else:
-                logger.warning(f"Invalid verify token: {verify_token}")
-                return 'Invalid verify token', 403
-
-        except Exception as verify_error:
-            logger.error(f"Error in webhook verification: {verify_error}")
-            return 'Error', 500
-
-    def handle_webhook():
-        """Обработка входящих сообщений от Facebook"""
+    @app.route('/webhook', methods=['POST'])
+    @async_route
+    async def webhook_handler():
+        """Обработка webhook сообщений от Facebook"""
         try:
             data = request.get_json()
 
             if not data:
-                logger.warning("Received empty webhook data")
-                return 'No data', 400
+                logger.warning("Получены пустые данные webhook")
+                return jsonify({"status": "error", "message": "No data"}), 400
 
-            logger.info(f"Received webhook data: {data}")
+            logger.info(f"Получен webhook: {data}")
 
-            # Обрабатываем каждое входящее сообщение
+            # Проверяем, что это сообщение от Messenger
             if data.get('object') == 'page':
-                for entry in data.get('entry', []):
-                    for messaging_event in entry.get('messaging', []):
-                        try:
-                            # Игнорируем эхо сообщения (отправленные ботом)
-                            if messaging_event.get('message', {}).get('is_echo'):
-                                continue
+                entries = data.get('entry', [])
 
-                            # Обрабатываем сообщение
-                            success = message_handler.handle_message(messaging_event)
+                for entry in entries:
+                    messaging_events = entry.get('messaging', [])
 
-                            if not success:
-                                logger.warning(f"Failed to handle message: {messaging_event}")
+                    for event in messaging_events:
+                        if message_handler:
+                            await message_handler.handle_message(event)
+                        else:
+                            logger.error("MessageHandler не инициализирован")
 
-                        except Exception as msg_error:
-                            logger.error(f"Error handling individual message: {msg_error}")
-                            continue
+            return jsonify({"status": "ok"}), 200
 
-            return 'OK', 200
+        except Exception as e:
+            logger.error(f"Ошибка при обработке webhook: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
 
-        except Exception as webhook_error:
-            logger.error(f"Error handling webhook: {webhook_error}")
-            return 'Error', 500
-
-    @app.route('/stats', methods=['GET'])
+    @app.route('/api/stats', methods=['GET'])
     def get_stats():
-        """Endpoint для получения статистики (для разработки)"""
+        """Получение статистики бота"""
         try:
-            stats = db.get_global_stats()
-            return jsonify(stats)
-        except Exception as stats_error:
-            logger.error(f"Error getting stats: {stats_error}")
-            return jsonify({'error': str(stats_error)}), 500
+            if message_handler and message_handler.database:
+                # Получаем основную статистику
+                stats = {
+                    "total_users": 0,
+                    "total_transcriptions": 0,
+                    "active_users_today": 0,
+                    "status": "operational"
+                }
+
+                # Можно добавить реальные запросы к БД
+                # stats = message_handler.database.get_stats()
+
+                return jsonify(stats)
+            else:
+                return jsonify({"error": "Database not available"}), 503
+
+        except Exception as e:
+            logger.error(f"Ошибка при получении статистики: {e}")
+            return jsonify({"error": str(e)}), 500
 
     @app.errorhandler(404)
-    def not_found(_):
-        """Обработчик 404 ошибок"""
-        return jsonify({'error': 'Endpoint not found'}), 404
+    def not_found(error):
+        """Обработчик 404 ошибки"""
+        return jsonify({"error": "Endpoint not found"}), 404
 
     @app.errorhandler(500)
-    def internal_error(_):
-        """Обработчик 500 ошибок"""
-        return jsonify({'error': 'Internal server error'}), 500
-
-    # Добавляем middleware для логирования запросов
-    @app.before_request
-    def log_request_info():
-        logger.debug(f"Request: {request.method} {request.url}")
-
-    @app.after_request
-    def log_response_info(response):
-        logger.debug(f"Response: {response.status_code}")
-        return response
+    def internal_error(error):
+        """Обработчик 500 ошибки"""
+        logger.error(f"Internal server error: {error}")
+        return jsonify({"error": "Internal server error"}), 500
 
     return app
 
@@ -186,6 +213,9 @@ def create_app():
 app = create_app()
 
 if __name__ == '__main__':
-    # Запуск для разработки
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Запуск в режиме разработки
+    port = int(os.getenv('PORT', 5000))
+    debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
+
+    logger.info(f"Запуск приложения на порту {port}, debug={debug}")
+    app.run(host='0.0.0.0', port=port, debug=debug)

@@ -1,193 +1,208 @@
-import re
 import logging
+from langdetect import detect, DetectorFactory
+from langdetect.lang_detect_exception import LangDetectException
+import re
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+# Устанавливаем seed для стабильности результатов
+DetectorFactory.seed = 0
+
 
 class LanguageDetector:
-    """Сервис для определения языка текста"""
-
     def __init__(self):
-        self.supported_languages = {
-            'km': 'ខ្មែរ (Кхмерский)',
-            'en': 'English',
-            'ru': 'Русский',
-            'es': 'Español',
-            'fr': 'Français',
-            'de': 'Deutsch',
-            'it': 'Italiano',
-            'pt': 'Português',
-            'nl': 'Nederlands',
-            'pl': 'Polski',
-            'ja': '日本語',
-            'ko': '한국어',
-            'zh': '中文',
-            'ar': 'العربية',
-            'hi': 'हिन्दी',
-            'th': 'ไทย',
-            'vi': 'Tiếng Việt',
-            'id': 'Bahasa Indonesia',
-            'tr': 'Türkçe',
-            'he': 'עברית',
-            'sv': 'Svenska',
-            'da': 'Dansk',
-            'no': 'Norsk',
-            'fi': 'Suomi',
-            'el': 'Ελληνικά',
-            'cs': 'Čeština',
-            'hu': 'Magyar',
-            'ro': 'Română',
-            'uk': 'Українська',
-            'bg': 'Български',
-            'hr': 'Hrvatski',
-            'sr': 'Српски',
-            'sl': 'Slovenščina',
-            'sk': 'Slovenčina',
-            'et': 'Eesti',
-            'lv': 'Latviešu',
-            'lt': 'Lietuvių',
-            'fa': 'فارسی',
-            'ms': 'Bahasa Melayu',
-            'tl': 'Tagalog',
-            'is': 'Íslenska',
-            'ka': 'ქართული',
-            'am': 'አማርኛ',
-            'sw': 'Kiswahili',
-            'cy': 'Cymraeg',
-            'eu': 'Euskara',
-            'ca': 'Català',
-            'gl': 'Galego',
-            'unknown': 'Unknown'
-        }
-
-        # Паттерны для определения скриптов
+        """Инициализация детектора языка"""
         self.script_patterns = {
-            'khmer': re.compile(r'[\u1780-\u17FF]'),
-            'thai': re.compile(r'[\u0E00-\u0E7F]'),
-            'arabic': re.compile(r'[\u0600-\u06FF\u0750-\u077F]'),
-            'chinese': re.compile(r'[\u4E00-\u9FFF]'),
-            'japanese': re.compile(r'[\u3040-\u309F\u30A0-\u30FF]'),
-            'korean': re.compile(r'[\uAC00-\uD7AF]'),
-            'cyrillic': re.compile(r'[\u0400-\u04FF]'),
-            'hebrew': re.compile(r'[\u0590-\u05FF]'),
-            'devanagari': re.compile(r'[\u0900-\u097F]'),
-            'latin': re.compile(r'[a-zA-Z]')
+            'ru': re.compile(r'[а-яё]', re.IGNORECASE),
+            'uk': re.compile(r'[іїєґ]', re.IGNORECASE),
+            'ar': re.compile(r'[\u0600-\u06FF\u0750-\u077F]'),
+            'zh': re.compile(r'[\u4e00-\u9fff]'),
+            'ja': re.compile(r'[\u3040-\u309f\u30a0-\u30ff]'),
+            'ko': re.compile(r'[\uac00-\ud7af]'),
+            'th': re.compile(r'[\u0e00-\u0e7f]'),
+            'hi': re.compile(r'[\u0900-\u097f]'),
+            'he': re.compile(r'[\u0590-\u05ff]'),
+            'en': re.compile(r'^[a-zA-Z\s\.\,\!\?\-\'\"\(\)0-9]+$')
         }
 
-        # Маппинг скриптов на языки
-        self.script_to_language = {
-            'khmer': 'km',
-            'thai': 'th',
-            'arabic': 'ar',
-            'chinese': 'zh',
-            'japanese': 'ja',
-            'korean': 'ko',
-            'hebrew': 'he',
-            'devanagari': 'hi'
-        }
+        self.confidence_threshold = 0.7
+        logger.info("LanguageDetector успешно инициализирован")
 
-    def detect_script(self, text):
+    def analyze_language(self, text: str) -> Dict[str, Any]:
         """
-        Определение системы письма в тексте
+        Анализ языка текста с использованием различных методов
 
         Args:
             text: Текст для анализа
 
         Returns:
-            tuple: (script_name, confidence)
+            Dict с результатами анализа языка
         """
-        if not text:
-            return ('unknown', 0)
+        if not text or not text.strip():
+            return {
+                "language": "en",
+                "confidence": 0.5,
+                "method": "default",
+                "raw_text": text
+            }
 
-        script_counts = {}
-        total_chars = 0
+        try:
+            # Очищаем текст для анализа
+            clean_text = self._clean_text(text)
 
-        for char in text:
-            if char.isspace():
-                continue
+            if len(clean_text) < 3:
+                return {
+                    "language": "en",
+                    "confidence": 0.3,
+                    "method": "too_short",
+                    "raw_text": text
+                }
 
-            total_chars += 1
+            # Метод 1: Анализ по скрипту/алфавиту
+            script_result = self._detect_by_script(clean_text)
+            if script_result and script_result["confidence"] > 0.8:
+                logger.info(f"Язык определен по скрипту: {script_result['language']}")
+                return {
+                    **script_result,
+                    "raw_text": text
+                }
 
-            for script_name, pattern in self.script_patterns.items():
-                if pattern.match(char):
-                    script_counts[script_name] = script_counts.get(script_name, 0) + 1
-                    break
+            # Метод 2: langdetect библиотека
+            langdetect_result = self._detect_by_langdetect(clean_text)
 
-        if not script_counts or total_chars == 0:
-            return ('unknown', 0)
+            # Комбинируем результаты
+            if script_result and langdetect_result:
+                if script_result["language"] == langdetect_result["language"]:
+                    # Оба метода согласны
+                    confidence = min(script_result["confidence"] + langdetect_result["confidence"], 1.0)
+                    return {
+                        "language": script_result["language"],
+                        "confidence": confidence,
+                        "method": "combined",
+                        "raw_text": text
+                    }
+                else:
+                    # Методы не согласны, выбираем более уверенный
+                    if script_result["confidence"] > langdetect_result["confidence"]:
+                        return {**script_result, "raw_text": text}
+                    else:
+                        return {**langdetect_result, "raw_text": text}
 
-        # Находим доминирующий скрипт
-        dominant_script = max(script_counts.items(), key=lambda x: x[1])
-        confidence = dominant_script[1] / total_chars * 100
+            # Используем результат langdetect если он есть
+            if langdetect_result:
+                return {**langdetect_result, "raw_text": text}
 
-        logger.info(f"Detected script: {dominant_script[0]} ({confidence:.2f}%)")
+            # Используем результат script анализа если он есть
+            if script_result:
+                return {**script_result, "raw_text": text}
 
-        return (dominant_script[0], confidence)
+            # Fallback
+            return {
+                "language": "en",
+                "confidence": 0.4,
+                "method": "fallback",
+                "raw_text": text
+            }
 
-    def analyze_language(self, text, api_detected_language='unknown'):
-        """
-        Анализ языка с учетом API и контента
+        except Exception as e:
+            logger.error(f"Ошибка при анализе языка: {e}")
+            return {
+                "language": "en",
+                "confidence": 0.3,
+                "method": "error",
+                "error": str(e),
+                "raw_text": text
+            }
 
-        Args:
-            text: Транскрибированный текст
-            api_detected_language: Язык, определенный API
+    def _clean_text(self, text: str) -> str:
+        """Очистка текста для анализа"""
+        # Убираем лишние пробелы и символы
+        clean = re.sub(r'\s+', ' ', text.strip())
+        # Убираем числа и знаки препинания для лучшего анализа
+        clean = re.sub(r'[0-9\.\,\!\?\-\'\"\(\)\[\]]+', ' ', clean)
+        return clean.strip()
 
-        Returns:
-            dict: Информация о языке
-        """
-        # Нормализуем язык от API
-        api_lang = api_detected_language.lower() if api_detected_language else 'unknown'
+    def _detect_by_script(self, text: str) -> Optional[Dict[str, Any]]:
+        """Определение языка по алфавиту/скрипту"""
+        char_count = len(text.replace(' ', ''))
+        if char_count == 0:
+            return None
 
-        # Определяем скрипт
-        script, confidence = self.detect_script(text)
+        script_scores = {}
 
-        # Определяем финальный язык
-        final_language = api_lang
+        for lang, pattern in self.script_patterns.items():
+            matches = len(pattern.findall(text))
+            if matches > 0:
+                script_scores[lang] = matches / char_count
 
-        # Если API не определил язык, используем скрипт
-        if api_lang == 'unknown' and script != 'unknown':
-            if script in self.script_to_language:
-                final_language = self.script_to_language[script]
-            elif script == 'latin':
-                final_language = 'en'  # По умолчанию английский для латиницы
-            elif script == 'cyrillic':
-                final_language = 'ru'  # По умолчанию русский для кириллицы
+        if not script_scores:
+            return None
 
-        # Проверяем соответствие скрипта и языка
-        if script == 'khmer' and api_lang not in ['km', 'unknown']:
-            logger.warning(f"Script mismatch: detected {script} but API returned {api_lang}")
-            # Доверяем скрипту для кхмерского
-            final_language = 'km'
+        # Находим язык с наибольшим скором
+        best_lang = max(script_scores, key=script_scores.get)
+        confidence = script_scores[best_lang]
 
-        # Получаем название языка для отображения
-        display_name = self.supported_languages.get(
-            final_language,
-            f'Detected: {final_language}'
-        )
+        # Специальная логика для различения похожих языков
+        if best_lang == 'ru' and 'uk' in script_scores:
+            # Проверяем специфичные украинские символы
+            uk_specific = len(self.script_patterns['uk'].findall(text))
+            if uk_specific > 0:
+                best_lang = 'uk'
+                confidence = min(confidence + 0.2, 1.0)
 
-        result = {
-            'api_detected': api_lang,
-            'script_detected': script,
-            'final_language': final_language,
-            'display_name': display_name,
-            'confidence': 'high' if confidence > 80 else 'medium' if confidence > 50 else 'low'
+        return {
+            "language": best_lang,
+            "confidence": min(confidence, 1.0),
+            "method": "script_analysis"
         }
 
-        logger.info(f"Language analysis: {result}")
+    def _detect_by_langdetect(self, text: str) -> Optional[Dict[str, Any]]:
+        """Определение языка через langdetect библиотеку"""
+        try:
+            detected_lang = detect(text)
 
-        return result
+            # langdetect не возвращает confidence, оценим сами
+            confidence = 0.6  # базовая уверенность
 
-    def get_language_name(self, language_code):
+            # Увеличиваем уверенность для длинных текстов
+            if len(text) > 50:
+                confidence += 0.1
+            if len(text) > 100:
+                confidence += 0.1
+
+            return {
+                "language": detected_lang,
+                "confidence": min(confidence, 1.0),
+                "method": "langdetect"
+            }
+
+        except LangDetectException as e:
+            logger.warning(f"LangDetect не смог определить язык: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка в langdetect: {e}")
+            return None
+
+    def detect_language(self, text: str) -> str:
         """
-        Получить название языка по коду
+        Простая функция для определения языка (обратная совместимость)
 
         Args:
-            language_code: Код языка (например, 'en', 'km')
+            text: Текст для анализа
 
         Returns:
-            str: Название языка
+            Код языка (строка)
         """
-        return self.supported_languages.get(
-            language_code.lower() if language_code else 'unknown',
-            f'Language: {language_code}'
-        )
+        result = self.analyze_language(text)
+        return result.get("language", "en")
+
+    def get_supported_languages(self) -> list:
+        """Возвращает список поддерживаемых языков"""
+        return [
+            'af', 'ar', 'bg', 'bn', 'ca', 'cs', 'cy', 'da', 'de', 'el', 'en', 'es', 'et',
+            'fa', 'fi', 'fr', 'gu', 'he', 'hi', 'hr', 'hu', 'id', 'it', 'ja', 'kn', 'ko',
+            'lt', 'lv', 'mk', 'ml', 'mr', 'ne', 'nl', 'no', 'pa', 'pl', 'pt', 'ro', 'ru',
+            'sk', 'sl', 'so', 'sq', 'sv', 'sw', 'ta', 'te', 'th', 'tl', 'tr', 'uk', 'ur',
+            'vi', 'zh'
+        ]

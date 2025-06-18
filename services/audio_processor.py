@@ -41,7 +41,8 @@ class AudioProcessor:
         logger.error(f"Неподдерживаемый формат файла: {file_ext}")
         return None
 
-    def _extract_audio_from_video(self, video_path: str) -> Optional[str]:
+    @staticmethod
+    def _extract_audio_from_video(video_path: str) -> Optional[str]:
         """
         Извлекает аудио из видео файла используя ffmpeg
 
@@ -98,7 +99,8 @@ class AudioProcessor:
             logger.error(f"Неожиданная ошибка при извлечении аудио: {e}")
             return None
 
-    def get_media_duration(self, file_path: str) -> Optional[float]:
+    @staticmethod
+    def get_media_duration(file_path: str) -> Optional[float]:
         """
         Получает длительность медиа файла в секундах
 
@@ -224,7 +226,8 @@ class AudioProcessor:
 
         return True, "Файл валиден"
 
-    def cleanup_temp_file(self, file_path: str):
+    @staticmethod
+    def cleanup_temp_file(file_path: str):
         """
         Удаляет временный файл
 
