@@ -34,6 +34,7 @@ class TranscriptionService:
                     'file': audio_file,
                     'model': 'whisper-1',
                     'response_format': 'verbose_json',  # Получаем подробную информацию
+                    'temperature': 0.0,  # Низкая температура для стабильности
                 }
 
                 # Если язык определен, передаем его в API
@@ -80,6 +81,10 @@ class TranscriptionService:
                     logger.warning("Получен пустой текст транскрипции")
                     return "Не удалось распознать речь в аудио.", detected_lang
 
+                # Специальная обработка для кхмерского языка
+                if detected_lang == 'km' or detected_language in ['km', 'khmer']:
+                    transcribed_text = self._improve_khmer_output(transcribed_text)
+
                 logger.info(f"Успешная транскрипция: длина {len(transcribed_text)} символов, язык: {detected_lang}")
                 return transcribed_text, detected_lang
 
@@ -101,18 +106,97 @@ class TranscriptionService:
         # Сначала пробуем с определенным языком
         text, lang = self.transcribe_audio(audio_file_path, detected_language)
 
-        # Проверяем качество транскрипции для кхмерского языка
+        # Специальная обработка для кхмерского языка
         if detected_language in ['khmer', 'km'] and self._is_poor_khmer_transcription(text):
-            logger.warning("Плохая транскрипция кхмерского языка, пробуем без указания языка")
-            # Пробуем без указания языка
-            text, lang = self.transcribe_audio(audio_file_path, None)
+            logger.warning("Плохая транскрипция кхмерского языка, пробуем альтернативные стратегии")
 
-            # Если все еще плохо, пробуем с языком 'auto'
-            if self._is_poor_khmer_transcription(text):
-                logger.warning("Все еще плохая транскрипция, используем автоопределение")
-                text = f"⚠️ Возможны неточности в транскрипции кхмерского языка:\n\n{text}"
+            # Попытка 1: без указания языка
+            text_no_lang, lang_no_lang = self.transcribe_audio(audio_file_path, None)
+
+            # Попытка 2: с английским как fallback (иногда помогает)
+            text_en, lang_en = self.transcribe_audio(audio_file_path, 'en')
+
+            # Выбираем лучший результат
+            results = [
+                (text, lang, self._calculate_khmer_score(text)),
+                (text_no_lang, lang_no_lang, self._calculate_khmer_score(text_no_lang)),
+                (text_en, lang_en, self._calculate_khmer_score(text_en))
+            ]
+
+            # Сортируем по качеству кхмерского текста
+            results.sort(key=lambda x: x[2], reverse=True)
+            best_text, best_lang, best_score = results[0]
+
+            if best_score > 0:
+                logger.info(f"Выбран лучший результат с оценкой: {best_score}")
+                return best_text, 'km'  # Принудительно устанавливаем km для кхмерского
+            else:
+                # Если все попытки неудачны, возвращаем с предупреждением
+                warning = "⚠️ Система не смогла корректно распознать кхмерскую речь.\n"
+                warning += "Рекомендации:\n"
+                warning += "• Говорите четче и медленнее\n"
+                warning += "• Записывайте в тихом месте\n"
+                warning += "• Используйте качественный микрофон\n\n"
+                warning += f"Попытка распознавания:\n{text}"
+                return warning, 'km'
 
         return text, lang
+
+    @staticmethod
+    def _calculate_khmer_score(text: str) -> float:
+        """
+        Вычисляет оценку качества кхмерского текста
+        """
+        if not text:
+            return 0.0
+
+        # Считаем кхмерские символы
+        khmer_chars = sum(1 for char in text if '\u1780' <= char <= '\u17FF')
+        total_chars = len([char for char in text if char.isalpha()])
+
+        if total_chars == 0:
+            return 0.0
+
+        # Базовая оценка по соотношению кхмерских символов
+        khmer_ratio = khmer_chars / total_chars
+
+        # Бонусы за длину (более длинный текст обычно лучше)
+        length_bonus = min(len(text) / 100, 1.0)
+
+        # Штраф за слишком короткий текст
+        if len(text.strip()) < 10:
+            length_bonus *= 0.5
+
+        return khmer_ratio * 0.8 + length_bonus * 0.2
+
+    @staticmethod
+    def _improve_khmer_output(text: str) -> str:
+        """
+        Улучшает вывод для кхмерского языка
+        """
+        if not text:
+            return text
+
+        # Проверяем соотношение кхмерских символов
+        khmer_chars = sum(1 for char in text if '\u1780' <= char <= '\u17FF')
+        total_chars = len([char for char in text if char.isalpha()])
+
+        if total_chars > 0:
+            khmer_ratio = khmer_chars / total_chars
+
+            # Если очень мало кхмерских символов (возможна транслитерация)
+            if khmer_ratio < 0.1:
+                warning = "⚠️ Получена транслитерация вместо кхмерского скрипта.\n"
+                warning += "Возможные причины:\n"
+                warning += "• Плохое качество аудио\n"
+                warning += "• Смешение языков в речи\n"
+                warning += "• Ограничения системы распознавания\n\n"
+                warning += "Транслитерированный текст:\n"
+                return warning + text
+            elif khmer_ratio < 0.5:
+                return "⚠️ Частичное распознавание кхмерского языка:\n\n" + text
+
+        return text
 
     @staticmethod
     def _is_poor_khmer_transcription(text: str) -> bool:

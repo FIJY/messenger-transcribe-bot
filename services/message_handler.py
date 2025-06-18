@@ -1,7 +1,7 @@
 import logging
 import requests
 import os
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 from .media_handler import MediaHandler
 from .database import Database
 from .translation_service import TranslationService
