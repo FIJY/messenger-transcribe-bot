@@ -28,6 +28,11 @@ class AudioProcessor:
 
         file_ext = os.path.splitext(file_path)[1].lower()
 
+        # ВАЖНО: Для Facebook .tmp файлов считаем их mp4
+        if file_ext == '.tmp' and '/tmp/' in file_path:
+            logger.info(f"Обрабатываем Facebook .tmp файл как mp4: {file_path}")
+            file_ext = '.mp4'  # Обрабатываем как mp4
+
         # Если это уже аудио файл в поддерживаемом формате
         if file_ext in self.supported_audio_formats:
             logger.info(f"Файл уже в аудио формате: {file_ext}")
@@ -169,6 +174,11 @@ class AudioProcessor:
 
             # Формат файла
             file_ext = os.path.splitext(file_path)[1].lower()
+
+            # ВАЖНО: Для Facebook .tmp файлов считаем их mp4
+            if file_ext == '.tmp' and '/tmp/' in file_path:
+                file_ext = '.mp4'
+
             info['format'] = file_ext
 
             # Проверяем тип медиа
@@ -198,6 +208,11 @@ class AudioProcessor:
             return False, "Файл не найден"
 
         file_ext = os.path.splitext(file_path)[1].lower()
+
+        # ВАЖНО: Для Facebook .tmp файлов считаем их mp4
+        if file_ext == '.tmp' and '/tmp/' in file_path:
+            logger.info(f"Валидируем Facebook .tmp файл как mp4: {file_path}")
+            file_ext = '.mp4'
 
         if file_ext not in (self.supported_audio_formats + self.supported_video_formats):
             supported_formats = ', '.join(self.supported_audio_formats + self.supported_video_formats)
