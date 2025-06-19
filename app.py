@@ -133,41 +133,28 @@ def webhook_verify():
 def webhook_handler():
     """Обработчик webhook сообщений от Facebook"""
     try:
-        # Получаем данные
         data = request.get_json()
-        logger.info(f"Получен webhook: {data}")
-
-        # Проверяем подпись (опционально)
         if not verify_webhook_signature(request):
             logger.warning("Неверная подпись webhook")
             return 'Invalid signature', 403
 
-        # Обрабатываем события
         if data.get('object') == 'page':
             for entry in data.get('entry', []):
                 for messaging_event in entry.get('messaging', []):
-                    logger.info(f"Обрабатываем событие: {messaging_event}")
-
-                    # Проверяем наличие message_handler
-                    if not message_handler:
-                        logger.error("MessageHandler не инициализирован")
-                        return 'Service unavailable', 503
-
-                    # Обрабатываем сообщение
-                    success = message_handler.handle_message(messaging_event)
-
-                    if success:
-                        logger.info("Сообщение успешно обработано")
+                    if message_handler:
+                        # Обрабатываем сообщение
+                        message_handler.handle_message(messaging_event)
                     else:
-                        logger.warning("Ошибка при обработке сообщения")
+                        logger.error("MessageHandler не инициализирован, не могу обработать событие.")
 
         return 'OK', 200
 
     except Exception as e:
-        logger.error(f"Ошибка обработки webhook: {e}")
-        import traceback
-        traceback.print_exc()
-        return 'Internal server error', 500
+        # 🔧 ГЛАВНОЕ ИЗМЕНЕНИЕ:
+        # exc_info=True добавит в лог полную трассировку ошибки.
+        # Это именно то, что нам нужно для диагностики.
+        logger.error(f"Критическая ошибка в webhook_handler: {e}", exc_info=True)
+        return 'OK', 200 # Возвращаем 200, чтобы Facebook не повторял запросы
 
 
 def verify_webhook_signature(request):

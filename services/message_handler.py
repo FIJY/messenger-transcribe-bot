@@ -18,8 +18,8 @@ class MessageHandler:
         self.translation_service = translation_service
         self.audio_processor = AudioProcessor()  # Создаем экземпляр
         self.page_access_token = os.getenv('PAGE_ACCESS_TOKEN')
-        self.FREE_DAILY_LIMIT = int(os.getenv('FREE_DAILY_LIMIT', '10'))
-        self.PREMIUM_DAILY_LIMIT = int(os.getenv('PREMIUM_DAILY_LIMIT', '1000'))
+        self.FREE_DAILY_LIMIT = int(os.getenv('FREE_DAILY_LIMIT', '9999'))
+        self.PREMIUM_DAILY_LIMIT = int(os.getenv('PREMIUM_DAILY_LIMIT', '9999'))
 
     def handle_message(self, webhook_event: Dict[str, Any]):
         """Главный обработчик входящих событий от Messenger."""
