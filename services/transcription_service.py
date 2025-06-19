@@ -18,10 +18,6 @@ class TranscriptionService:
             self.client = openai.OpenAI(api_key=api_key)
             self.logger.info("OpenAI клиент успешно инициализирован")
 
-            # Проверим что клиент работает
-            # models = self.client.models.list()
-            # self.logger.info("OpenAI подключение проверено")
-
         except Exception as e:
             self.logger.error(f"Ошибка инициализации OpenAI: {e}")
             raise
@@ -32,6 +28,7 @@ class TranscriptionService:
             with open(audio_path, "rb") as audio_file:
                 # Для кхмерского языка принудительно устанавливаем язык
                 if language_hint == 'km':
+                    self.logger.info("Транскрибация с принудительным кхмерским языком")
                     response = self.client.audio.transcriptions.create(
                         model="whisper-1",
                         file=audio_file,
@@ -39,11 +36,28 @@ class TranscriptionService:
                         response_format="text"
                     )
                 else:
+                    self.logger.info(f"Транскрибация с языком: {language_hint or 'auto'}")
                     response = self.client.audio.transcriptions.create(
                         model="whisper-1",
                         file=audio_file,
+                        language=language_hint if language_hint else None,
                         response_format="text"
                     )
+
+                # ✅ ИСПРАВЛЕНИЕ: Возвращаем результат!
+                return {
+                    'success': True,
+                    'text': response.strip() if response else '',
+                    'detected_language': language_hint if language_hint else 'auto'
+                }
+
+        except Exception as e:
+            self.logger.error(f"Ошибка транскрибации: {e}")
+            return {
+                'success': False,
+                'text': '',
+                'error': str(e)
+            }
 
     def transcribe_with_language_detection(self, audio_file_path):
         """Транскрипция с автоопределением языка"""
@@ -84,8 +98,22 @@ class TranscriptionService:
         try:
             self.logger.info(f"Transcribe with fallback for language: {language}")
 
+            # ✅ ИСПРАВЛЕНИЕ: Делаем синхронный вызов
             # Первая попытка с указанным языком
-            result = self.transcribe_audio(audio_file_path, language)
+            if language == 'km':
+                # Для кхмерского сначала пробуем с принудительным языком
+                result = self._transcribe_sync(audio_file_path, 'km')
+                if result['success'] and result['text'].strip():
+                    text = result['text'].strip()
+                    self.logger.info(f"Кхмерская транскрипция успешна: {text[:100]}...")
+                    return text, 'km'
+
+                # Если не получилось, пробуем без языка
+                self.logger.info("Кхмерская транскрипция не удалась, пробуем автоопределение")
+                result = self._transcribe_sync(audio_file_path, None)
+            else:
+                # Для других языков стандартная логика
+                result = self._transcribe_sync(audio_file_path, language)
 
             if result['success'] and result['text'].strip():
                 text = result['text'].strip()
@@ -104,7 +132,7 @@ class TranscriptionService:
                         if khmer_ratio < 0.1:
                             # Мало кхмерских символов, пробуем без указания языка
                             self.logger.info("Low Khmer ratio, trying without language specification")
-                            fallback_result = self.transcribe_audio(audio_file_path, None)
+                            fallback_result = self._transcribe_sync(audio_file_path, None)
                             if fallback_result['success'] and fallback_result['text'].strip():
                                 text = fallback_result['text'].strip()
                                 # Пытаемся определить язык заново
@@ -118,7 +146,7 @@ class TranscriptionService:
             else:
                 # Если первая попытка не удалась, пробуем без языка
                 self.logger.info("First attempt failed, trying without language")
-                fallback_result = self.transcribe_audio(audio_file_path, None)
+                fallback_result = self._transcribe_sync(audio_file_path, None)
                 if fallback_result['success'] and fallback_result['text'].strip():
                     text = fallback_result['text'].strip()
                     detected_lang = fallback_result.get('detected_language', 'unknown')
@@ -138,6 +166,41 @@ class TranscriptionService:
         except Exception as e:
             self.logger.error(f"Error in transcribe_with_fallback: {e}")
             return f"Ошибка транскрипции: {str(e)}", 'unknown'
+
+    def _transcribe_sync(self, audio_path: str, language_hint: str = None) -> dict:
+        """Синхронная версия транскрибации"""
+        try:
+            with open(audio_path, "rb") as audio_file:
+                if language_hint == 'km':
+                    self.logger.info("Транскрибация с принудительным кхмерским языком")
+                    response = self.client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        language="km",
+                        response_format="text"
+                    )
+                else:
+                    self.logger.info(f"Транскрибация с языком: {language_hint or 'auto'}")
+                    response = self.client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        language=language_hint if language_hint else None,
+                        response_format="text"
+                    )
+
+                return {
+                    'success': True,
+                    'text': response.strip() if response else '',
+                    'detected_language': language_hint if language_hint else 'auto'
+                }
+
+        except Exception as e:
+            self.logger.error(f"Ошибка транскрибации: {e}")
+            return {
+                'success': False,
+                'text': '',
+                'error': str(e)
+            }
 
     def get_supported_languages(self) -> list:
         """Возвращает список поддерживаемых языков"""

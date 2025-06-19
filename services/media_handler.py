@@ -24,13 +24,6 @@ class MediaHandler:
     def process_media(self, file_path: str, user_preferences: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Обрабатывает медиа файл (аудио/видео) и возвращает результат
-
-        Args:
-            file_path: путь к файлу
-            user_preferences: предпочтения пользователя
-
-        Returns:
-            dict с результатами обработки
         """
         audio_path = None
         try:
@@ -39,6 +32,12 @@ class MediaHandler:
             # Получаем предпочтения пользователя
             expected_language = user_preferences.get('language') if user_preferences else None
             target_language = user_preferences.get('target_language', 'en') if user_preferences else 'en'
+
+            # 🔧 УЛУЧШЕНИЕ: Автоматически определяем кхмерский для пользователей из Камбоджи
+            if not expected_language:
+                # Если язык не указан, пробуем кхмерский по умолчанию
+                expected_language = 'km'
+                logger.info("Язык не указан, пробуем кхмерский по умолчанию")
 
             # 1. Конвертируем в аудио если нужно
             audio_path = self.audio_processor.process_file(file_path)
@@ -50,6 +49,79 @@ class MediaHandler:
                     'detected_language': 'unknown',
                     'translation': None
                 }
+
+            # 2. Транскрибируем аудио с умным определением языка
+            text, detected_language = self.transcription_service.transcribe_with_fallback(
+                audio_path,
+                expected_language
+            )
+
+            if text.startswith("Ошибка"):
+                return {
+                    'success': False,
+                    'error': text,
+                    'transcription': '',
+                    'detected_language': 'unknown',
+                    'translation': None
+                }
+
+            # 3. Дополнительный анализ языка
+            language_analysis = self.language_detector.analyze_language(text)
+            final_language = self._choose_best_language(
+                detected_language,
+                language_analysis.get('language'),
+                expected_language,
+                language_analysis.get('confidence', 0)
+            )
+
+            # 3.5. 🔧 УЛУЧШЕННОЕ определение кхмерского языка
+            final_language = self._improve_khmer_detection(text, final_language)
+
+            # Остальная часть метода остается без изменений...
+            # 4. Анализ качества для нативных языков
+            quality_analysis = self._analyze_transcription_quality(text, final_language)
+
+            # 5. Создаем результат
+            result = {
+                'success': True,
+                'transcription': text,
+                'original_text': text,
+                'detected_language': final_language,
+                'quality_analysis': quality_analysis,
+                'language_info': self._get_language_info_safe(final_language)
+            }
+
+            # 6. Переводим если запрошено
+            if target_language and target_language != final_language:
+                translation_result = self.translation_service.translate_text(
+                    text, target_language, final_language
+                )
+                if translation_result.get('success'):
+                    result['translation'] = translation_result.get('translated_text')
+                    result['translated_text'] = translation_result.get('translated_text')
+                    result['translation_target'] = target_language
+
+            # 7. Очищаем временные файлы
+            self._cleanup_temp_files(file_path, audio_path)
+
+            logger.info(f"Обработка завершена успешно. Язык: {final_language}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Ошибка при обработке медиа: {e}")
+            import traceback
+            traceback.print_exc()
+
+            if audio_path:
+                self._cleanup_temp_files(file_path, audio_path)
+
+            return {
+                'success': False,
+                'error': f'Произошла ошибка: {str(e)}',
+                'transcription': '',
+                'detected_language': 'unknown',
+                'translation': None
+            }
 
             # 2. Транскрибируем аудио с умным определением языка
             text, detected_language = self.transcription_service.transcribe_with_fallback(
