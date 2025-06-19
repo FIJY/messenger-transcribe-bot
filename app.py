@@ -185,18 +185,49 @@ def create_app():
             data = request.get_json()
             logger.info(f"Получен webhook: {data}")
 
-            if not transcription_service:
-                logger.warning("TranscriptionService недоступен, отвечаем заглушкой")
-                # Здесь можно отправить сообщение пользователю о временной недоступности
+            if not data or 'entry' not in data:
+                logger.warning("Неверный формат webhook данных")
+                return jsonify({"status": "ok"}), 200
+
+            # Обрабатываем каждую запись
+            for entry in data['entry']:
+                if 'messaging' not in entry:
+                    continue
+
+                for messaging_event in entry['messaging']:
+                    logger.info(f"Обрабатываем событие: {messaging_event}")
+
+                    # Проверяем доступность сервисов
+                    if not message_handler:
+                        logger.error("MessageHandler недоступен")
+                        continue
+
+                    if not transcription_service:
+                        logger.warning("TranscriptionService недоступен")
+                        # Можно отправить сообщение пользователю о временной недоступности
+                        sender_id = messaging_event.get('sender', {}).get('id')
+                        if sender_id:
+                            # Здесь можно отправить временное сообщение
+                            pass
+                        continue
+
+                    # Обрабатываем сообщение через MessageHandler
+                    try:
+                        success = message_handler.handle_message(messaging_event)
+                        if success:
+                            logger.info("Сообщение успешно обработано")
+                        else:
+                            logger.warning("Сообщение не было обработано")
+                    except Exception as handler_error:
+                        logger.error(f"Ошибка в MessageHandler: {handler_error}")
 
             return jsonify({"status": "ok"}), 200
 
         except Exception as e:
             logger.error(f"Ошибка при обработке webhook: {e}")
+            import traceback
+            traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
-
-    return app
-
 
 # Создаем приложение
 app = create_app()
