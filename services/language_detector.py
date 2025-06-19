@@ -29,6 +29,26 @@ class LanguageDetector:
         self.confidence_threshold = 0.7
         logger.info("LanguageDetector успешно инициализирован")
 
+    def detect_audio_language(self, audio_path: str) -> str:
+        """Определение языка из аудио метаданных или названия"""
+        try:
+            # Простая проба транскрипции для определения языка
+            with open(audio_path, "rb") as audio_file:
+                response = self.openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    response_format="json"
+                )
+
+            # Если Whisper определил язык
+            if hasattr(response, 'language'):
+                return response.language
+
+            return 'auto'
+        except Exception as e:
+            return 'auto'
+
+
     def analyze_language(self, text: str) -> Dict[str, Any]:
         """
         Анализ языка текста с использованием различных методов

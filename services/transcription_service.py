@@ -26,47 +26,24 @@ class TranscriptionService:
             self.logger.error(f"Ошибка инициализации OpenAI: {e}")
             raise
 
-    def transcribe_audio(self, audio_file_path, language=None):
-        """Транскрипция аудио файла через OpenAI Whisper API"""
+    async def transcribe_audio(self, audio_path: str, language_hint: str = None) -> dict:
+        """Транскрибирует аудио файл"""
         try:
-            self.logger.info("Starting OpenAI transcription")
-
-            # Проверяем существование файла
-            if not os.path.exists(audio_file_path):
-                raise FileNotFoundError(f"Аудио файл не найден: {audio_file_path}")
-
-            # Открываем файл и отправляем на транскрипцию
-            with open(audio_file_path, 'rb') as audio_file:
-                transcript_params = {
-                    'file': audio_file,
-                    'model': 'whisper-1',
-                    'response_format': 'text'
-                }
-
-                # Добавляем язык если указан
-                if language and language != 'auto':
-                    transcript_params['language'] = language
-
-                # Выполняем транскрипцию
-                transcript = self.client.audio.transcriptions.create(**transcript_params)
-
-                # OpenAI возвращает строку при response_format='text'
-                transcript_text = transcript if isinstance(transcript, str) else transcript.text
-
-                self.logger.info(f"Transcription completed. Text length: {len(transcript_text)}")
-
-                return {
-                    'success': True,
-                    'text': transcript_text.strip(),
-                    'detected_language': language or 'auto'
-                }
-
-        except Exception as e:
-            self.logger.error(f"Ошибка транскрипции: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+            with open(audio_path, "rb") as audio_file:
+                # Для кхмерского языка принудительно устанавливаем язык
+                if language_hint == 'km':
+                    response = self.client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        language="km",  # Принудительно кхмерский
+                        response_format="text"
+                    )
+                else:
+                    response = self.client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        response_format="text"
+                    )
 
     def transcribe_with_language_detection(self, audio_file_path):
         """Транскрипция с автоопределением языка"""
