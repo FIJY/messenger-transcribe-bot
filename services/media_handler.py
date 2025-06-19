@@ -80,7 +80,10 @@ class MediaHandler:
                     'translation': None
                 }
 
-            # 4. Дополнительное определение языка по тексту (если нужно)
+            # 4. Улучшенное определение кхмерского языка
+            detected_language = self._detect_khmer_language(transcription, detected_language)
+
+            # 5. Дополнительное определение языка по тексту (если нужно)
             if detected_language == 'unknown' and transcription:
                 try:
                     if hasattr(self.language_detector, 'analyze_language'):
@@ -94,7 +97,7 @@ class MediaHandler:
                 except Exception as e:
                     logger.warning(f"Ошибка анализа языка по тексту: {e}")
 
-            # 5. Проверяем качество транскрипции для кхмерского
+            # 6. Проверяем качество транскрипции для кхмерского
             if detected_language in ['km', 'khmer']:
                 transcription = self._improve_khmer_transcription(transcription)
 
@@ -106,7 +109,7 @@ class MediaHandler:
                 'language_info': self._get_language_info_safe(detected_language)
             }
 
-            # 6. Переводим если запрошено
+            # 7. Переводим если запрошено
             if target_language and target_language != detected_language:
                 try:
                     translation_result = self.translation_service.translate_text(
@@ -120,7 +123,7 @@ class MediaHandler:
                 except Exception as e:
                     logger.error(f"Ошибка при переводе: {e}")
 
-            # 7. Очищаем временные файлы
+            # 8. Очищаем временные файлы
             self._cleanup_temp_files(file_path, audio_path)
 
             logger.info(f"Обработка завершена успешно. Язык: {detected_language}")
@@ -146,6 +149,58 @@ class MediaHandler:
                 'translation': None
             }
 
+    def _detect_khmer_language(self, transcription: str, detected_language: str) -> str:
+        """
+        Улучшенное определение кхмерского языка по содержанию
+        """
+        if not transcription:
+            return detected_language
+
+        text_lower = transcription.lower()
+
+        # Кхмерские слова в латинской транслитерации
+        khmer_keywords = [
+            'bong', 'avan', 'kue', 'vie', 'mien', 'dak', 'chun', 'neng',
+            'phnom penh', 'kath', 'chui', 'tae', 'doi', 'knea', 'tam',
+            'thap', 'reang', 'sva', 'kam', 'krong', 'tlai', 'vreak',
+            'thangay', 'penjad', 'kamong', 'tarak', 'titang', 'jom',
+            'yung', 'knong', 'free', 'pya', 'okh', 'kaleng', 'cheung',
+            'semeb', 'bannei', 'leak', 'piseh', 'temuy', 'peny', 'thol',
+            'rohot', 'tadol', 'pahang', 'ngay', 'kalori', 'kaba', 'teet',
+            'sosay', 'masin', 'rodh', 'pran', 'mak', 'jikan', 'phra',
+            'trai', 'promoson', 'hoi', 'nesol', 'pophet', 'full option',
+            'thangon', 'ban', 'monitor', 'wilea', 'avey', 'like share',
+            'kaha', 'tham', 'bol', 'reang mui', 'ksar', 'tieng', 'maku',
+            'chum mui', 'deng', 'hit', 'cambodia', 'cambodian'
+        ]
+
+        # Подсчитываем кхмерские слова
+        khmer_word_count = sum(1 for keyword in khmer_keywords if keyword in text_lower)
+        total_words = len(text_lower.split())
+
+        if total_words > 0:
+            khmer_ratio = khmer_word_count / total_words
+            logger.info(f"Khmer keywords found: {khmer_word_count}/{total_words} = {khmer_ratio:.2f}")
+
+            # Если более 10% слов кхмерские, считаем это кхмерским языком
+            if khmer_ratio > 0.10:
+                logger.info(f"Detected as Khmer based on keyword analysis (ratio: {khmer_ratio:.2f})")
+                return 'km'
+
+            # Проверяем на упоминание Пномпеня и других географических названий
+            cambodian_places = ['phnom penh', 'cambodia', 'kampong', 'siem reap', 'battambang', 'angkor']
+            if any(place in text_lower for place in cambodian_places):
+                logger.info("Detected as Khmer based on Cambodian place names")
+                return 'km'
+
+            # Проверяем специфические кхмерские фразы
+            khmer_phrases = ['sosay bong', 'bong chui', 'vie mien', 'kue bong', 'no phnom penh']
+            if any(phrase in text_lower for phrase in khmer_phrases):
+                logger.info("Detected as Khmer based on specific phrases")
+                return 'km'
+
+        return detected_language
+
     def _get_language_info_safe(self, detected_language: str) -> Dict[str, str]:
         """
         Безопасно получает информацию о языке
@@ -163,7 +218,8 @@ class MediaHandler:
                     'vi': {'name': 'Vietnamese', 'native': 'Tiếng Việt'},
                     'zh': {'name': 'Chinese', 'native': '中文'},
                     'ja': {'name': 'Japanese', 'native': '日本語'},
-                    'ko': {'name': 'Korean', 'native': '한국어'}
+                    'ko': {'name': 'Korean', 'native': '한국어'},
+                    'tl': {'name': 'Tagalog', 'native': 'Tagalog'}
                 }
                 return language_names.get(detected_language, {'name': detected_language.upper(), 'native': ''})
         except Exception as e:
@@ -186,8 +242,9 @@ class MediaHandler:
             khmer_ratio = khmer_chars / total_chars
 
             if khmer_ratio < 0.1:  # Очень мало кхмерских символов
-                # Добавляем предупреждение
-                warning = "⚠️ Возможны неточности в распознавании кхмерского языка. Попробуйте:\n"
+                # Добавляем предупреждение для транслитерированного текста
+                warning = "ℹ️ Кхмерская речь распознана в латинской транслитерации.\n"
+                warning += "📝 Для лучшего качества попробуйте:\n"
                 warning += "• Говорить четче и медленнее\n"
                 warning += "• Записывать в тихом месте\n"
                 warning += "• Использовать качественный микрофон\n\n"
@@ -312,6 +369,7 @@ class MediaHandler:
             'es': '🇪🇸',  # Испания
             'de': '🇩🇪',  # Германия
             'ar': '🇸🇦',  # Саудовская Аравия
+            'tl': '🇵🇭',  # Филиппины
         }
 
         icon = language_icons.get(detected_lang, '🌐')
@@ -346,7 +404,7 @@ class MediaHandler:
             return False
 
         # Предлагаем перевод для азиатских языков на английский/русский
-        asian_languages = ['km', 'th', 'vi', 'zh', 'ja', 'ko']
+        asian_languages = ['km', 'th', 'vi', 'zh', 'ja', 'ko', 'tl']
         western_languages = ['en', 'ru', 'fr', 'es', 'de']
 
         return (detected_lang in asian_languages and user_lang in western_languages) or \
@@ -361,8 +419,9 @@ class MediaHandler:
             'en': "\n\n💡 Want a translation? Reply with 'translate to [language]'",
             'ru': "\n\n💡 Нужен перевод? Ответьте 'перевести на [язык]'",
             'km': "\n\n💡 ត្រូវការការបកប្រែទេ? ឆ្លើយតប 'បកប្រែទៅ [ភាសា]'",
-            'th': "\n\n💡 ต้องการแปลไหม? ตอบกลับด้วย 'แปลเป็น [ภาษา]'",
-            'vi': "\n\n💡 Cần dịch không? Trả lời 'dịch sang [ngôn ngữ]'"
+            'th': "\n\n💡 ต้องการแปลไหม? ตอบกলับด้วย 'แปลเป็น [ภาษา]'",
+            'vi': "\n\n💡 Cần dịch không? Trả lời 'dịch sang [ngôn ngữ]'",
+            'tl': "\n\n💡 Gusto mo bang isalin? Sumagot ng 'translate to [language]'"
         }
 
         return suggestions.get(user_lang, suggestions['en'])
