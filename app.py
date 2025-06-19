@@ -15,14 +15,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Глобальные переменные для сервисов
+message_handler = None
+transcription_service = None
+database = None
+language_detector = None
+translation_service = None
+audio_processor = None
+media_handler = None
+
 
 def create_app():
     """Создание и настройка Flask приложения"""
     app = Flask(__name__)
 
-    # Глобальные переменные для сервисов
-    global message_handler
-    message_handler = None
+    # Объявляем глобальные переменные
+    global message_handler, transcription_service, database, language_detector
+    global translation_service, audio_processor, media_handler
 
     try:
         logger.info("Инициализация сервисов...")
@@ -115,8 +124,8 @@ def create_app():
         """Главная страница"""
         return jsonify({
             "status": "Bot is running",
-            "message": "Messenger Transcribe Bot is active (Debug Mode)",
-            "version": "1.0.0-debug",
+            "message": "Messenger Transcribe Bot is active",
+            "version": "1.0.0",
             "transcription_available": transcription_service is not None,
             "endpoints": {
                 "webhook": "/webhook",
@@ -145,7 +154,7 @@ def create_app():
             return jsonify({
                 "status": "test_complete",
                 "services": results,
-                "timestamp": "2025-06-18T13:30:00Z"
+                "timestamp": "2025-06-19T10:00:00Z"
             })
 
         except Exception as e:
@@ -159,7 +168,7 @@ def create_app():
         """Проверка здоровья приложения"""
         return jsonify({
             "status": "healthy",
-            "message": "Debug mode active",
+            "message": "All services running",
             "transcription": "available" if transcription_service else "disabled"
         })
 
@@ -229,7 +238,10 @@ def create_app():
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
 
-# Создаем приложение
+    return app
+
+
+# Создаем приложение для Gunicorn
 app = create_app()
 
 if __name__ == '__main__':
