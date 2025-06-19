@@ -1,10 +1,9 @@
-# services/transcription_service.py - ФИНАЛЬНАЯ ВЕРСИЯ С НОРМАЛИЗАЦИЕЙ
+# services/transcription_service.py - ФИНАЛЬНАЯ И ЕДИНСТВЕННО ПРАВИЛЬНАЯ ВЕРСИЯ
 import openai
 import os
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 class TranscriptionService:
     def __init__(self):
@@ -27,6 +26,7 @@ class TranscriptionService:
         try:
             self.logger.info(f"Запускаем транскрибацию для языка: {language or 'auto'}")
 
+            # Первая попытка
             result = self._transcribe_sync(audio_file_path, language)
             text = result.get('text', '').strip()
 
@@ -35,6 +35,7 @@ class TranscriptionService:
                 self.logger.info(f"Транскрибация успешна. Язык: {detected_lang}")
                 return text, detected_lang
 
+            # Если первая попытка не дала результата, пробуем еще раз в режиме автоопределения.
             self.logger.warning("Первая попытка не дала результата, пробуем в режиме автоопределения.")
             fallback_result = self._transcribe_sync(audio_file_path, None)
             fallback_text = fallback_result.get('text', '').strip()
@@ -55,6 +56,7 @@ class TranscriptionService:
         try:
             with open(audio_path, "rb") as audio_file:
                 prompt_text = None
+                # Применяем подсказку, только если язык был выбран принудительно (например, при ретрае)
                 if language_hint == 'km':
                     prompt_text = "សួស្តី, ជំរាបសួរ, អរគុណ, សូម, បាទ, ចាស, ខ្ញុំ"
                     self.logger.info(f"Используем prompt для кхмерского языка: {prompt_text}")
@@ -70,15 +72,13 @@ class TranscriptionService:
                 detected_language_raw = response.language
                 transcribed_text = response.text.strip() if response.text else ''
 
-                # 🔧 ГЛАВНОЕ ИСПРАВЛЕНИЕ: НОРМАЛИЗАЦИЯ ЯЗЫКА
-                # Приводим 'khmer' к стандартному коду 'km'
+                # НОРМАЛИЗАЦИЯ ЯЗЫКА: Приводим 'khmer' к стандартному коду 'km'
                 detected_language = detected_language_raw.lower()
                 if detected_language == 'khmer':
                     detected_language = 'km'
                     logger.info("Нормализовали язык: 'khmer' -> 'km'")
 
-                self.logger.info(
-                    f"OpenAI определил язык: {detected_language_raw} (нормализован в {detected_language}).")
+                self.logger.info(f"OpenAI определил язык: {detected_language_raw} (нормализован в {detected_language}).")
 
                 return {
                     'success': True,
@@ -87,5 +87,5 @@ class TranscriptionService:
                 }
 
         except Exception as e:
-            self.logger.error(f"Ошибка транскрибации в _transcribe_sync: {e}")
-            return {'success': False, 'text': '', 'error': str(e)}
+            self.logger.error(f"Ошибка транскрипции в _transcribe_sync: {e}", exc_info=True)
+            return {'success': False, 'text': '', 'error': str(e)}git add services/transcription_service.py
