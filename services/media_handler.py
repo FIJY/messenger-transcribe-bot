@@ -42,75 +42,61 @@ class MediaHandler:
                     'translation': None
                 }
 
-                # 2. Попытка определить язык из имени файла (если метод существует)
-                filename_language = None
-                try:
-                    if hasattr(self.language_detector, 'detect_language_from_filename'):
-                        filename_language = self.language_detector.detect_language_from_filename(file_path)
-                        logger.info(f"Язык из имени файла: {filename_language}")
-                    else:
-                        logger.info("Метод detect_language_from_filename не найден, пропускаем")
-                except Exception as e:
-                    logger.warning(f"Ошибка определения языка по имени файла: {e}")
-                    filename_language = None
-
-                # 3. Транскрибируем аудио
-                if filename_language in ['khmer', 'km']:
-                    # Для кхмерского используем специальную стратегию
-                    result = self.transcription_service.transcribe_audio(audio_path, 'km')
-                    if result['success']:
-                        transcription = result['text']
-                        detected_language = result.get('detected_language', 'km')
-                    else:
-                        return {
-                            'success': False,
-                            'error': result.get('error', 'Ошибка транскрипции'),
-                            'transcription': '',
-                            'detected_language': 'unknown',
-                            'translation': None
-                        }
+            # 2. Попытка определить язык из имени файла (если метод существует)
+            filename_language = None
+            try:
+                if hasattr(self.language_detector, 'detect_language_from_filename'):
+                    filename_language = self.language_detector.detect_language_from_filename(file_path)
+                    logger.info(f"Язык из имени файла: {filename_language}")
                 else:
-                    # Обычная транскрипция с автоопределением языка
-                    result = self.transcription_service.transcribe_with_language_detection(audio_path)
-                    if result['success']:
-                        transcription = result['text']
-                        detected_language = result.get('detected_language', 'unknown')
-                    else:
-                        return {
-                            'success': False,
-                            'error': result.get('error', 'Ошибка транскрипции'),
-                            'transcription': '',
-                            'detected_language': 'unknown',
-                            'translation': None
-                        }
+                    logger.info("Метод detect_language_from_filename не найден, пропускаем")
+            except Exception as e:
+                logger.warning(f"Ошибка определения языка по имени файла: {e}")
+                filename_language = None
 
-            # 3. Транскрибируем с улучшенной обработкой для кхмерского
+            # 3. Транскрибируем аудио
             if filename_language in ['khmer', 'km']:
                 # Для кхмерского используем специальную стратегию
-                transcription, detected_language = self.transcription_service.transcribe_with_fallback(
-                    audio_path, 'km'
-                )
+                result = self.transcription_service.transcribe_audio(audio_path, 'km')
+                if result['success']:
+                    transcription = result['text']
+                    detected_language = result.get('detected_language', 'km')
+                else:
+                    return {
+                        'success': False,
+                        'error': result.get('error', 'Ошибка транскрипции'),
+                        'transcription': '',
+                        'detected_language': 'unknown',
+                        'translation': None
+                    }
             else:
-                # Обычная транскрипция
-                transcription, detected_language = self.transcription_service.transcribe_audio(
-                    audio_path, filename_language
-                )
-
-            if not transcription or transcription.startswith('Ошибка'):
-                return {
-                    'success': False,
-                    'error': transcription,
-                    'transcription': '',
-                    'detected_language': detected_language,
-                    'translation': None
-                }
+                # Обычная транскрипция с автоопределением языка
+                result = self.transcription_service.transcribe_with_language_detection(audio_path)
+                if result['success']:
+                    transcription = result['text']
+                    detected_language = result.get('detected_language', 'unknown')
+                else:
+                    return {
+                        'success': False,
+                        'error': result.get('error', 'Ошибка транскрипции'),
+                        'transcription': '',
+                        'detected_language': 'unknown',
+                        'translation': None
+                    }
 
             # 4. Дополнительное определение языка по тексту (если нужно)
             if detected_language == 'unknown' and transcription:
-                text_language, confidence = self.language_detector.analyze_language(transcription)
-                if confidence > 0.3:
-                    detected_language = text_language
-                    logger.info(f"Язык определен по тексту: {detected_language} (уверенность: {confidence:.2f})")
+                try:
+                    if hasattr(self.language_detector, 'analyze_language'):
+                        text_language, confidence = self.language_detector.analyze_language(transcription)
+                        if confidence > 0.3:
+                            detected_language = text_language
+                            logger.info(
+                                f"Язык определен по тексту: {detected_language} (уверенность: {confidence:.2f})")
+                    else:
+                        logger.info("Метод analyze_language не найден, пропускаем анализ")
+                except Exception as e:
+                    logger.warning(f"Ошибка анализа языка по тексту: {e}")
 
             # 5. Проверяем качество транскрипции для кхмерского
             if detected_language in ['km', 'khmer']:
@@ -121,16 +107,22 @@ class MediaHandler:
                 'transcription': transcription,
                 'detected_language': detected_language,
                 'translation': None,
-                'language_info': self.language_detector.get_language_info(detected_language)
+                'language_info': self._get_language_info_safe(detected_language)
             }
 
             # 6. Переводим если запрошено
             if target_language and target_language != detected_language:
-                translation = self.translation_service.translate_text(
-                    transcription, detected_language, target_language
-                )
-                result['translation'] = translation
-                logger.info(f"Выполнен перевод на {target_language}")
+                try:
+                    translation_result = self.translation_service.translate_text(
+                        transcription, detected_language, target_language
+                    )
+                    if translation_result.get('success'):
+                        result['translation'] = translation_result.get('translated_text')
+                        logger.info(f"Выполнен перевод на {target_language}")
+                    else:
+                        logger.warning(f"Не удалось выполнить перевод: {translation_result.get('error')}")
+                except Exception as e:
+                    logger.error(f"Ошибка при переводе: {e}")
 
             # 7. Очищаем временные файлы
             self._cleanup_temp_files(file_path, audio_path)
@@ -140,6 +132,9 @@ class MediaHandler:
 
         except Exception as e:
             logger.error(f"Ошибка при обработке медиа: {e}")
+            import traceback
+            traceback.print_exc()
+
             # Очищаем файлы в случае ошибки
             try:
                 if audio_path:
@@ -154,6 +149,30 @@ class MediaHandler:
                 'detected_language': 'unknown',
                 'translation': None
             }
+
+    def _get_language_info_safe(self, detected_language: str) -> Dict[str, str]:
+        """
+        Безопасно получает информацию о языке
+        """
+        try:
+            if hasattr(self.language_detector, 'get_language_info'):
+                return self.language_detector.get_language_info(detected_language)
+            else:
+                # Простая заглушка
+                language_names = {
+                    'km': {'name': 'Khmer', 'native': 'ខ្មែរ'},
+                    'en': {'name': 'English', 'native': 'English'},
+                    'ru': {'name': 'Russian', 'native': 'Русский'},
+                    'th': {'name': 'Thai', 'native': 'ไทย'},
+                    'vi': {'name': 'Vietnamese', 'native': 'Tiếng Việt'},
+                    'zh': {'name': 'Chinese', 'native': '中文'},
+                    'ja': {'name': 'Japanese', 'native': '日本語'},
+                    'ko': {'name': 'Korean', 'native': '한국어'}
+                }
+                return language_names.get(detected_language, {'name': detected_language.upper(), 'native': ''})
+        except Exception as e:
+            logger.warning(f"Ошибка получения информации о языке: {e}")
+            return {'name': detected_language.upper(), 'native': ''}
 
     @staticmethod
     def _improve_khmer_transcription(transcription: str) -> str:
