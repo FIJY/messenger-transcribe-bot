@@ -96,6 +96,72 @@ class TranscriptionService:
                 'error': str(e)
             }
 
+    def transcribe_with_fallback(self, audio_file_path, language=None):
+        """
+        Транскрипция с дополнительными попытками для сложных языков
+        Специально для кхмерского языка и других азиатских языков
+
+        Returns:
+            tuple: (transcription_text, detected_language)
+        """
+        try:
+            self.logger.info(f"Transcribe with fallback for language: {language}")
+
+            # Первая попытка с указанным языком
+            result = self.transcribe_audio(audio_file_path, language)
+
+            if result['success'] and result['text'].strip():
+                text = result['text'].strip()
+                detected_lang = result.get('detected_language', language or 'unknown')
+
+                # Для кхмерского проверяем качество транскрипции
+                if language == 'km' or detected_lang == 'km':
+                    # Проверяем есть ли кхмерские символы
+                    khmer_chars = sum(1 for char in text if '\u1780' <= char <= '\u17FF')
+                    total_chars = len([char for char in text if char.isalpha()])
+
+                    if total_chars > 0:
+                        khmer_ratio = khmer_chars / total_chars
+                        self.logger.info(f"Khmer characters ratio: {khmer_ratio:.2f}")
+
+                        if khmer_ratio < 0.1:
+                            # Мало кхмерских символов, пробуем без указания языка
+                            self.logger.info("Low Khmer ratio, trying without language specification")
+                            fallback_result = self.transcribe_audio(audio_file_path, None)
+                            if fallback_result['success'] and fallback_result['text'].strip():
+                                text = fallback_result['text'].strip()
+                                # Пытаемся определить язык заново
+                                try:
+                                    from langdetect import detect
+                                    detected_lang = detect(text)
+                                except:
+                                    detected_lang = 'unknown'
+
+                return text, detected_lang
+            else:
+                # Если первая попытка не удалась, пробуем без языка
+                self.logger.info("First attempt failed, trying without language")
+                fallback_result = self.transcribe_audio(audio_file_path, None)
+                if fallback_result['success'] and fallback_result['text'].strip():
+                    text = fallback_result['text'].strip()
+                    detected_lang = fallback_result.get('detected_language', 'unknown')
+
+                    # Пытаемся определить язык
+                    try:
+                        from langdetect import detect
+                        detected_lang = detect(text)
+                    except:
+                        detected_lang = 'unknown'
+
+                    return text, detected_lang
+                else:
+                    error_msg = fallback_result.get('error', result.get('error', 'Unknown error'))
+                    return f"Ошибка транскрипции: {error_msg}", 'unknown'
+
+        except Exception as e:
+            self.logger.error(f"Error in transcribe_with_fallback: {e}")
+            return f"Ошибка транскрипции: {str(e)}", 'unknown'
+
     def get_supported_languages(self) -> list:
         """Возвращает список поддерживаемых языков"""
         return [
