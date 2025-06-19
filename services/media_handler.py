@@ -198,12 +198,17 @@ class MediaHandler:
             if file_size > max_size:
                 return False, f"Файл слишком большой. Максимальный размер: {max_size // (1024 * 1024)}MB"
 
-            # Проверяем расширение
-            file_ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+            # Улучшенная проверка расширения - работает с Facebook URL
+            file_ext = self._extract_file_extension(file_path).lower()
             supported = self.get_supported_formats()
             all_formats = supported['audio'] + supported['video']
 
             if file_ext not in all_formats:
+                # Для Facebook файлов проверяем MIME type
+                if self._is_facebook_media_file(file_path):
+                    self.logger.info(f"Обнаружен Facebook медиа файл: {file_path}")
+                    return True, ""  # Facebook файлы считаем валидными
+
                 return False, f"Неподдерживаемый формат файла. Поддерживаются: {', '.join(all_formats)}"
 
             # Проверяем длительность (если метод существует)
@@ -220,6 +225,36 @@ class MediaHandler:
         except Exception as e:
             logger.error(f"Ошибка при проверке файла: {e}")
             return False, f"Ошибка при проверке файла: {str(e)}"
+
+    def _extract_file_extension(self, file_path: str) -> str:
+        """
+        Извлекает расширение файла, учитывая Facebook URL
+        """
+        # Если это Facebook URL
+        if 'fbcdn.net' in file_path or 'facebook.com' in file_path:
+            if 'video' in file_path or '.mp4' in file_path:
+                return 'mp4'
+            elif 'audio' in file_path or '.mp3' in file_path:
+                return 'mp3'
+            else:
+                return 'mp4'  # По умолчанию для Facebook считаем видео
+
+        # Обычное извлечение расширения
+        return os.path.splitext(file_path)[1].lower().lstrip('.')
+
+    def _is_facebook_media_file(self, file_path: str) -> bool:
+        """
+        Проверяет, является ли файл медиа файлом от Facebook
+        """
+        facebook_indicators = [
+            'fbcdn.net',
+            'facebook.com',
+            'video.xx.fbcdn.net',
+            'scontent',
+            't42.3356'  # Facebook video identifier
+        ]
+
+        return any(indicator in file_path for indicator in facebook_indicators)
 
     def create_smart_response(self, result: Dict[str, Any], user_language: str = 'en') -> str:
         """
