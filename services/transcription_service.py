@@ -3,6 +3,7 @@ import openai
 import os
 import logging
 import tempfile
+import time
 
 
 class TranscriptionService:
@@ -63,7 +64,7 @@ class TranscriptionService:
         """Транскрипция с автоопределением языка"""
         try:
             # Сначала пробуем без указания языка (автоопределение)
-            result = self.transcribe_audio(audio_file_path)
+            result = self._transcribe_sync(audio_file_path)
 
             if result['success']:
                 # Пытаемся определить язык по тексту

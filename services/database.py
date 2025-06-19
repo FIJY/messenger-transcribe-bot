@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -480,3 +481,94 @@ class Database:
         if self.client:
             self.client.close()
             logger.info("MongoDB connection closed")
+
+    def store_retry_info(self, user_id: str, retry_data: Dict[str, Any]):
+        """Сохраняет информацию для повторной обработки"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO retry_info (user_id, retry_data, created_at)
+                VALUES (?, ?, ?)
+            """, (user_id, json.dumps(retry_data), datetime.utcnow().isoformat()))
+
+            self.connection.commit()
+
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении retry info: {e}")
+
+    def get_retry_info(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Получает информацию для повторной обработки"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("""
+                SELECT retry_data FROM retry_info 
+                WHERE user_id = ? 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """, (user_id,))
+
+            result = cursor.fetchone()
+            if result:
+                return json.loads(result[0])
+            return None
+
+        except Exception as e:
+            logger.error(f"Ошибка при получении retry info: {e}")
+            return None
+
+    def set_user_language_preference(self, user_id: str, language: str):
+        """Устанавливает предпочтение языка для пользователя"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("""
+                UPDATE users SET preferred_language = ? WHERE user_id = ?
+            """, (language, user_id))
+
+            self.connection.commit()
+
+        except Exception as e:
+            logger.error(f"Ошибка при установке языкового предпочтения: {e}")
+
+    def _create_tables(self):
+        """Создает необходимые таблицы в базе данных - ОБНОВЛЕННАЯ ВЕРСИЯ"""
+        cursor = self.connection.cursor()
+
+        # Таблица пользователей
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                daily_usage INTEGER DEFAULT 0,
+                total_transcriptions INTEGER DEFAULT 0,
+                is_premium BOOLEAN DEFAULT 0,
+                preferred_language TEXT DEFAULT NULL,
+                target_language TEXT DEFAULT 'en',
+                auto_translate BOOLEAN DEFAULT 0,
+                created_at TEXT,
+                last_reset TEXT
+            )
+        """)
+
+        # Таблица транскрипций
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transcriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                transcription TEXT,
+                detected_language TEXT,
+                file_type TEXT,
+                created_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        # 🔧 НОВАЯ таблица для retry информации
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS retry_info (
+                user_id TEXT PRIMARY KEY,
+                retry_data TEXT,
+                created_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        self.connection.commit()

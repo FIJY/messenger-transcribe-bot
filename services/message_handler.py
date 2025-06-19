@@ -1,7 +1,8 @@
-# services/message_handler.py - ИСПРАВЛЕННАЯ ВЕРСИЯ
+# services/message_handler.py - ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
 import logging
 import requests
 import os
+import time
 from typing import Dict, Any, Optional, List
 from .media_handler import MediaHandler
 from .database import Database
@@ -63,8 +64,16 @@ class MessageHandler:
             return False
 
     def _handle_text_message(self, sender_id: str, text: str, user: Dict[str, Any]) -> bool:
-        """Обрабатывает текстовые сообщения"""
+        """Обрабатывает текстовые сообщения - ОБНОВЛЕННАЯ ВЕРСИЯ"""
         text_lower = text.lower().strip()
+
+        # 🔧 НОВОЕ: Обрабатываем ответы кнопок выбора языка
+        if text.startswith('RETRY_LANG_'):
+            return self._handle_language_retry(sender_id, text, user)
+
+        if text == 'LANG_CORRECT':
+            self._send_text_message(sender_id, "✅ Спасибо за подтверждение!")
+            return True
 
         # Команды помощи
         if any(keyword in text_lower for keyword in
@@ -77,7 +86,7 @@ class MessageHandler:
             self._send_stats_message(sender_id, user)
             return True
 
-        # Команды перевода - ИСПРАВЛЕНО
+        # Команды перевода
         if self._is_translation_request(text_lower):
             return self._handle_translation_request(sender_id, text, user)
 
@@ -90,6 +99,58 @@ class MessageHandler:
 
         self._send_text_message(sender_id, response)
         return True
+
+    def _handle_language_retry(self, sender_id: str, payload: str, user: Dict[str, Any]) -> bool:
+        """Обрабатывает повторную транскрипцию с выбранным языком"""
+        try:
+            # Извлекаем код языка из payload
+            language_code = payload.replace('RETRY_LANG_', '').lower()
+
+            language_map = {
+                'km': 'km',
+                'th': 'th',
+                'vi': 'vi',
+                'en': 'en'
+            }
+
+            target_language = language_map.get(language_code)
+            if not target_language:
+                self._send_text_message(sender_id, "❌ Неизвестный язык")
+                return True
+
+            # Получаем информацию о последнем аудио
+            retry_info = self.database.get_retry_info(sender_id)
+            if not retry_info:
+                self._send_text_message(sender_id, "❌ Не найдено аудио для повторной обработки. Отправьте новый файл.")
+                return True
+
+            self._send_text_message(sender_id,
+                                    f"🔄 Повторная обработка с языком: {self._get_language_name(target_language)}")
+
+            # Здесь нужно повторно обработать последний аудио файл
+            # Поскольку файл уже удален, можно попросить пользователя отправить снова
+            self._send_text_message(sender_id,
+                                    "🎙️ Пожалуйста, отправьте аудио файл снова для обработки с выбранным языком.")
+
+            # Сохраняем предпочтение языка для следующей обработки
+            self.database.set_user_language_preference(sender_id, target_language)
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Ошибка при повторной обработке с языком: {e}")
+            self._send_text_message(sender_id, "❌ Ошибка при повторной обработке")
+            return True
+
+    def _get_language_name(self, code: str) -> str:
+        """Получает название языка по коду"""
+        names = {
+            'km': '🇰🇭 Кхмерский',
+            'th': '🇹🇭 Тайский',
+            'vi': '🇻🇳 Вьетнамский',
+            'en': '🇺🇸 Английский'
+        }
+        return names.get(code, code.upper())
 
     def _handle_attachments(self, sender_id: str, attachments: List[Dict], user: Dict[str, Any]) -> bool:
         """Обрабатывает вложения (аудио/видео файлы)"""
@@ -109,7 +170,7 @@ class MessageHandler:
         return True
 
     def _process_media_attachment(self, sender_id: str, attachment: Dict, user: Dict[str, Any]) -> bool:
-        """Обрабатывает медиа вложение"""
+        """Обрабатывает медиа вложение - ОБНОВЛЕННАЯ ВЕРСИЯ"""
         try:
             # Отправляем сообщение о начале обработки
             self._send_processing_message(sender_id)
@@ -140,9 +201,8 @@ class MessageHandler:
             # Увеличиваем счетчик использования
             self.database.increment_usage(sender_id)
 
-            # Отправляем результат пользователю
-            response = self._format_transcription_response(result)
-            self._send_text_message(sender_id, response)
+            # 🔧 НОВОЕ: Отправляем результат с кнопками выбора языка
+            self._send_transcription_with_language_buttons(sender_id, result)
 
             # Предлагаем перевод если нужно
             self._send_translation_offer(sender_id, result, user)
@@ -180,7 +240,7 @@ class MessageHandler:
             # Получаем предпочтения пользователя
             user_preferences = self._get_user_preferences(user) if user else None
 
-            # Обрабатываем файл - ИСПРАВЛЕНО название метода
+            # Обрабатываем файл
             result = self.media_handler.process_media(temp_file_path, user_preferences)
 
             return result
@@ -199,6 +259,117 @@ class MessageHandler:
             'auto_translate': user.get('auto_translate', False),
             'target_language': user.get('target_language', 'en')
         }
+
+    def _should_show_language_correction_buttons(self, result: Dict[str, Any]) -> bool:
+        """Определяет, нужно ли показать кнопки исправления языка"""
+        detected_lang = result.get('detected_language', 'unknown')
+        quality_analysis = result.get('quality_analysis', {})
+        transcription = result.get('transcription', '')
+
+        # Показываем кнопки если:
+        # 1. Обнаружен английский, но есть подозрения на азиатский язык
+        # 2. Качество транскрипции плохое
+        # 3. Текст выглядит как неправильная транскрипция
+
+        if detected_lang == 'en':
+            # Проверяем на подозрительные паттерны английской транскрипции азиатских языков
+            suspicious_patterns = [
+                'so what', 'check', 'progress', 'course', 'just', 'who packed',
+                'thank you', 'you know', 'right now', 'i think', 'what do you',
+                'how are you', 'good morning', 'thank', 'please', 'sorry'
+            ]
+
+            text_lower = transcription.lower()
+            if any(pattern in text_lower for pattern in suspicious_patterns):
+                return True
+
+        # Показываем если качество плохое
+        if quality_analysis.get('quality') in ['poor', 'mixed']:
+            return True
+
+        # Показываем если транскрипция очень короткая и может быть неточной
+        if len(transcription.split()) <= 3:
+            return True
+
+        return False
+
+    def _send_transcription_with_language_buttons(self, sender_id: str, result: Dict[str, Any]):
+        """Отправляет транскрипцию с кнопками выбора языка если нужно"""
+
+        # Отправляем основной результат
+        response = self._format_transcription_response(result)
+        self._send_text_message(sender_id, response)
+
+        # Проверяем, нужны ли кнопки исправления языка
+        if self._should_show_language_correction_buttons(result):
+            self._send_language_correction_buttons(sender_id, result)
+
+    def _send_language_correction_buttons(self, sender_id: str, result: Dict[str, Any]):
+        """Отправляет кнопки для исправления языка"""
+        try:
+            url = f"https://graph.facebook.com/v17.0/me/messages"
+
+            # Сохраняем последнюю транскрипцию для повторной обработки
+            self._store_last_audio_for_retry(sender_id, result)
+
+            quick_replies = [
+                {
+                    "content_type": "text",
+                    "title": "🇰🇭 ខ្មែរ",
+                    "payload": "RETRY_LANG_KM"
+                },
+                {
+                    "content_type": "text",
+                    "title": "🇹🇭 ไทย",
+                    "payload": "RETRY_LANG_TH"
+                },
+                {
+                    "content_type": "text",
+                    "title": "🇻🇳 Tiếng Việt",
+                    "payload": "RETRY_LANG_VI"
+                },
+                {
+                    "content_type": "text",
+                    "title": "🇺🇸 English",
+                    "payload": "RETRY_LANG_EN"
+                },
+                {
+                    "content_type": "text",
+                    "title": "✅ Правильно",
+                    "payload": "LANG_CORRECT"
+                }
+            ]
+
+            payload = {
+                'recipient': {'id': sender_id},
+                'message': {
+                    'text': "🤔 Язык определен правильно? Если нет, выберите нужный:",
+                    'quick_replies': quick_replies
+                },
+                'access_token': self.page_access_token
+            }
+
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+
+            logger.info(f"Кнопки выбора языка отправлены пользователю {sender_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Ошибка при отправке кнопок языка: {e}")
+            return False
+
+    def _store_last_audio_for_retry(self, sender_id: str, result: Dict[str, Any]):
+        """Сохраняет информацию о последнем аудио для повторной обработки"""
+        # Можно сохранить в базе данных или в памяти
+        try:
+            self.database.store_retry_info(sender_id, {
+                'transcription': result.get('transcription'),
+                'detected_language': result.get('detected_language'),
+                'timestamp': str(int(time.time()))
+            })
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении retry info: {e}")
 
     def _format_transcription_response(self, result: Dict[str, Any]) -> str:
         """Форматирует ответ с результатами транскрипции"""
@@ -347,7 +518,6 @@ class MessageHandler:
 
         return daily_usage < limit
 
-    # Остальные методы отправки сообщений остаются без изменений...
     def _send_welcome_message(self, sender_id: str):
         """Отправляет приветственное сообщение"""
         message = """🎉 Добро пожаловать в Transcribe Bot!
