@@ -74,7 +74,7 @@ def health_check():
     return jsonify({
         'status': 'Bot is running',
         'message': 'Messenger Transcribe Bot is active',
-        'version': '1.0.0',
+        'version': '1.1.0',
         'endpoints': {
             'health': '/api/health',
             'webhook': '/webhook'
