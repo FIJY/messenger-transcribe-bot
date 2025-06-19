@@ -52,37 +52,33 @@ class MediaHandler:
                     logger.info("Метод detect_language_from_filename не найден, пропускаем")
             except Exception as e:
                 logger.warning(f"Ошибка определения языка по имени файла: {e}")
-                filename_language = None
 
             # 3. Транскрибируем аудио
+            transcription = None
+            detected_language = 'unknown'
+
             if filename_language in ['khmer', 'km']:
                 # Для кхмерского используем специальную стратегию
+                logger.info("Используем кхмерскую транскрипцию")
                 result = self.transcription_service.transcribe_audio(audio_path, 'km')
-                if result['success']:
-                    transcription = result['text']
-                    detected_language = result.get('detected_language', 'km')
-                else:
-                    return {
-                        'success': False,
-                        'error': result.get('error', 'Ошибка транскрипции'),
-                        'transcription': '',
-                        'detected_language': 'unknown',
-                        'translation': None
-                    }
             else:
                 # Обычная транскрипция с автоопределением языка
+                logger.info("Используем обычную транскрипцию с автоопределением")
                 result = self.transcription_service.transcribe_with_language_detection(audio_path)
-                if result['success']:
-                    transcription = result['text']
-                    detected_language = result.get('detected_language', 'unknown')
-                else:
-                    return {
-                        'success': False,
-                        'error': result.get('error', 'Ошибка транскрипции'),
-                        'transcription': '',
-                        'detected_language': 'unknown',
-                        'translation': None
-                    }
+
+            if result['success']:
+                transcription = result['text']
+                detected_language = result.get('detected_language', 'unknown')
+                logger.info(f"Транскрипция успешна: {len(transcription)} символов, язык: {detected_language}")
+            else:
+                logger.error(f"Ошибка транскрипции: {result.get('error')}")
+                return {
+                    'success': False,
+                    'error': result.get('error', 'Ошибка транскрипции'),
+                    'transcription': '',
+                    'detected_language': 'unknown',
+                    'translation': None
+                }
 
             # 4. Дополнительное определение языка по тексту (если нужно)
             if detected_language == 'unknown' and transcription:
