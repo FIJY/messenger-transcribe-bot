@@ -88,4 +88,4 @@ class TranscriptionService:
 
         except Exception as e:
             self.logger.error(f"Ошибка транскрипции в _transcribe_sync: {e}", exc_info=True)
-            return {'success': False, 'text': '', 'error': str(e)}git add services/transcription_service.py
+            return {'success': False, 'text': '', 'error': str(e)}
