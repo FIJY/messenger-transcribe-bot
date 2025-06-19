@@ -157,7 +157,7 @@ class MessageHandler:
             self._send_text_message(sender_id, response)
 
             # Предлагаем перевод если нужно
-            self._send_translation_offer(sender_id, result, user)
+            self.send_translation_offer(sender_id, result, user)
 
             return True
 
@@ -228,7 +228,7 @@ class MessageHandler:
 
         return response
 
-    def _send_translation_offer(self, sender_id: str, result: Dict[str, Any], user: Dict[str, Any]):
+    def send_translation_offer(self, sender_id: str, result: Dict[str, Any], user: Dict[str, Any]):
         """
         Предлагает перевод если подходящие условия
         """

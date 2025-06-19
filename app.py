@@ -91,16 +91,14 @@ def create_app():
 
         media_handler = MediaHandler(
             transcription_service=transcription_service,
-            language_detector=language_detector,
-            translation_service=translation_service,
-            audio_processor=audio_processor,
-            database=database
+            translation_service=translation_service
         )
         logger.info("✅ MediaHandler инициализирован")
 
         message_handler = MessageHandler(
             media_handler=media_handler,
-            database=database
+            database=database,
+            translation_service=translation_service
         )
         logger.info("✅ MessageHandler инициализирован")
 
