@@ -42,9 +42,47 @@ class MediaHandler:
                     'translation': None
                 }
 
-            # 2. Попытка определить язык из имени файла
-            filename_language = self.language_detector.detect_language_from_filename(file_path)
-            logger.info(f"Язык из имени файла: {filename_language}")
+                # 2. Попытка определить язык из имени файла (если метод существует)
+                filename_language = None
+                try:
+                    if hasattr(self.language_detector, 'detect_language_from_filename'):
+                        filename_language = self.language_detector.detect_language_from_filename(file_path)
+                        logger.info(f"Язык из имени файла: {filename_language}")
+                    else:
+                        logger.info("Метод detect_language_from_filename не найден, пропускаем")
+                except Exception as e:
+                    logger.warning(f"Ошибка определения языка по имени файла: {e}")
+                    filename_language = None
+
+                # 3. Транскрибируем аудио
+                if filename_language in ['khmer', 'km']:
+                    # Для кхмерского используем специальную стратегию
+                    result = self.transcription_service.transcribe_audio(audio_path, 'km')
+                    if result['success']:
+                        transcription = result['text']
+                        detected_language = result.get('detected_language', 'km')
+                    else:
+                        return {
+                            'success': False,
+                            'error': result.get('error', 'Ошибка транскрипции'),
+                            'transcription': '',
+                            'detected_language': 'unknown',
+                            'translation': None
+                        }
+                else:
+                    # Обычная транскрипция с автоопределением языка
+                    result = self.transcription_service.transcribe_with_language_detection(audio_path)
+                    if result['success']:
+                        transcription = result['text']
+                        detected_language = result.get('detected_language', 'unknown')
+                    else:
+                        return {
+                            'success': False,
+                            'error': result.get('error', 'Ошибка транскрипции'),
+                            'transcription': '',
+                            'detected_language': 'unknown',
+                            'translation': None
+                        }
 
             # 3. Транскрибируем с улучшенной обработкой для кхмерского
             if filename_language in ['khmer', 'km']:
