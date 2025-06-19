@@ -1,4 +1,4 @@
-# services/transcription_service.py - ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
+# services/transcription_service.py - ФИНАЛЬНАЯ ВЕРСИЯ С НОРМАЛИЗАЦИЕЙ
 import openai
 import os
 import logging
@@ -27,25 +27,20 @@ class TranscriptionService:
         try:
             self.logger.info(f"Запускаем транскрибацию для языка: {language or 'auto'}")
 
-            # Первая попытка с указанным языком (если он есть)
             result = self._transcribe_sync(audio_file_path, language)
             text = result.get('text', '').strip()
 
             if result['success'] and text:
-                # Если первая попытка успешна, возвращаем результат
                 detected_lang = result.get('detected_language', language or 'unknown')
-                self.logger.info(f"Транскрибация успешна с первой попытки. Язык: {detected_lang}")
+                self.logger.info(f"Транскрибация успешна. Язык: {detected_lang}")
                 return text, detected_lang
 
-            # Если первая попытка не удалась (например, был указан неверный язык),
-            # пробуем еще раз в режиме автоопределения.
             self.logger.warning("Первая попытка не дала результата, пробуем в режиме автоопределения.")
             fallback_result = self._transcribe_sync(audio_file_path, None)
             fallback_text = fallback_result.get('text', '').strip()
 
             if fallback_result['success'] and fallback_text:
                 detected_lang = fallback_result.get('detected_language', 'unknown')
-                self.logger.info(f"Транскрибация успешна со второй попытки (fallback). Язык: {detected_lang}")
                 return fallback_text, detected_lang
             else:
                 error_msg = fallback_result.get('error', result.get('error', 'Unknown error'))
@@ -56,12 +51,9 @@ class TranscriptionService:
             return f"Ошибка транскрипции: {str(e)}", 'unknown'
 
     def _transcribe_sync(self, audio_path: str, language_hint: str = None) -> dict:
-        """Синхронная версия транскрибации с подсказками (prompt)."""
+        """Синхронная версия транскрипции с подсказками (prompt) и нормализацией."""
         try:
             with open(audio_path, "rb") as audio_file:
-
-                # 🔧 НОВОЕ: Добавляем подсказку (prompt) для кхмерского языка
-                # Это значительно повышает шанс получения текста в кхмерском алфавите.
                 prompt_text = None
                 if language_hint == 'km':
                     prompt_text = "សួស្តី, ជំរាបសួរ, អរគុណ, សូម, បាទ, ចាស, ខ្ញុំ"
@@ -71,14 +63,22 @@ class TranscriptionService:
                     model="whisper-1",
                     file=audio_file,
                     language=language_hint if language_hint else None,
-                    prompt=prompt_text,  # <--- ПЕРЕДАЕМ ПОДСКАЗКУ
-                    response_format="verbose_json"  # Получаем больше данных, включая язык
+                    prompt=prompt_text,
+                    response_format="verbose_json"
                 )
 
-                detected_language = response.language
+                detected_language_raw = response.language
                 transcribed_text = response.text.strip() if response.text else ''
 
-                self.logger.info(f"OpenAI определил язык: {detected_language}. Текст: {transcribed_text[:100]}...")
+                # 🔧 ГЛАВНОЕ ИСПРАВЛЕНИЕ: НОРМАЛИЗАЦИЯ ЯЗЫКА
+                # Приводим 'khmer' к стандартному коду 'km'
+                detected_language = detected_language_raw.lower()
+                if detected_language == 'khmer':
+                    detected_language = 'km'
+                    logger.info("Нормализовали язык: 'khmer' -> 'km'")
+
+                self.logger.info(
+                    f"OpenAI определил язык: {detected_language_raw} (нормализован в {detected_language}).")
 
                 return {
                     'success': True,
