@@ -8,3 +8,4 @@ httpx==0.24.1
 gunicorn==21.2.0
 dnspython==2.4.2
 deep-translator==1.11.4
+khmer-nltk==1.6

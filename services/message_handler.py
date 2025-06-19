@@ -1,3 +1,4 @@
+# services/message_handler.py - ИСПРАВЛЕННАЯ ВЕРСИЯ
 import logging
 import requests
 import os
@@ -17,19 +18,11 @@ class MessageHandler:
         self.page_access_token = os.getenv('PAGE_ACCESS_TOKEN')
 
         # Настройки лимитов
-        self.FREE_DAILY_LIMIT = int(os.getenv('FREE_DAILY_LIMIT', '10'))
-        self.PREMIUM_DAILY_LIMIT = int(os.getenv('PREMIUM_DAILY_LIMIT', '1000'))
+        self.FREE_DAILY_LIMIT = int(os.getenv('FREE_DAILY_LIMIT', '9998'))
+        self.PREMIUM_DAILY_LIMIT = int(os.getenv('PREMIUM_DAILY_LIMIT', '9999'))
 
     def handle_message(self, message_data: Dict[str, Any]) -> bool:
-        """
-        Обрабатывает входящее сообщение от пользователя
-
-        Args:
-            message_data: данные сообщения от Facebook
-
-        Returns:
-            True если сообщение обработано успешно
-        """
+        """Обрабатывает входящее сообщение от пользователя"""
         try:
             sender_id = message_data.get('sender', {}).get('id')
             message = message_data.get('message', {})
@@ -70,13 +63,12 @@ class MessageHandler:
             return False
 
     def _handle_text_message(self, sender_id: str, text: str, user: Dict[str, Any]) -> bool:
-        """
-        Обрабатывает текстовые сообщения
-        """
+        """Обрабатывает текстовые сообщения"""
         text_lower = text.lower().strip()
 
         # Команды помощи
-        if any(keyword in text_lower for keyword in ['help', 'помощь', 'справка', '/start']):
+        if any(keyword in text_lower for keyword in
+               ['help', 'помощь', 'справка', '/start', 'start', 'привет', 'hello']):
             self._send_help_message(sender_id)
             return True
 
@@ -85,7 +77,7 @@ class MessageHandler:
             self._send_stats_message(sender_id, user)
             return True
 
-        # Команды перевода
+        # Команды перевода - ИСПРАВЛЕНО
         if self._is_translation_request(text_lower):
             return self._handle_translation_request(sender_id, text, user)
 
@@ -100,9 +92,7 @@ class MessageHandler:
         return True
 
     def _handle_attachments(self, sender_id: str, attachments: List[Dict], user: Dict[str, Any]) -> bool:
-        """
-        Обрабатывает вложения (аудио/видео файлы)
-        """
+        """Обрабатывает вложения (аудио/видео файлы)"""
         for attachment in attachments:
             attachment_type = attachment.get('type')
 
@@ -119,9 +109,7 @@ class MessageHandler:
         return True
 
     def _process_media_attachment(self, sender_id: str, attachment: Dict, user: Dict[str, Any]) -> bool:
-        """
-        Обрабатывает медиа вложение
-        """
+        """Обрабатывает медиа вложение"""
         try:
             # Отправляем сообщение о начале обработки
             self._send_processing_message(sender_id)
@@ -130,24 +118,16 @@ class MessageHandler:
             payload = attachment.get('payload', {})
             file_url = payload.get('url')
 
-            logger.info(f"Обрабатываем файл URL: {file_url}")
-
             if not file_url:
-                logger.error("Не удалось получить URL файла")
                 self._send_text_message(sender_id, "❌ Не удалось получить файл.")
                 return False
 
             # Скачиваем и обрабатываем файл
-            result = self._download_and_process_media(file_url, user.get('is_premium', False))
-
-            logger.info(f"Результат обработки медиа: {result}")
+            result = self._download_and_process_media(file_url, user.get('is_premium', False), user)
 
             if not result['success']:
-                logger.error(f"Ошибка обработки медиа: {result.get('error', 'Unknown error')}")
                 self._send_text_message(sender_id, f"❌ {result['error']}")
                 return False
-
-            logger.info("Медиа файл успешно обработан, сохраняем в БД...")
 
             # Сохраняем результат в базу данных
             self.database.save_transcription(
@@ -160,67 +140,48 @@ class MessageHandler:
             # Увеличиваем счетчик использования
             self.database.increment_usage(sender_id)
 
-            logger.info("Данные сохранены, отправляем результат пользователю...")
-
             # Отправляем результат пользователю
             response = self._format_transcription_response(result)
             self._send_text_message(sender_id, response)
 
             # Предлагаем перевод если нужно
-            self.send_translation_offer(sender_id, result, user)
+            self._send_translation_offer(sender_id, result, user)
 
-            logger.info("✅ Медиа вложение успешно обработано")
             return True
 
         except Exception as e:
             logger.error(f"❌ Ошибка при обработке медиа вложения: {e}")
-            import traceback
-            traceback.print_exc()
             self._send_text_message(sender_id, "❌ Произошла ошибка при обработке файла.")
             return False
-            return False
 
-    def _download_and_process_media(self, file_url: str, is_premium: bool = False) -> Dict[str, Any]:
-        """
-        Скачивает и обрабатывает медиа файл
-        """
+    def _download_and_process_media(self, file_url: str, is_premium: bool = False, user: Dict[str, Any] = None) -> Dict[
+        str, Any]:
+        """Скачивает и обрабатывает медиа файл"""
         try:
             import tempfile
             import requests
-
-            logger.info(f"Начинаем скачивание файла: {file_url}")
 
             # Скачиваем файл
             headers = {'Authorization': f'Bearer {self.page_access_token}'}
             response = requests.get(file_url, headers=headers, timeout=30)
             response.raise_for_status()
 
-            logger.info(f"Файл скачан, размер: {len(response.content)} байт")
-
             # Сохраняем во временный файл
             with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as temp_file:
                 temp_file.write(response.content)
                 temp_file_path = temp_file.name
 
-            logger.info(f"Файл сохранен во временный путь: {temp_file_path}")
-
             # Проверяем файл
-            logger.info("Валидируем файл...")
             is_valid, error_msg = self.media_handler.validate_file(temp_file_path, is_premium)
-
-            logger.info(f"Результат валидации: valid={is_valid}, error='{error_msg}'")
-
             if not is_valid:
                 os.remove(temp_file_path)
-                logger.error(f"Файл не прошел валидацию: {error_msg}")
                 return {'success': False, 'error': error_msg}
 
-            logger.info("Файл валиден, начинаем обработку через MediaHandler...")
+            # Получаем предпочтения пользователя
+            user_preferences = self._get_user_preferences(user) if user else None
 
-            # Обрабатываем файл
-            result = self.media_handler.process_media(temp_file_path)
-
-            logger.info(f"Результат обработки MediaHandler: {result}")
+            # Обрабатываем файл - ИСПРАВЛЕНО название метода
+            result = self.media_handler.process_media(temp_file_path, user_preferences)
 
             return result
 
@@ -229,23 +190,28 @@ class MessageHandler:
             return {'success': False, 'error': 'Не удалось скачать файл'}
         except Exception as e:
             logger.error(f"❌ Общая ошибка при обработке медиа: {e}")
-            import traceback
-            traceback.print_exc()
             return {'success': False, 'error': f'Ошибка обработки: {str(e)}'}
 
+    def _get_user_preferences(self, user: Dict[str, Any]) -> Dict[str, Any]:
+        """Получает предпочтения пользователя"""
+        return {
+            'language': user.get('preferred_language'),
+            'auto_translate': user.get('auto_translate', False),
+            'target_language': user.get('target_language', 'en')
+        }
+
     def _format_transcription_response(self, result: Dict[str, Any]) -> str:
-        """
-        Форматирует ответ с результатами транскрипции
-        """
+        """Форматирует ответ с результатами транскрипции"""
         detected_lang = result.get('detected_language', 'unknown')
         transcription = result.get('transcription', '')
         language_info = result.get('language_info', {})
+        quality_analysis = result.get('quality_analysis', {})
 
         # Иконки для языков
         language_icons = {
             'km': '🇰🇭', 'th': '🇹🇭', 'vi': '🇻🇳', 'zh': '🇨🇳', 'ja': '🇯🇵',
             'ko': '🇰🇷', 'en': '🇺🇸', 'ru': '🇷🇺', 'fr': '🇫🇷', 'es': '🇪🇸',
-            'de': '🇩🇪', 'ar': '🇸🇦'
+            'de': '🇩🇪', 'ar': '🇸🇦', 'hi': '🇮🇳', 'it': '🇮🇹', 'pt': '🇵🇹'
         }
 
         icon = language_icons.get(detected_lang, '🌐')
@@ -255,14 +221,44 @@ class MessageHandler:
         response = f"🎯 **Язык:** {icon} {lang_name}"
         if native_name and native_name != lang_name:
             response += f" ({native_name})"
+
         response += "\n\n📝 **Транскрипция:**\n" + transcription
+
+        # Добавляем информацию о качестве для нативных языков
+        if quality_analysis.get('message'):
+            response += f"\n\n{quality_analysis['message']}"
+
+        # Добавляем перевод если есть
+        if 'translated_text' in result:
+            target_lang = result.get('translation_target', 'en')
+            target_info = self._get_language_info_safe(target_lang)
+            target_name = target_info.get('name', target_lang.upper())
+
+            response += f"\n\n🔄 **Перевод на {target_name}:**\n{result['translated_text']}"
 
         return response
 
-    def send_translation_offer(self, sender_id: str, result: Dict[str, Any], user: Dict[str, Any]):
-        """
-        Предлагает перевод если подходящие условия
-        """
+    def _get_language_info_safe(self, language: str) -> Dict[str, str]:
+        """Безопасно получает информацию о языке"""
+        language_names = {
+            'km': {'name': 'Кхмерский', 'native': 'ខ្មែរ'},
+            'en': {'name': 'Английский', 'native': 'English'},
+            'ru': {'name': 'Русский', 'native': 'Русский'},
+            'th': {'name': 'Тайский', 'native': 'ไทย'},
+            'vi': {'name': 'Вьетнамский', 'native': 'Tiếng Việt'},
+            'zh': {'name': 'Китайский', 'native': '中文'},
+            'ja': {'name': 'Японский', 'native': '日本語'},
+            'ko': {'name': 'Корейский', 'native': '한국어'},
+            'ar': {'name': 'Арабский', 'native': 'العربية'},
+            'hi': {'name': 'Хинди', 'native': 'हिन्दी'},
+            'fr': {'name': 'Французский', 'native': 'Français'},
+            'es': {'name': 'Испанский', 'native': 'Español'},
+            'de': {'name': 'Немецкий', 'native': 'Deutsch'},
+        }
+        return language_names.get(language, {'name': language.upper(), 'native': ''})
+
+    def _send_translation_offer(self, sender_id: str, result: Dict[str, Any], user: Dict[str, Any]):
+        """Предлагает перевод если подходящие условия"""
         detected_lang = result.get('detected_language', 'unknown')
         user_lang = user.get('preferred_language', 'en')
 
@@ -277,9 +273,7 @@ class MessageHandler:
             self._send_text_message(sender_id, suggestion)
 
     def _handle_translation_request(self, sender_id: str, text: str, user: Dict[str, Any]) -> bool:
-        """
-        Обрабатывает запрос на перевод
-        """
+        """Обрабатывает запрос на перевод"""
         # Получаем последнюю транскрипцию пользователя
         last_transcription = self.database.get_last_transcription(sender_id)
 
@@ -296,14 +290,17 @@ class MessageHandler:
 
         # Выполняем перевод
         try:
-            translation = self.translation_service.translate_text(
+            translation_result = self.translation_service.translate_text(
                 last_transcription['transcription'],
-                last_transcription['detected_language'],
-                target_lang
+                target_lang,
+                last_transcription['detected_language']
             )
 
-            if translation:
-                response = f"🔄 **Перевод на {target_lang.upper()}:**\n{translation}"
+            if translation_result.get('success'):
+                target_info = self._get_language_info_safe(target_lang)
+                target_name = target_info.get('name', target_lang.upper())
+
+                response = f"🔄 **Перевод на {target_name}:**\n{translation_result['translated_text']}"
                 self._send_text_message(sender_id, response)
             else:
                 self._send_text_message(sender_id, "❌ Не удалось выполнить перевод.")
@@ -315,9 +312,7 @@ class MessageHandler:
         return True
 
     def _is_translation_request(self, text: str) -> bool:
-        """
-        Проверяет, является ли текст запросом на перевод
-        """
+        """Проверяет, является ли текст запросом на перевод"""
         translation_keywords = [
             'translate', 'перевести', 'translation', 'перевод',
             'បកប្រែ', 'แปล', 'dịch', '翻译', '번역'
@@ -325,9 +320,7 @@ class MessageHandler:
         return any(keyword in text for keyword in translation_keywords)
 
     def _extract_target_language(self, text: str) -> Optional[str]:
-        """
-        Извлекает целевой язык из текста запроса
-        """
+        """Извлекает целевой язык из текста запроса"""
         text_lower = text.lower()
 
         language_mappings = {
@@ -346,9 +339,7 @@ class MessageHandler:
         return None
 
     def _check_usage_limits(self, user: Dict[str, Any]) -> bool:
-        """
-        Проверяет лимиты использования
-        """
+        """Проверяет лимиты использования"""
         daily_usage = user.get('daily_usage', 0)
         is_premium = user.get('is_premium', False)
 
@@ -356,6 +347,7 @@ class MessageHandler:
 
         return daily_usage < limit
 
+    # Остальные методы отправки сообщений остаются без изменений...
     def _send_welcome_message(self, sender_id: str):
         """Отправляет приветственное сообщение"""
         message = """🎉 Добро пожаловать в Transcribe Bot!
@@ -450,9 +442,7 @@ class MessageHandler:
             self._send_text_message(sender_id, message)
 
     def _send_text_message(self, recipient_id: str, message: str) -> bool:
-        """
-        Отправляет текстовое сообщение пользователю
-        """
+        """Отправляет текстовое сообщение пользователю"""
         try:
             url = f"https://graph.facebook.com/v17.0/me/messages"
 
