@@ -130,16 +130,24 @@ class MessageHandler:
             payload = attachment.get('payload', {})
             file_url = payload.get('url')
 
+            logger.info(f"Обрабатываем файл URL: {file_url}")
+
             if not file_url:
+                logger.error("Не удалось получить URL файла")
                 self._send_text_message(sender_id, "❌ Не удалось получить файл.")
                 return False
 
             # Скачиваем и обрабатываем файл
             result = self._download_and_process_media(file_url, user.get('is_premium', False))
 
+            logger.info(f"Результат обработки медиа: {result}")
+
             if not result['success']:
+                logger.error(f"Ошибка обработки медиа: {result.get('error', 'Unknown error')}")
                 self._send_text_message(sender_id, f"❌ {result['error']}")
                 return False
+
+            logger.info("Медиа файл успешно обработан, сохраняем в БД...")
 
             # Сохраняем результат в базу данных
             self.database.save_transcription(
@@ -152,6 +160,8 @@ class MessageHandler:
             # Увеличиваем счетчик использования
             self.database.increment_usage(sender_id)
 
+            logger.info("Данные сохранены, отправляем результат пользователю...")
+
             # Отправляем результат пользователю
             response = self._format_transcription_response(result)
             self._send_text_message(sender_id, response)
@@ -159,11 +169,15 @@ class MessageHandler:
             # Предлагаем перевод если нужно
             self.send_translation_offer(sender_id, result, user)
 
+            logger.info("✅ Медиа вложение успешно обработано")
             return True
 
         except Exception as e:
-            logger.error(f"Ошибка при обработке медиа вложения: {e}")
+            logger.error(f"❌ Ошибка при обработке медиа вложения: {e}")
+            import traceback
+            traceback.print_exc()
             self._send_text_message(sender_id, "❌ Произошла ошибка при обработке файла.")
+            return False
             return False
 
     def _download_and_process_media(self, file_url: str, is_premium: bool = False) -> Dict[str, Any]:
@@ -174,32 +188,49 @@ class MessageHandler:
             import tempfile
             import requests
 
+            logger.info(f"Начинаем скачивание файла: {file_url}")
+
             # Скачиваем файл
             headers = {'Authorization': f'Bearer {self.page_access_token}'}
             response = requests.get(file_url, headers=headers, timeout=30)
             response.raise_for_status()
+
+            logger.info(f"Файл скачан, размер: {len(response.content)} байт")
 
             # Сохраняем во временный файл
             with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as temp_file:
                 temp_file.write(response.content)
                 temp_file_path = temp_file.name
 
+            logger.info(f"Файл сохранен во временный путь: {temp_file_path}")
+
             # Проверяем файл
+            logger.info("Валидируем файл...")
             is_valid, error_msg = self.media_handler.validate_file(temp_file_path, is_premium)
+
+            logger.info(f"Результат валидации: valid={is_valid}, error='{error_msg}'")
+
             if not is_valid:
                 os.remove(temp_file_path)
+                logger.error(f"Файл не прошел валидацию: {error_msg}")
                 return {'success': False, 'error': error_msg}
+
+            logger.info("Файл валиден, начинаем обработку через MediaHandler...")
 
             # Обрабатываем файл
             result = self.media_handler.process_media(temp_file_path)
 
+            logger.info(f"Результат обработки MediaHandler: {result}")
+
             return result
 
         except requests.RequestException as e:
-            logger.error(f"Ошибка при скачивании файла: {e}")
+            logger.error(f"❌ Ошибка при скачивании файла: {e}")
             return {'success': False, 'error': 'Не удалось скачать файл'}
         except Exception as e:
-            logger.error(f"Ошибка при обработке медиа: {e}")
+            logger.error(f"❌ Общая ошибка при обработке медиа: {e}")
+            import traceback
+            traceback.print_exc()
             return {'success': False, 'error': f'Ошибка обработки: {str(e)}'}
 
     def _format_transcription_response(self, result: Dict[str, Any]) -> str:
