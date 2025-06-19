@@ -1,101 +1,99 @@
+# services/transcription_service.py
+import openai
 import os
 import logging
-import openai
-from typing import Optional, Dict, Any
 import tempfile
-import requests
-
-logger = logging.getLogger(__name__)
 
 
 class TranscriptionService:
     def __init__(self):
-        """Инициализация сервиса транскрипции"""
+        self.logger = logging.getLogger(__name__)
         api_key = os.getenv('OPENAI_API_KEY')
+
         if not api_key:
-            raise ValueError("OPENAI_API_KEY не установлен в переменных окружения")
+            raise ValueError("OPENAI_API_KEY не найден в переменных окружения")
 
-        # Убираем параметр proxies, который вызывает ошибку
-        self.client = openai.OpenAI(api_key=api_key)
-        logger.info("TranscriptionService успешно инициализирован")
-
-    async def transcribe_audio(self, file_url: str, language: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Транскрибация аудио файла через OpenAI Whisper API
-
-        Args:
-            file_url: URL аудио файла
-            language: Код языка для транскрипции (опционально)
-
-        Returns:
-            Dict с результатом транскрипции
-        """
         try:
-            logger.info(f"Начинаем транскрипцию файла: {file_url}")
+            # Упрощенная инициализация без проблемных параметров
+            self.client = openai.OpenAI(api_key=api_key)
+            self.logger.info("OpenAI клиент успешно инициализирован")
 
-            # Скачиваем файл
-            response = requests.get(file_url, timeout=30)
-            response.raise_for_status()
-
-            # Создаем временный файл
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
-                temp_file.write(response.content)
-                temp_file_path = temp_file.name
-
-            try:
-                # Открываем файл для транскрипции
-                with open(temp_file_path, 'rb') as audio_file:
-                    # Подготавливаем параметры для Whisper API
-                    transcription_params = {
-                        "file": audio_file,
-                        "model": "whisper-1",
-                        "response_format": "verbose_json"
-                    }
-
-                    # Добавляем язык если указан
-                    if language:
-                        transcription_params["language"] = language
-                        logger.info(f"Используем язык: {language}")
-
-                    # Выполняем транскрипцию
-                    result = self.client.audio.transcriptions.create(**transcription_params)
-
-                    logger.info("Транскрипция успешно завершена")
-
-                    return {
-                        "success": True,
-                        "text": result.text,
-                        "language": result.language if hasattr(result, 'language') else language,
-                        "duration": result.duration if hasattr(result, 'duration') else None,
-                        "segments": getattr(result, 'segments', None)
-                    }
-
-            finally:
-                # Удаляем временный файл
-                try:
-                    os.unlink(temp_file_path)
-                except Exception as e:
-                    logger.warning(f"Не удалось удалить временный файл: {e}")
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ошибка при скачивании файла: {e}")
-            return {
-                "success": False,
-                "error": f"Не удалось скачать аудио файл: {str(e)}"
-            }
-
-        except openai.APIError as e:
-            logger.error(f"Ошибка OpenAI API: {e}")
-            return {
-                "success": False,
-                "error": f"Ошибка транскрипции: {str(e)}"
-            }
+            # Проверим что клиент работает
+            # models = self.client.models.list()
+            # self.logger.info("OpenAI подключение проверено")
 
         except Exception as e:
-            logger.error(f"Неожиданная ошибка при транскрипции: {e}")
+            self.logger.error(f"Ошибка инициализации OpenAI: {e}")
+            raise
+
+    def transcribe_audio(self, audio_file_path, language=None):
+        """Транскрипция аудио файла через OpenAI Whisper API"""
+        try:
+            self.logger.info("Starting OpenAI transcription")
+
+            # Проверяем существование файла
+            if not os.path.exists(audio_file_path):
+                raise FileNotFoundError(f"Аудио файл не найден: {audio_file_path}")
+
+            # Открываем файл и отправляем на транскрипцию
+            with open(audio_file_path, 'rb') as audio_file:
+                transcript_params = {
+                    'file': audio_file,
+                    'model': 'whisper-1',
+                    'response_format': 'text'
+                }
+
+                # Добавляем язык если указан
+                if language and language != 'auto':
+                    transcript_params['language'] = language
+
+                # Выполняем транскрипцию
+                transcript = self.client.audio.transcriptions.create(**transcript_params)
+
+                # OpenAI возвращает строку при response_format='text'
+                transcript_text = transcript if isinstance(transcript, str) else transcript.text
+
+                self.logger.info(f"Transcription completed. Text length: {len(transcript_text)}")
+
+                return {
+                    'success': True,
+                    'text': transcript_text.strip(),
+                    'detected_language': language or 'auto'
+                }
+
+        except Exception as e:
+            self.logger.error(f"Ошибка транскрипции: {e}")
             return {
-                "success": False,
-                "error": f"Внутренняя ошибка: {str(e)}"
+                'success': False,
+                'error': str(e)
+            }
+
+    def transcribe_with_language_detection(self, audio_file_path):
+        """Транскрипция с автоопределением языка"""
+        try:
+            # Сначала пробуем без указания языка (автоопределение)
+            result = self.transcribe_audio(audio_file_path)
+
+            if result['success']:
+                # Пытаемся определить язык по тексту
+                text = result['text']
+                if text:
+                    try:
+                        from langdetect import detect
+                        detected_lang = detect(text)
+                        result['detected_language'] = detected_lang
+                        self.logger.info(f"Transcription completed. Detected language: {detected_lang}")
+                    except:
+                        result['detected_language'] = 'unknown'
+                        self.logger.info("Transcription completed. Language detection failed")
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Ошибка транскрипции с определением языка: {e}")
+            return {
+                'success': False,
+                'error': str(e)
             }
 
     def get_supported_languages(self) -> list:
