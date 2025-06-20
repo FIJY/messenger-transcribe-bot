@@ -3,9 +3,9 @@ services:
   - type: web
     name: messenger-transcribe-bot
     env: python
-    plan: free # ИСПРАВЛЕНО: Явно указываем бесплатный тариф
+    plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn --bind 0.0.0.0:$PORT app:app --timeout 120"
+    startCommand: "gunicorn app:app --timeout 120"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
@@ -14,12 +14,15 @@ services:
           type: redis
           name: bot-redis
           property: connectionString
+    disks: # 🔧 НОВОЕ: Подключаем диск
+      - name: shared-files
+        mountPath: /var/data/shared_files
 
   # 2. Фоновый воркер
   - type: worker
     name: celery-worker
     env: python
-    plan: free # ИСПРАВЛЕНО: Явно указываем бесплатный тариф
+    plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info"
     envVars:
@@ -30,11 +33,14 @@ services:
           type: redis
           name: bot-redis
           property: connectionString
+    disks: # 🔧 НОВОЕ: Подключаем тот же самый диск
+      - name: shared-files
+        mountPath: /var/data/shared_files
 
   # 3. База данных Redis
   - type: redis
     name: bot-redis
-    plan: free # ИСПРАВЛЕНО: Явно указываем бесплатный тариф
+    plan: free
     ipAllowList:
       - source: 0.0.0.0/0
         description: "Allow all"
