@@ -1,28 +1,35 @@
 services:
-  # 1. Веб-сервис
+  # 1. Веб-сервис (теперь снова бесплатный!)
   - type: web
     name: messenger-transcribe-bot
     env: python
-    plan: starter # Обновлено до starter для поддержки диска
+    plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn --bind 0.0.0.0:$PORT app:app --timeout 120"
-    disk:
-      name: shared-files
-      mountPath: /var/data/shared_files
-      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bot-redis
+          property: connectionString
 
-  # 2. Фоновый воркер
+  # 2. Фоновый воркер (остается на starter, так как выполняет тяжелую работу)
   - type: worker
     name: celery-worker
     env: python
     plan: starter
     buildCommand: "pip install -r requirements.txt"
-    # 🔧 ВОТ КЛЮЧЕВАЯ СТРОКА, КОТОРАЯ ДОЛЖНА БЫТЬ
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info -c 1 --pool=solo"
-    disk:
-      name: shared-files
-      mountPath: /var/data/shared_files
-      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bot-redis
+          property: connectionString
 
   # 3. База данных Redis
   - type: redis
