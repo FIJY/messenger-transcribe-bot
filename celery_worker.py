@@ -1,4 +1,4 @@
-# celery_worker.py
+# celery_worker.py - ФИНАЛЬНАЯ ВЕРСИЯ С ЯВНЫМ ИМПОРТОМ ЗАДАЧ
 import os
 import logging
 import requests
@@ -15,12 +15,17 @@ from services.transcription_service import TranscriptionService
 from services.translation_service import TranslationService
 from services.database import Database
 from services.audio_processor import AudioProcessor
+from httpx import Timeout
 
 redis_url = os.getenv('REDIS_URL')
 if not redis_url:
     raise RuntimeError("REDIS_URL не установлен!")
 
-celery_app = Celery('tasks', broker=redis_url, backend=redis_url)
+# 🔧 ИЗМЕНЕНИЕ ЗДЕСЬ: Добавляем 'include'
+# Это говорит Celery: "При запуске, пожалуйста, посмотри в модуль 'celery_worker' и зарегистрируй все задачи, которые там найдешь".
+celery_app = Celery('tasks', broker=redis_url, backend=redis_url, include=['celery_worker'])
+
+# ... (остальной код файла остается без изменений)
 
 try:
     transcription_service = TranscriptionService()
@@ -50,7 +55,7 @@ def send_messenger_message(recipient_id: str, message_text: str):
     except Exception as e:
         logger.error(f"Воркер не смог отправить сообщение: {e}", exc_info=True)
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
+@celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
 def process_media_task(self, sender_id: str, file_path: str, user_preferences: dict):
     logger.info(f"[{self.request.id}] Начало задачи для {sender_id}")
     if not media_handler:
@@ -72,12 +77,10 @@ def process_media_task(self, sender_id: str, file_path: str, user_preferences: d
     except Exception as exc:
         logger.error(f"[{self.request.id}] Критическая ошибка в задаче Celery: {exc}", exc_info=True)
         try:
-            # Попытка повторить задачу
             raise self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             send_messenger_message(sender_id, "❌ Не удалось обработать ваш файл после нескольких попыток.")
     finally:
-        # Очистка временных файлов
         if os.path.exists(file_path):
             os.remove(file_path)
             logger.info(f"[{self.request.id}] Исходный временный файл удален.")
