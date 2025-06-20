@@ -1,4 +1,4 @@
-# services/media_handler.py - ВЕРСИЯ С ФИНАЛЬНОЙ ПОСТ-ОБРАБОТКОЙ
+# services/media_handler.py - ВЕРСИЯ С УЧЕТОМ НЕПРАВИЛЬНОГО ОПРЕДЕЛЕНИЯ КАК TAGALOG
 import os
 import logging
 from typing import Optional, Tuple, Dict, Any
@@ -24,15 +24,14 @@ class MediaHandler:
 
     def process_media(self, file_path: str, user_preferences: Optional[Dict] = None) -> Dict[str, Any]:
         """
-        Полный цикл обработки: транскрипция -> исправление транслитерации -> пост-обработка.
+        Полный цикл обработки: транскрипция -> исправление -> пост-обработка.
         """
+        # ... (начало метода без изменений)
         audio_path = None
         user_prefs = user_preferences or {}
-
         try:
             logger.info(f"Начинаем обработку файла: {file_path}")
             expected_language = user_prefs.get('preferred_language')
-
             audio_path = self.audio_processor.process_file(file_path)
             if not audio_path:
                 return {'success': False, 'error': 'Не удалось обработать медиа файл'}
@@ -44,28 +43,30 @@ class MediaHandler:
             if text.startswith("Ошибка"):
                 return {'success': False, 'error': text, 'processed_audio_path': audio_path}
 
-            # Этап 1: Исправление транслитерации (если нужно)
             final_text = text
-            quality_analysis = self._analyze_transcription_quality(final_text, detected_language)
 
+            # 🔧 НОВАЯ ЛОГИКА: Проверяем на ошибочное определение как Tagalog
+            if detected_language == 'tl' and self._is_likely_khmer_transliteration(final_text):
+                logger.warning(f"Язык определен как 'tl', но текст похож на кхмерский. Принудительно меняем на 'km'.")
+                detected_language = 'km'
+
+            # Этап 1: Исправление транслитерации (если нужно)
+            quality_analysis = self._analyze_transcription_quality(final_text, detected_language)
             if detected_language == 'km' and quality_analysis.get('quality') == 'poor':
                 logger.info("Обнаружена некачественная транслитерация. Запускаем GPT коррекцию...")
                 corrected_text = self.correction_service.correct_khmer_transliteration(final_text)
                 if corrected_text:
                     final_text = corrected_text
 
-            # 🔧 ЭТАП 2: ФИНАЛЬНАЯ ПОСТ-ОБРАБОТКА ТЕКСТА
-            # Запускаем этот шаг для любого кхмерского текста, чтобы улучшить его качество.
+            # ЭТАП 2: Финальная пост-обработка текста
             if detected_language == 'km':
                 logger.info("Запускаем финальную пост-обработку кхмерского текста...")
                 processed_text = self.correction_service.post_process_khmer_text(final_text)
                 if processed_text:
-                    final_text = processed_text  # Заменяем текст на "причесанную" версию
+                    final_text = processed_text
 
-            # Пересчитываем качество для финального текста
             final_quality_analysis = self._analyze_transcription_quality(final_text, detected_language)
 
-            # Создаем финальный результат
             result = {
                 'success': True,
                 'transcription': final_text,
@@ -74,17 +75,22 @@ class MediaHandler:
                 'language_info': self._get_language_info_safe(detected_language),
                 'processed_audio_path': audio_path
             }
-
             logger.info(f"Обработка полностью завершена. Финальный текст: {final_text[:100]}...")
             return result
-
         except Exception as e:
             logger.error(f"Критическая ошибка при обработке медиа: {e}", exc_info=True)
             return {'success': False, 'error': 'Произошла внутренняя ошибка', 'processed_audio_path': audio_path}
 
+    def _is_likely_khmer_transliteration(self, text: str) -> bool:
+        """Простая проверка на наличие кхмерских слов в латинице."""
+        text_lower = text.lower()
+        # Ключевые слова, которые редко встречаются в тагальском, но часто в транслитерации кхмерского
+        khmer_keywords = ['bong', 'sosay', 'arkun', 'chom', 'neng', 'thlai', 'phnom']
+        found_count = sum(1 for keyword in khmer_keywords if keyword in text_lower)
+        return found_count >= 2  # Считаем кхмерским, если нашлось хотя бы 2 слова
+
     # Остальные методы (_analyze_transcription_quality, и т.д.) остаются без изменений
     def _analyze_transcription_quality(self, text: str, language: str) -> Dict[str, Any]:
-        """Анализирует качество транскрипции для нативных языков"""
         try:
             native_languages = ['km', 'th', 'zh', 'ja', 'ko', 'vi']
             if language in native_languages:
@@ -103,16 +109,12 @@ class MediaHandler:
                     'error': str(e)}
 
     def _get_language_info_safe(self, detected_language: str) -> Dict[str, str]:
-        """Безопасно получает информацию о языке"""
         language_names = {
-            'km': {'name': 'Khmer', 'native': 'ខ្មែរ'},
-            'en': {'name': 'English', 'native': 'English'},
-            'ru': {'name': 'Russian', 'native': 'Русский'},
-            'th': {'name': 'Thai', 'native': 'ไทย'},
-            'vi': {'name': 'Vietnamese', 'native': 'Tiếng Việt'},
+            'km': {'name': 'Khmer', 'native': 'ខ្មែរ'}, 'en': {'name': 'English', 'native': 'English'},
+            'ru': {'name': 'Russian', 'native': 'Русский'}, 'th': {'name': 'Thai', 'native': 'ไทย'},
+            'vi': {'name': 'Vietnamese', 'native': 'Tiếng Việt'}, 'tl': {'name': 'Tagalog', 'native': 'Tagalog'}
         }
         return language_names.get(detected_language, {'name': detected_language.upper(), 'native': ''})
 
     def validate_file(self, file_path: str, is_premium: bool = False) -> Tuple[bool, str]:
-        """Проверяет файл на соответствие ограничениям"""
         return self.audio_processor.validate_audio_file(file_path)
