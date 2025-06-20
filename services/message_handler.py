@@ -1,12 +1,12 @@
-# services/message_handler.py - ФИНАЛЬНАЯ ВЕРСИЯ С УЧЕТОМ ВСЕХ ИСПРАВЛЕНИЙ
+# services/message_handler.py - ФИНАЛЬНАЯ ВЕРСИЯ С httpx
 import logging
 import os
 import tempfile
-import requests
+import httpx  # 🔧 ИЗМЕНЕНИЕ: Используем httpx вместо requests
 import uuid
 from typing import Dict, Any, Optional, List
 from celery import Celery
-from urllib.parse import quote  # 🔧 ВАЖНОЕ ИСПРАВЛЕНИЕ ЗДЕСЬ
+from urllib.parse import quote
 
 from .database import Database
 
@@ -26,7 +26,6 @@ class MessageHandler:
     def __init__(self, database: Database):
         self.database = database
         self.page_access_token = os.getenv('PAGE_ACCESS_TOKEN')
-        # Мы убрали os.makedirs, так как Render сам создает папку
         if not os.path.exists(SHARED_DISK_PATH):
             logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: Общий диск не найден по пути {SHARED_DISK_PATH}.")
 
@@ -77,43 +76,53 @@ class MessageHandler:
             else:
                 logger.error("Celery клиент не инициализирован. Задача не может быть отправлена.")
                 self._send_text_message(sender_id, "❌ Ошибка сервера: не удалось поставить задачу в очередь.")
-
         except Exception as e:
             logger.error(f"Ошибка при постановке задачи в очередь: {e}", exc_info=True)
             self._send_text_message(sender_id, "❌ Произошла ошибка при отправке файла на обработку.")
 
     def _download_file(self, attachment: Dict) -> Optional[str]:
-        """Скачивает и сохраняет файл на общий диск, возвращая его путь."""
+        """Скачивает и сохраняет файл на общий диск, используя httpx."""
         try:
             file_url = attachment.get('payload', {}).get('url')
             if not file_url: return None
 
-            # 🔧 ВАЖНОЕ ИСПРАВЛЕНИЕ: "Очищаем" URL от небезопасных символов
-            safe_url = quote(file_url, safe=':/&=?')
-
             headers = {'Authorization': f'Bearer {self.page_access_token}'}
-            # Используем очищенный URL для скачивания
-            response = requests.get(safe_url, headers=headers, stream=True, timeout=60)
-            response.raise_for_status()
 
-            file_extension = os.path.splitext(file_url.split('?')[0])[-1] or '.tmp'
-            unique_filename = f"{uuid.uuid4()}{file_extension}"
-            file_path = os.path.join(SHARED_DISK_PATH, unique_filename)
+            # 🔧 ИСПОЛЬЗУЕМ HTTpx ВМЕСТО REQUESTS
+            with httpx.stream("GET", file_url, headers=headers, timeout=60) as response:
+                response.raise_for_status()
 
-            with open(file_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                file_extension = os.path.splitext(file_url.split('?')[0])[-1] or '.tmp'
+                unique_filename = f"{uuid.uuid4()}{file_extension}"
+                file_path = os.path.join(SHARED_DISK_PATH, unique_filename)
 
-            logger.info(f"Файл сохранен на общий диск: {file_path}")
+                with open(file_path, 'wb') as f:
+                    for chunk in response.iter_bytes():
+                        f.write(chunk)
+
+            logger.info(f"Файл сохранен на общий диск через httpx: {file_path}")
             return file_path
         except Exception as e:
-            logger.error(f"Ошибка при скачивании файла на диск: {e}", exc_info=True)
+            logger.error(f"Ошибка при скачивании файла на диск через httpx: {e}", exc_info=True)
             return None
 
     def _send_text_message(self, recipient_id: str, message_text: str):
+        """Отправляет текстовое сообщение пользователю, используя httpx."""
         try:
-            payload = {'recipient': {'id': recipient_id}, 'message': {'text': message_text},
-                       'access_token': self.page_access_token}
-            requests.post("https://graph.facebook.com/v18.0/me/messages", json=payload, timeout=10).raise_for_status()
+            headers = {'Content-Type': 'application/json'}
+            params = {'access_token': self.page_access_token}
+            json_data = {
+                'recipient': {'id': recipient_id},
+                'message': {'text': message_text}
+            }
+            # 🔧 ИСПОЛЬЗУЕМ HTTpx ВМЕСТО REQUESTS
+            response = httpx.post(
+                "https://graph.facebook.com/v18.0/me/messages",
+                headers=headers,
+                params=params,
+                json=json_data,
+                timeout=10
+            )
+            response.raise_for_status()
         except Exception as e:
-            logger.error(f"Ошибка отправки сообщения пользователю {recipient_id}: {e}")
+            logger.error(f"Ошибка отправки сообщения пользователю {recipient_id} через httpx: {e}")
