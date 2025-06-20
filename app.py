@@ -25,7 +25,17 @@ except Exception as e:
 
 @app.route('/', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'Bot web service is running'})
+    """Проверка здоровья приложения"""
+    return jsonify({
+        'status': 'Bot is running',
+        'message': 'Messenger Transcribe Bot is active',
+        'version': '1.1.0 (проверяем деплой)', # <--- ИЗМЕНИТЕ ЭТУ СТРОКУ
+        'endpoints': {
+            'health': '/api/health',
+            'webhook': '/webhook'
+        }
+    })
+
 
 @app.route('/webhook', methods=['GET'])
 def webhook_verify():
