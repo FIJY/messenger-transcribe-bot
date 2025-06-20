@@ -1,48 +1,32 @@
 services:
-  # 1. Веб-сервис (принимает запросы от Facebook)
+  # 1. Веб-сервис
   - type: web
     name: messenger-transcribe-bot
     env: python
-    plan: free # Бесплатный тариф для веб-части
+    plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn --bind 0.0.0.0:$PORT app:app --timeout 120"
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.11
-      - key: REDIS_URL # Указываем Render автоматически взять URL у сервиса Redis
-        fromService:
-          type: redis
-          name: bot-redis
-          property: connectionString
     disks:
       - name: shared-files
         mountPath: /var/data/shared_files
         sizeGB: 1
 
-  # 2. Фоновый воркер (делает всю тяжелую работу)
+  # 2. Фоновый воркер
   - type: worker
     name: celery-worker
     env: python
-    plan: starter # Платный тариф 'Starter', чтобы избежать проблем с памятью
+    plan: starter
     buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info"
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.11
-      - key: REDIS_URL # Делаем то же самое для воркера
-        fromService:
-          type: redis
-          name: bot-redis
-          property: connectionString
     disks:
       - name: shared-files
         mountPath: /var/data/shared_files
         sizeGB: 1
 
-  # 3. База данных Redis (очередь задач)
+  # 3. База данных Redis
   - type: redis
     name: bot-redis
-    plan: free # Бесплатного тарифа для Redis достаточно
+    plan: free
     ipAllowList:
       - source: 0.0.0.0/0
         description: "Allow all"
