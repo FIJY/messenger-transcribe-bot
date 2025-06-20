@@ -1,4 +1,4 @@
-# services/correction_service.py
+# services/correction_service.py - ВЕРСИЯ С ДОПОЛНИТЕЛЬНОЙ ПОСТ-ОБРАБОТКОЙ
 import openai
 import os
 import logging
@@ -9,7 +9,6 @@ logger = logging.getLogger(__name__)
 
 class CorrectionService:
     def __init__(self):
-        # Используем тот же API ключ, что и для Whisper
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
             raise ValueError("OPENAI_API_KEY не найден в переменных окружения")
@@ -27,32 +26,57 @@ class CorrectionService:
         if not latin_text:
             return None
 
-        logger.info(f"Запускаем коррекцию для кхмерского текста: {latin_text[:100]}...")
-
+        logger.info(f"Запускаем коррекцию транслитерации для: {latin_text[:100]}...")
+        system_prompt = (
+            "You are an expert linguist specializing in Khmer. Your task is to convert Romanized (Latin) Khmer transliterations "
+            "into the standard native Khmer script. Do not translate. Only transliterate. Preserve the meaning and structure."
+        )
         try:
-            # Системная инструкция, которая объясняет модели ее задачу
-            system_prompt = (
-                "You are an expert linguist specializing in Khmer. "
-                "Your task is to convert Romanized (Latin) Khmer transliterations into the standard native Khmer script. "
-                "Do not translate. Only transliterate. Preserve the meaning and structure. "
-                "If the input is already in Khmer script or is nonsensical, return it as is."
-            )
-
-            # Вызов Chat API
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",  # Дешевая и быстрая модель для этой задачи
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": latin_text}
-                ],
-                temperature=0.1,  # Низкая температура для более предсказуемого и точного результата
-                max_tokens=1000,  # Лимит токенов на ответ
-            )
-
-            corrected_text = response.choices[0].message.content
-            logger.info(f"Текст успешно скорректирован. Результат: {corrected_text[:100]}...")
+            corrected_text = self._call_gpt(system_prompt, latin_text)
+            logger.info(f"Транслитерация успешно скорректирована.")
             return corrected_text
-
         except Exception as e:
-            logger.error(f"Ошибка при коррекции текста через GPT: {e}", exc_info=True)
+            logger.error(f"Ошибка при коррекции транслитерации: {e}", exc_info=True)
             return None
+
+    # 🔧 НОВЫЙ МЕТОД ДЛЯ "ПРИЧЕСЫВАНИЯ" ТЕКСТА
+    def post_process_khmer_text(self, raw_text: str) -> Optional[str]:
+        """
+        Использует GPT для очистки и форматирования сырого транскрибированного кхмерского текста.
+        Убирает слова-паразиты, исправляет грамматику, делает текст литературным.
+        """
+        if not raw_text:
+            return None
+
+        logger.info(f"Запускаем пост-обработку кхмерского текста: {raw_text[:100]}...")
+        system_prompt = (
+            "You are a professional Khmer editor. Your task is to take raw, transcribed spoken text and refine it into clean, "
+            "grammatically correct, and formal written Khmer suitable for official documents and translation. "
+            "You must perform the following actions:\n"
+            "1. Remove filler words, stutters, and verbal tics (e.g., 'អឺ', 'បាទ', repeated words).\n"
+            "2. Correct grammatical errors and fix sentence structure.\n"
+            "3. Add appropriate punctuation.\n"
+            "4. Rephrase colloquialisms and slang into their formal equivalents.\n"
+            "5. Do NOT change the core meaning or add new information.\n"
+            "Return ONLY the cleaned, final Khmer text and nothing else."
+        )
+        try:
+            processed_text = self._call_gpt(system_prompt, raw_text)
+            logger.info(f"Текст успешно прошел пост-обработку.")
+            return processed_text
+        except Exception as e:
+            logger.error(f"Ошибка при пост-обработке текста: {e}", exc_info=True)
+            return None
+
+    def _call_gpt(self, system_prompt: str, user_content: str) -> Optional[str]:
+        """Универсальный метод для вызова Chat API."""
+        response = self.client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            temperature=0.2,  # Низкая температура для точности и предсказуемости
+            max_tokens=1500,
+        )
+        return response.choices[0].message.content
