@@ -1,0 +1,34 @@
+services:
+  # 1. Веб-сервис (тот, что у вас уже есть)
+  - type: web
+    name: messenger-transcribe-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app --timeout 120"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11 # Убедитесь, что версия Python верна
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bot-redis
+          property: internalUrl
+
+  # 2. Фоновый воркер (то, что мы пытаемся создать)
+  - type: worker
+    name: celery-worker
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "celery -A celery_worker.celery_app worker --loglevel=info"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bot-redis
+          property: internalUrl
+
+  # 3. База данных Redis (то, что мы не могли найти)
+  - type: redis
+    name: bot-redis
