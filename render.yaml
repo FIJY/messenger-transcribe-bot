@@ -3,7 +3,7 @@ services:
   - type: web
     name: messenger-transcribe-bot
     env: python
-    plan: starter # 🔧 ИСПРАВЛЕНО: Меняем 'free' на 'starter', так как он использует диск
+    plan: starter # Обновлено до starter для поддержки диска
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn --bind 0.0.0.0:$PORT app:app --timeout 120"
     disk:
@@ -15,8 +15,9 @@ services:
   - type: worker
     name: celery-worker
     env: python
-    plan: starter # Этот уже был на платном тарифе, все верно
+    plan: starter
     buildCommand: "pip install -r requirements.txt"
+    # 🔧 ВОТ КЛЮЧЕВАЯ СТРОКА, КОТОРАЯ ДОЛЖНА БЫТЬ
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info -c 1 --pool=solo"
     disk:
       name: shared-files
