@@ -17,7 +17,7 @@ services:
     env: python
     plan: starter # Этот уже был на платном тарифе, все верно
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "celery -A celery_worker.celery_app worker --loglevel=info"
+    startCommand: "celery -A celery_worker.celery_app worker --loglevel=info -c 1 --pool=solo"
     disk:
       name: shared-files
       mountPath: /var/data/shared_files
