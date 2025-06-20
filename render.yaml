@@ -7,12 +7,12 @@ services:
     startCommand: "gunicorn app:app --timeout 120"
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.11 # Убедитесь, что версия Python верна
+        value: 3.11.11
       - key: REDIS_URL
         fromService:
           type: redis
           name: bot-redis
-          property: internalUrl
+          property: connectionString # ИСПРАВЛЕНО: было internalUrl
 
   # 2. Фоновый воркер (то, что мы пытаемся создать)
   - type: worker
@@ -27,8 +27,11 @@ services:
         fromService:
           type: redis
           name: bot-redis
-          property: internalUrl
+          property: connectionString # ИСПРАВЛЕНО: было internalUrl
 
   # 3. База данных Redis (то, что мы не могли найти)
   - type: redis
     name: bot-redis
+    ipAllowList:
+      - source: 0.0.0.0/0 # ИСПРАВЛЕНО: Добавлен список разрешенных IP
+        description: "Allow all"
