@@ -27,8 +27,6 @@ class MessageHandler:
     def __init__(self, database: Database):
         self.database = database
         self.page_access_token = os.getenv('PAGE_ACCESS_TOKEN')
-        if not os.path.exists(SHARED_DISK_PATH):
-            os.makedirs(SHARED_DISK_PATH, exist_ok=True)
 
     def handle_message(self, webhook_event: Dict[str, Any]):
         entry = webhook_event.get('entry', [])
