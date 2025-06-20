@@ -3,10 +3,10 @@ services:
   - type: web
     name: messenger-transcribe-bot
     env: python
-    plan: free
+    plan: starter # 🔧 ИСПРАВЛЕНО: Меняем 'free' на 'starter', так как он использует диск
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn --bind 0.0.0.0:$PORT app:app --timeout 120"
-    disk: # 🔧 ИСПРАВЛЕНО: 'disks:' заменено на 'disk' и убран дефис
+    disk:
       name: shared-files
       mountPath: /var/data/shared_files
       sizeGB: 1
@@ -15,10 +15,10 @@ services:
   - type: worker
     name: celery-worker
     env: python
-    plan: starter
+    plan: starter # Этот уже был на платном тарифе, все верно
     buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info"
-    disk: # 🔧 ИСПРАВЛЕНО: 'disks:' заменено на 'disk' и убран дефис
+    disk:
       name: shared-files
       mountPath: /var/data/shared_files
       sizeGB: 1
