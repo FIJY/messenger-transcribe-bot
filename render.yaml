@@ -5,7 +5,7 @@ services:
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn app:app --timeout 120"
+    startCommand: "gunicorn --bind 0.0.0.0:$PORT app:app --timeout 120"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
@@ -14,7 +14,7 @@ services:
           type: redis
           name: bot-redis
           property: connectionString
-    disks: # 🔧 НОВОЕ: Подключаем диск
+    disks:
       - name: shared-files
         mountPath: /var/data/shared_files
 
@@ -22,7 +22,7 @@ services:
   - type: worker
     name: celery-worker
     env: python
-    plan: free
+    plan: starter # ❗ Воркерам на бесплатном тарифе не всегда хватает памяти
     buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info"
     envVars:
@@ -33,7 +33,7 @@ services:
           type: redis
           name: bot-redis
           property: connectionString
-    disks: # 🔧 НОВОЕ: Подключаем тот же самый диск
+    disks:
       - name: shared-files
         mountPath: /var/data/shared_files
 
