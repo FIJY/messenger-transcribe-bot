@@ -1,27 +1,44 @@
-# services/message_handler.py - ВЕРСИЯ С ИСПОЛЬЗОВАНИЕМ PERSISTENT DISK
+# services/message_handler.py - ФИНАЛЬНАЯ АСИНХРОННАЯ ВЕРСИЯ
 import logging
 import os
+import tempfile
 import requests
-import uuid  # 🔧 НОВЫЙ ИМПОРТ
+import uuid
 from typing import Dict, Any, Optional, List
+from celery import Celery
 
-from celery_worker import process_media_task
 from .database import Database
 
 logger = logging.getLogger(__name__)
 
-# 🔧 ВАЖНО: Указываем путь к нашему общему диску на Render
 SHARED_DISK_PATH = "/var/data/shared_files"
+
+# Создаем "клиент" Celery специально для отправки задач
+redis_url = os.getenv('REDIS_URL')
+# Убедимся, что redis_url не пустой, чтобы избежать ошибок при инициализации
+if not redis_url:
+    logger.warning("REDIS_URL не найден, Celery клиент для отправки задач не будет работать.")
+    celery_app_client = None
+else:
+    celery_app_client = Celery('tasks_client', broker=redis_url)
 
 
 class MessageHandler:
     def __init__(self, database: Database):
         self.database = database
         self.page_access_token = os.getenv('PAGE_ACCESS_TOKEN')
-
+        if not os.path.exists(SHARED_DISK_PATH):
+            os.makedirs(SHARED_DISK_PATH, exist_ok=True)
 
     def handle_message(self, webhook_event: Dict[str, Any]):
-        sender_id = webhook_event.get('sender', {}).get('id')
+        entry = webhook_event.get('entry', [])
+        if not entry: return
+
+        messaging = entry[0].get('messaging', [])
+        if not messaging: return
+
+        messaging_event = messaging[0]
+        sender_id = messaging_event.get('sender', {}).get('id')
         if not sender_id: return
 
         user = self.database.get_user(sender_id)
@@ -30,9 +47,8 @@ class MessageHandler:
             self._send_text_message(sender_id, "🎉 Добро пожаловать! Отправьте аудио или видео файл для транскрипции.")
             return
 
-        if 'message' in webhook_event and 'attachments' in webhook_event['message']:
-            self._handle_attachments(sender_id, webhook_event['message']['attachments'], user)
-        # Здесь можно добавить обработку текста (help, stats) и т.д.
+        if 'message' in messaging_event and 'attachments' in messaging_event['message']:
+            self._handle_attachments(sender_id, messaging_event['message']['attachments'], user)
 
     def _handle_attachments(self, sender_id: str, attachments: List[Dict], user: Dict[str, Any]):
         for attachment in attachments:
@@ -52,26 +68,28 @@ class MessageHandler:
                                     "✅ Принял ваш файл в обработку. Результат пришлю, как только он будет готов.")
             user_preferences = {'preferred_language': user.get('preferred_language')}
 
-            process_media_task.delay(sender_id, file_path, user_preferences)
-            logger.info(f"Задача для файла {file_path} от пользователя {sender_id} добавлена в очередь.")
+            if celery_app_client:
+                # Отправляем задачу по ее текстовому имени
+                celery_app_client.send_task('tasks.process_media', args=[sender_id, file_path, user_preferences])
+                logger.info(f"Задача для файла {file_path} от пользователя {sender_id} добавлена в очередь.")
+            else:
+                logger.error("Celery клиент не инициализирован. Задача не может быть отправлена.")
+                self._send_text_message(sender_id, "❌ Ошибка сервера: не удалось поставить задачу в очередь.")
+
         except Exception as e:
             logger.error(f"Ошибка при постановке задачи в очередь: {e}", exc_info=True)
             self._send_text_message(sender_id, "❌ Произошла ошибка при отправке файла на обработку.")
 
     def _download_file(self, attachment: Dict) -> Optional[str]:
-        """Скачивает и сохраняет файл на общий диск, возвращая его путь."""
         try:
             file_url = attachment.get('payload', {}).get('url')
             if not file_url: return None
-
             headers = {'Authorization': f'Bearer {self.page_access_token}'}
             response = requests.get(file_url, headers=headers, stream=True, timeout=60)
             response.raise_for_status()
 
-            # 🔧 НОВОЕ: Генерируем уникальное имя и сохраняем на общий диск
             file_extension = os.path.splitext(file_url.split('?')[0])[-1] or '.tmp'
             unique_filename = f"{uuid.uuid4()}{file_extension}"
-            # Собираем полный путь к файлу на общем диске
             file_path = os.path.join(SHARED_DISK_PATH, unique_filename)
 
             with open(file_path, 'wb') as f:

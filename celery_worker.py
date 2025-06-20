@@ -57,7 +57,7 @@ def send_messenger_message(recipient_id: str, message_text: str):
     except Exception as e:
         logger.error(f"Воркер не смог отправить сообщение пользователю {recipient_id}: {e}", exc_info=True)
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
+@celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
 def process_media_task(self, sender_id: str, file_path: str, user_preferences: dict):
     """Фоновая задача Celery для тяжелой обработки медиа."""
     logger.info(f"[{self.request.id}] Начало асинхронной задачи для пользователя {sender_id}")

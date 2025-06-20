@@ -5,7 +5,7 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 from services.message_handler import MessageHandler
@@ -13,46 +13,38 @@ from services.database import Database
 
 app = Flask(__name__)
 
-# Инициализация сервисов, нужных только для веб-процесса
+# --- Инициализация ---
+# Эта секция кода выполняется один раз при запуске каждого воркера Gunicorn
 try:
-    logger.info("Инициализируем сервисы для веб-процесса...")
+    logger.info("Инициализация сервисов для веб-процесса...")
     database = Database()
     message_handler = MessageHandler(database=database)
-    logger.info("✅ Веб-сервисы успешно инициализированы")
+    logger.info("✅ Веб-сервисы успешно инициализированы.")
 except Exception as e:
-    logger.error(f"❌ Ошибка инициализации веб-сервисов: {e}", exc_info=True)
-    message_handler = None
+    logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА ИНИЦИАЛИЗАЦИИ: {e}", exc_info=True)
+    message_handler = None # Явно указываем, что инициализация провалена
+# --- Конец инициализации ---
 
 @app.route('/', methods=['GET'])
 def health_check():
-    """Проверка здоровья приложения"""
-    return jsonify({
-        'status': 'Bot is running',
-        'message': 'Messenger Transcribe Bot is active',
-        'version': '1.1.0 (проверяем деплой)', # <--- ИЗМЕНИТЕ ЭТУ СТРОКУ
-        'endpoints': {
-            'health': '/api/health',
-            'webhook': '/webhook'
-        }
-    })
-
+    return jsonify({'status': 'Bot web service is running'})
 
 @app.route('/webhook', methods=['GET'])
 def webhook_verify():
     verify_token = os.getenv('VERIFY_TOKEN')
     if request.args.get('hub.verify_token') == verify_token:
-        logger.info("Webhook верифицирован")
         return request.args.get('hub.challenge', '')
-    logger.error("Неверный verify token")
     return 'Verification failed', 403
 
 @app.route('/webhook', methods=['POST'])
 def webhook_handler():
     try:
-        if message_handler:
-            message_handler.handle_message(request.get_json())
-        else:
-            logger.error("MessageHandler не инициализирован.")
+        data = request.get_json()
+        if data and data.get('object') == 'page':
+            if message_handler:
+                message_handler.handle_message(data)
+            else:
+                logger.error("MessageHandler не был инициализирован из-за ошибки при запуске.")
         return 'OK', 200
     except Exception as e:
         logger.error(f"Критическая ошибка в webhook_handler: {e}", exc_info=True)
