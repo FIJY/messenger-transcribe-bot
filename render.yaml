@@ -1,8 +1,9 @@
 services:
-  # 1. Веб-сервис (тот, что у вас уже есть)
+  # 1. Веб-сервис
   - type: web
     name: messenger-transcribe-bot
     env: python
+    plan: free # ИСПРАВЛЕНО: Явно указываем бесплатный тариф
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn app:app --timeout 120"
     envVars:
@@ -12,12 +13,13 @@ services:
         fromService:
           type: redis
           name: bot-redis
-          property: connectionString # ИСПРАВЛЕНО: было internalUrl
+          property: connectionString
 
-  # 2. Фоновый воркер (то, что мы пытаемся создать)
+  # 2. Фоновый воркер
   - type: worker
     name: celery-worker
     env: python
+    plan: free # ИСПРАВЛЕНО: Явно указываем бесплатный тариф
     buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info"
     envVars:
@@ -27,11 +29,12 @@ services:
         fromService:
           type: redis
           name: bot-redis
-          property: connectionString # ИСПРАВЛЕНО: было internalUrl
+          property: connectionString
 
-  # 3. База данных Redis (то, что мы не могли найти)
+  # 3. База данных Redis
   - type: redis
     name: bot-redis
+    plan: free # ИСПРАВЛЕНО: Явно указываем бесплатный тариф
     ipAllowList:
-      - source: 0.0.0.0/0 # ИСПРАВЛЕНО: Добавлен список разрешенных IP
+      - source: 0.0.0.0/0
         description: "Allow all"
