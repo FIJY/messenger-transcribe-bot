@@ -1,4 +1,4 @@
-# services/message_handler.py - ФИНАЛЬНАЯ ВЕРСИЯ БЕЗ OS.MAKEDIRS
+# services/message_handler.py - ФИНАЛЬНАЯ ВЕРСИЯ С УЧЕТОМ ВСЕХ ИСПРАВЛЕНИЙ
 import logging
 import os
 import tempfile
@@ -6,6 +6,7 @@ import requests
 import uuid
 from typing import Dict, Any, Optional, List
 from celery import Celery
+from urllib.parse import quote  # 🔧 ВАЖНОЕ ИСПРАВЛЕНИЕ ЗДЕСЬ
 
 from .database import Database
 
@@ -25,21 +26,15 @@ class MessageHandler:
     def __init__(self, database: Database):
         self.database = database
         self.page_access_token = os.getenv('PAGE_ACCESS_TOKEN')
-
-        # 🔧 ИЗМЕНЕНИЕ: Мы больше не создаем папку.
-        # Вместо этого мы просто проверяем, существует ли она.
-        # Это более безопасный подход.
+        # Мы убрали os.makedirs, так как Render сам создает папку
         if not os.path.exists(SHARED_DISK_PATH):
-            logger.error(
-                f"КРИТИЧЕСКАЯ ОШИБКА: Общий диск не найден по пути {SHARED_DISK_PATH}. Убедитесь, что он подключен в настройках Render.")
+            logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: Общий диск не найден по пути {SHARED_DISK_PATH}.")
 
     def handle_message(self, webhook_event: Dict[str, Any]):
         entry = webhook_event.get('entry', [])
         if not entry: return
-
         messaging = entry[0].get('messaging', [])
         if not messaging: return
-
         messaging_event = messaging[0]
         sender_id = messaging_event.get('sender', {}).get('id')
         if not sender_id: return
@@ -62,10 +57,9 @@ class MessageHandler:
 
     def _process_media_attachment(self, sender_id: str, attachment: Dict, user: Dict[str, Any]):
         try:
-            # Проверяем, что диск на месте, перед тем как скачивать
             if not os.path.exists(SHARED_DISK_PATH):
-                self._send_text_message(sender_id, "❌ Ошибка сервера: хранилище файлов недоступно.")
                 logger.error(f"Невозможно обработать вложение, так как путь {SHARED_DISK_PATH} не существует.")
+                self._send_text_message(sender_id, "❌ Ошибка сервера: хранилище файлов недоступно.")
                 return
 
             file_path = self._download_file(attachment)
@@ -89,12 +83,17 @@ class MessageHandler:
             self._send_text_message(sender_id, "❌ Произошла ошибка при отправке файла на обработку.")
 
     def _download_file(self, attachment: Dict) -> Optional[str]:
+        """Скачивает и сохраняет файл на общий диск, возвращая его путь."""
         try:
             file_url = attachment.get('payload', {}).get('url')
             if not file_url: return None
 
+            # 🔧 ВАЖНОЕ ИСПРАВЛЕНИЕ: "Очищаем" URL от небезопасных символов
+            safe_url = quote(file_url, safe=':/&=?')
+
             headers = {'Authorization': f'Bearer {self.page_access_token}'}
-            response = requests.get(file_url, headers=headers, stream=True, timeout=60)
+            # Используем очищенный URL для скачивания
+            response = requests.get(safe_url, headers=headers, stream=True, timeout=60)
             response.raise_for_status()
 
             file_extension = os.path.splitext(file_url.split('?')[0])[-1] or '.tmp'
