@@ -28,8 +28,15 @@ class CorrectionService:
 
         logger.info(f"Запускаем коррекцию транслитерации для: {latin_text[:100]}...")
         system_prompt = (
-            "You are an expert linguist specializing in Khmer. Your task is to convert Romanized (Latin) Khmer transliterations "
-            "into the standard native Khmer script. Do not translate. Only transliterate. Preserve the meaning and structure."
+            "You are a professional Khmer editor and proofreader. Your task is to take raw, transcribed spoken Khmer text and refine it into clean, grammatically correct, and formal written Khmer. "
+            "You must perform the following actions:\n"
+            "1. Remove filler words, stutters, and verbal tics (e.g., 'អឺ', 'បាទ', repeated words).\n"
+            "2. Correct grammatical errors and fix sentence structure.\n"
+            "3. Add appropriate punctuation.\n"
+            "4. Rephrase colloquialisms and slang into their formal equivalents.\n"
+            "5. **Crucially, correct words that are phonetically similar but misspelled.** For example, if you see 'សូសាយ បុង' (sawsay bong), you must correct it to 'សួស្តីបង' (suosdey bong). If you see 'មាសិន រោដ' (meason rod), correct it to 'ម៉ាស៊ីនរត់' (masin rot).\n"
+            "6. Do NOT change the core meaning or add new information.\n"
+            "Return ONLY the cleaned, final Khmer text and nothing else."
         )
         try:
             corrected_text = self._call_gpt(system_prompt, latin_text)

@@ -1,5 +1,5 @@
 services:
-  # 1. Веб-сервис (теперь снова бесплатный!)
+  # 1. Веб-сервис (может быть бесплатным)
   - type: web
     name: messenger-transcribe-bot
     env: python
@@ -9,13 +9,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: bot-redis
-          property: connectionString
 
-  # 2. Фоновый воркер (остается на starter, так как выполняет тяжелую работу)
+  # 2. Фоновый воркер (платный, так как выполняет тяжелую работу)
   - type: worker
     name: celery-worker
     env: python
@@ -25,11 +20,6 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: bot-redis
-          property: connectionString
 
   # 3. База данных Redis
   - type: redis
