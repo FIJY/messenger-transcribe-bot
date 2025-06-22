@@ -1,4 +1,4 @@
-# services/media_handler.py - ВЕРСИЯ С УЧЕТОМ НЕПРАВИЛЬНОГО ОПРЕДЕЛЕНИЯ КАК TAGALOG
+# services/media_handler.py
 import os
 import logging
 from typing import Optional, Tuple, Dict, Any
@@ -23,10 +23,6 @@ class MediaHandler:
         self.correction_service = CorrectionService()
 
     def process_media(self, file_path: str, user_preferences: Optional[Dict] = None) -> Dict[str, Any]:
-        """
-        Полный цикл обработки: транскрипция -> исправление -> пост-обработка.
-        """
-        # ... (начало метода без изменений)
         audio_path = None
         user_prefs = user_preferences or {}
         try:
@@ -45,9 +41,10 @@ class MediaHandler:
 
             final_text = text
 
-            # 🔧 НОВАЯ ЛОГИКА: Проверяем на ошибочное определение как Tagalog
-            if detected_language == 'tl' and self._is_likely_khmer_transliteration(final_text):
-                logger.warning(f"Язык определен как 'tl', но текст похож на кхмерский. Принудительно меняем на 'km'.")
+            # 🔧 НОВАЯ ЛОГИКА: Проверяем на ошибочное определение как Tagalog ИЛИ АНГЛИЙСКИЙ
+            if detected_language in ['tl', 'en'] and self._is_likely_khmer_transliteration(final_text):
+                logger.warning(
+                    f"Язык определен как '{detected_language}', но текст похож на кхмерский. Принудительно меняем на 'km'.")
                 detected_language = 'km'
 
             # Этап 1: Исправление транслитерации (если нужно)
@@ -73,7 +70,8 @@ class MediaHandler:
                 'detected_language': detected_language,
                 'quality_analysis': final_quality_analysis,
                 'language_info': self._get_language_info_safe(detected_language),
-                'processed_audio_path': audio_path
+                'processed_audio_path': audio_path,
+                'original_file_path': file_path
             }
             logger.info(f"Обработка полностью завершена. Финальный текст: {final_text[:100]}...")
             return result
@@ -84,29 +82,20 @@ class MediaHandler:
     def _is_likely_khmer_transliteration(self, text: str) -> bool:
         """Простая проверка на наличие кхмерских слов в латинице."""
         text_lower = text.lower()
-        # Ключевые слова, которые редко встречаются в тагальском, но часто в транслитерации кхмерского
-        khmer_keywords = ['bong', 'sosay', 'arkun', 'chom', 'neng', 'thlai', 'phnom']
+        khmer_keywords = ['bong', 'sosay', 'arkun', 'chom', 'neng', 'thlai', 'phnom', 'kath', 'knhom']
         found_count = sum(1 for keyword in khmer_keywords if keyword in text_lower)
-        return found_count >= 2  # Считаем кхмерским, если нашлось хотя бы 2 слова
+        return found_count >= 2
 
-    # Остальные методы (_analyze_transcription_quality, и т.д.) остаются без изменений
     def _analyze_transcription_quality(self, text: str, language: str) -> Dict[str, Any]:
         try:
             native_languages = ['km', 'th', 'zh', 'ja', 'ko', 'vi']
             if language in native_languages:
-                analysis = self.native_script_service.analyze_script_quality(text, language)
-                if 'message' not in analysis:
-                    analysis['formatted_message'] = self.native_script_service.format_quality_message(
-                        analysis, language
-                    )
-                return analysis
+                return self.native_script_service.analyze_script_quality(text, language)
             else:
-                return {'quality': 'good', 'native_ratio': 1.0, 'message': '✅ Транскрипция выполнена успешно',
-                        'has_transliteration': False}
+                return {'quality': 'good', 'message': '✅ Транскрипция выполнена успешно'}
         except Exception as e:
             logger.error(f"Ошибка при анализе качества: {e}")
-            return {'quality': 'unknown', 'native_ratio': 0.0, 'message': '⚠️ Не удалось проанализировать качество',
-                    'error': str(e)}
+            return {'quality': 'unknown', 'message': '⚠️ Не удалось проанализировать качество'}
 
     def _get_language_info_safe(self, detected_language: str) -> Dict[str, str]:
         language_names = {
