@@ -8,21 +8,26 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Импорты сервисов
 from services.message_handler import MessageHandler
 from services.database import Database
+from services.translation_service import TranslationService  # 🔧 НОВЫЙ ИМПОРТ
 
 app = Flask(__name__)
 
 # --- Инициализация ---
-# Эта секция кода выполняется один раз при запуске каждого воркера Gunicorn
 try:
     logger.info("Инициализация сервисов для веб-процесса...")
     database = Database()
-    message_handler = MessageHandler(database=database)
+    translation_service = TranslationService()  # 🔧 СОЗДАЕМ СЕРВИС ПЕРЕВОДА
+
+    # 🔧 ПЕРЕДАЕМ ОБА СЕРВИСА В MessageHandler
+    message_handler = MessageHandler(database=database, translation_service=translation_service)
+
     logger.info("✅ Веб-сервисы успешно инициализированы.")
 except Exception as e:
     logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА ИНИЦИАЛИЗАЦИИ: {e}", exc_info=True)
-    message_handler = None  # Явно указываем, что инициализация провалена
+    message_handler = None
 
 
 # --- Конец инициализации ---
