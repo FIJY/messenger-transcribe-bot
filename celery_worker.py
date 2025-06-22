@@ -11,7 +11,6 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Импорты ваших сервисов
 from services.media_handler import MediaHandler
 from services.transcription_service import TranscriptionService
 from services.translation_service import TranslationService
@@ -38,7 +37,6 @@ except Exception as e:
 
 
 def _send_celery_message(recipient_id: str, message_data: Dict[str, Any]):
-    """Централизованный метод отправки сообщений от воркера."""
     if not PAGE_ACCESS_TOKEN:
         logger.error("PAGE_ACCESS_TOKEN не найден.")
         return
@@ -56,6 +54,24 @@ def _send_celery_message(recipient_id: str, message_data: Dict[str, Any]):
         logger.error(f"Воркер не смог отправить сообщение: {e}", exc_info=True)
 
 
+def _download_file_from_r2(object_key: str) -> Optional[str]:
+    """Скачивает файл из R2 во временный локальный файл."""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{object_key.split('.')[-1]}") as temp_f:
+            local_file_path = temp_f.name
+
+        download_success = s3_service.download_file(object_key, local_file_path)
+        if download_success:
+            logger.info(f"Файл {object_key} успешно скачан из R2 в {local_file_path}")
+            return local_file_path
+        else:
+            os.remove(local_file_path)
+            return None
+    except Exception as e:
+        logger.error(f"Ошибка при скачивании файла из R2 в воркере: {e}", exc_info=True)
+        return None
+
+
 @celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
 def process_media_task(self, sender_id: str, object_key: str, user_preferences: dict):
     logger.info(f"[{self.request.id}] Начало задачи для {sender_id}, ключ объекта в R2: {object_key}")
@@ -63,24 +79,19 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         _send_celery_message(sender_id, {'text': "❌ Ошибка сервера: обработчик не инициализирован."})
         return
 
-    # Создаем временный файл, куда скачаем содержимое из R2
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as temp_f:
-        local_file_path = temp_f.name
+    local_file_path = _download_file_from_r2(object_key)
+    if not local_file_path:
+        _send_celery_message(sender_id, {'text': "❌ Ошибка сервера: не удалось получить файл из хранилища."})
+        return
 
     result = None
     try:
-        download_success = s3_service.download_file(object_key, local_file_path)
-        if not download_success:
-            _send_celery_message(sender_id, {'text': "❌ Ошибка сервера: не удалось получить файл из хранилища."})
-            return
-
         result = media_handler.process_media(local_file_path, user_preferences)
         if result.get('success'):
             lang_info = result.get('language_info', {})
             lang_name = lang_info.get('name', result.get('detected_language', ''))
             response_text = f"🎯 Язык: {lang_name}\n\n📝 Транскрипция:\n{result['transcription']}"
 
-            # Формируем кнопки и отправляем
             quick_replies = [
                 {"content_type": "text", "title": "Перевести на English", "payload": "TRANSLATE_EN"},
                 {"content_type": "text", "title": "Перевести на Русский", "payload": "TRANSLATE_RU"}
@@ -88,7 +99,6 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
             message_data = {'text': response_text, 'quick_replies': quick_replies}
             _send_celery_message(sender_id, message_data)
 
-            # Сохраняем в базу ключ от R2
             database.save_transcription(
                 user_id=sender_id,
                 transcription=result['transcription'],
@@ -107,7 +117,7 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         except self.MaxRetriesExceededError:
             _send_celery_message(sender_id, {'text': "❌ Не удалось обработать ваш файл после нескольких попыток."})
     finally:
-        # 🔧 ИЗМЕНЕНИЕ: НЕ УДАЛЯЕМ файл из R2, только локальные копии
+        # НЕ УДАЛЯЕМ файл из R2. Удаляем только локальные копии.
         audio_processor.cleanup_temp_file(local_file_path)
         if result and result.get('processed_audio_path'):
             audio_processor.cleanup_temp_file(result.get('processed_audio_path'))
