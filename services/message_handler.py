@@ -11,7 +11,6 @@ from .database import Database
 from .s3_service import S3Service
 from .translation_service import TranslationService
 
-[cite: 1]
 
 logger = logging.getLogger(__name__)
 
