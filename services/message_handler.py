@@ -22,10 +22,11 @@ else:
 
 
 class MessageHandler:
-    def __init__(self, database: Database):
+    # 🔧 ИСПРАВЛЕНИЕ: Добавляем translation_service в конструктор
+    def __init__(self, database: Database, translation_service: TranslationService):
         self.database = database
         self.s3_service = S3Service()
-        self.translation_service = TranslationService()
+        self.translation_service = translation_service
         self.page_access_token = os.getenv('PAGE_ACCESS_TOKEN')
 
     def handle_message(self, webhook_event: Dict[str, Any]):
@@ -62,6 +63,7 @@ class MessageHandler:
             logger.error(f"Ошибка в handle_message: {e}", exc_info=True)
 
     def _handle_quick_reply(self, sender_id: str, payload: str) -> bool:
+        """Обрабатывает нажатия на кнопки перевода."""
         if payload.startswith('TRANSLATE_'):
             target_lang_code = payload.replace('TRANSLATE_', '').lower()
             self._handle_translation_request(sender_id, target_lang_code)
@@ -69,29 +71,22 @@ class MessageHandler:
         return False
 
     def _handle_text_command(self, sender_id: str, text: str) -> bool:
+        """Обрабатывает текстовые команды, как /retry."""
         text_lower = text.lower().strip()
         parts = text_lower.split()
         if not parts: return False
-
         command = parts[0]
-        if command == '/retry' or command == '/повторить':
+        if command == '/retry':
             if len(parts) > 1:
                 lang_code = parts[1]
                 self._handle_retry_request(sender_id, lang_code)
             else:
                 self._send_text_message(sender_id, "Пожалуйста, укажите код языка, например: /retry km")
             return True
-        elif command == '/locale' or command == '/язык':
-            if len(parts) > 1:
-                lang_code = parts[1]
-                self.database.set_user_language_preference(sender_id, 'system', lang_code)
-                self._send_text_message(sender_id, f"✅ Язык системных сообщений изменен на: {lang_code.upper()}")
-            else:
-                self._send_text_message(sender_id, "Пожалуйста, укажите код языка, например: /locale en")
-            return True
         return False
 
     def _handle_retry_request(self, sender_id: str, lang_code: str):
+        """Обрабатывает запрос на повторную транскрипцию."""
         logger.info(f"Пользователь {sender_id} запросил ретрай с языком {lang_code}")
         last_doc = self.database.get_last_transcription(sender_id)
         if not last_doc or not last_doc.get('s3_object_key'):
@@ -100,12 +95,12 @@ class MessageHandler:
 
         object_key = last_doc['s3_object_key']
         user_preferences = {'preferred_language': lang_code}
-
         self._send_text_message(sender_id, f"✅ Принято! Повторяю обработку файла с языком {lang_code.upper()}...")
         if celery_app_client:
             celery_app_client.send_task('tasks.process_media', args=[sender_id, object_key, user_preferences])
 
     def _handle_translation_request(self, sender_id: str, target_lang_code: str):
+        """Обрабатывает запрос на перевод."""
         logger.info(f"Пользователь {sender_id} запросил перевод на {target_lang_code}")
         last_doc = self.database.get_last_transcription(sender_id)
         if not last_doc or not last_doc.get('transcription'):
@@ -114,7 +109,6 @@ class MessageHandler:
 
         original_text = last_doc['transcription']
         source_lang = last_doc['detected_language']
-
         if target_lang_code == source_lang:
             self._send_text_message(sender_id, "🤔 Текст уже на этом языке!")
             return
@@ -143,7 +137,6 @@ class MessageHandler:
 
             file_extension = os.path.splitext(local_file_path)[-1]
             object_key = f"{uuid.uuid4()}{file_extension}"
-
             upload_success = self.s3_service.upload_file(local_file_path, object_key)
             if not upload_success:
                 self._send_text_message(sender_id, "❌ Ошибка сервера: не удалось сохранить файл.")
@@ -152,7 +145,6 @@ class MessageHandler:
             self._send_text_message(sender_id,
                                     "✅ Принял ваш файл в обработку. Результат пришлю, как только он будет готов.")
             user_preferences = {'preferred_language': user.get('preferred_language')}
-
             if celery_app_client:
                 celery_app_client.send_task('tasks.process_media', args=[sender_id, object_key, user_preferences])
         except Exception as e:
