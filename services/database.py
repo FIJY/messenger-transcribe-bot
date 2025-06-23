@@ -3,11 +3,11 @@ import os
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
+
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
 logger = logging.getLogger(__name__)
-
 
 class Database:
     def __init__(self):
@@ -43,6 +43,7 @@ class Database:
     def create_user(self, user_id: str, **kwargs) -> Dict[str, Any]:
         try:
             now = datetime.now(timezone.utc)
+            locale = kwargs.get('locale', 'en_US').split('_')[0]
             user_data = {
                 "user_id": user_id,
                 "created_at": now,
@@ -51,35 +52,42 @@ class Database:
                 "total_transcriptions": 0,
                 "is_premium": False,
                 "preferred_language": None,
-                "target_language": "en",
+                "system_locale": locale,
+                "state": None
             }
             self.db.users.insert_one(user_data)
+            logger.info(f"Created new user {user_id} with locale '{locale}'")
             return user_data
         except PyMongoError as e:
             logger.error(f"Error creating user {user_id}: {e}")
             raise
 
+    def update_user(self, user_id: str, update_data: Dict[str, Any]) -> bool:
+        try:
+            result = self.db.users.update_one({"user_id": user_id}, {"$set": update_data})
+            return result.modified_count > 0
+        except PyMongoError as e:
+            logger.error(f"Error updating user {user_id}: {e}")
+            return False
+
     def increment_usage(self, user_id: str):
         try:
             self.db.users.update_one(
                 {"user_id": user_id},
-                {"$inc": {"daily_usage": 1, "total_transcriptions": 1}}
+                {"$inc": {"daily_usage": 1, "total_transcriptions": 1},
+                 "$set": {"last_seen": datetime.now(timezone.utc)}}
             )
-            logger.info(f"Incremented usage for user {user_id}")
         except PyMongoError as e:
             logger.error(f"Error incrementing usage for user {user_id}: {e}")
 
-    def save_transcription(self, user_id: str, transcription: str, detected_language: str, object_key: str, **kwargs):
-        """Сохраняет результат транскрипции, включая ключ объекта в S3/R2."""
+    def save_transcription(self, user_id: str, object_key: str, **kwargs):
         try:
-            # Убираем ненужные для сохранения поля из kwargs
             kwargs.pop('success', None)
             kwargs.pop('processed_audio_path', None)
+            kwargs.pop('original_file_path', None)
 
             transcription_data = {
                 "user_id": user_id,
-                "transcription": transcription,
-                "detected_language": detected_language,
                 "s3_object_key": object_key,
                 "created_at": datetime.now(timezone.utc),
                 **kwargs
@@ -98,12 +106,3 @@ class Database:
         except PyMongoError as e:
             logger.error(f"Error getting last transcription for user {user_id}: {e}")
             return None
-
-    def set_user_language_preference(self, user_id: str, language: Optional[str]) -> bool:
-        try:
-            self.db.users.update_one({"user_id": user_id}, {"$set": {"preferred_language": language}})
-            logger.info(f"Set language preference for user {user_id} to: {language}")
-            return True
-        except PyMongoError as e:
-            logger.error(f"Error setting language preference for {user_id}: {e}")
-            return False

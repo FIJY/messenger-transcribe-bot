@@ -1,109 +1,37 @@
-# services/database.py
-import os
+# services/language_detector.py
 import logging
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any
-
-from pymongo import MongoClient
-from pymongo.errors import PyMongoError
+from langdetect import detect, detect_langs
+from langdetect.lang_detect_exception import LangDetectException
 
 logger = logging.getLogger(__name__)
 
-class Database:
-    def __init__(self):
-        self.mongodb_uri = os.getenv('MONGODB_URI')
-        if not self.mongodb_uri:
-            raise ValueError("MONGODB_URI environment variable is required")
-        self.client = None
-        self.db = None
-        self.connect()
+class LanguageDetector:
+    def analyze_language(self, text: str) -> dict:
+        """
+        Анализирует текст для определения языка и уверенности.
+        Возвращает словарь, например: {'language': 'km', 'confidence': 0.99}
+        """
+        if not text or not text.strip():
+            logger.warning("Передан пустой текст для определения языка.")
+            return {'language': 'unknown', 'confidence': 0.0}
 
-    def connect(self):
         try:
-            self.client = MongoClient(self.mongodb_uri)
-            self.db = self.client.messenger_transcribe_bot
-            self.client.admin.command('ping')
-            logger.info("Successfully connected to MongoDB")
-            self._create_indexes()
-        except Exception as e:
-            logger.error(f"Failed to connect to MongoDB: {e}")
-            raise
+            # detect_langs возвращает список языков с вероятностями
+            langs = detect_langs(text)
+            if not langs:
+                raise LangDetectException(0, "Langdetect вернул пустой список")
 
-    def _create_indexes(self):
-        self.db.users.create_index("user_id", unique=True)
-        self.db.transcriptions.create_index([("user_id", 1), ("created_at", -1)])
+            # Берем самый вероятный язык
+            best_match = langs[0]
+            language_code = best_match.lang
+            confidence = best_match.prob
 
-    def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
-        try:
-            return self.db.users.find_one({"user_id": user_id})
-        except PyMongoError as e:
-            logger.error(f"Error getting user {user_id}: {e}")
-            return None
+            logger.info(f"Язык определен как '{language_code}' с уверенностью {confidence:.2f}")
 
-    def create_user(self, user_id: str, **kwargs) -> Dict[str, Any]:
-        try:
-            now = datetime.now(timezone.utc)
-            locale = kwargs.get('locale', 'en_US').split('_')[0]
-            user_data = {
-                "user_id": user_id,
-                "created_at": now,
-                "last_seen": now,
-                "daily_usage": 0,
-                "total_transcriptions": 0,
-                "is_premium": False,
-                "preferred_language": None,
-                "system_locale": locale,
-                "state": None  # Состояние для диалогов
+            return {
+                'language': language_code,
+                'confidence': confidence
             }
-            self.db.users.insert_one(user_data)
-            logger.info(f"Created new user {user_id} with locale '{locale}'")
-            return user_data
-        except PyMongoError as e:
-            logger.error(f"Error creating user {user_id}: {e}")
-            raise
-
-    def update_user(self, user_id: str, update_data: Dict[str, Any]) -> bool:
-        """Универсальный метод обновления данных пользователя."""
-        try:
-            result = self.db.users.update_one({"user_id": user_id}, {"$set": update_data})
-            return result.modified_count > 0
-        except PyMongoError as e:
-            logger.error(f"Error updating user {user_id}: {e}")
-            return False
-
-    def increment_usage(self, user_id: str):
-        try:
-            self.db.users.update_one(
-                {"user_id": user_id},
-                {"$inc": {"daily_usage": 1, "total_transcriptions": 1},
-                 "$set": {"last_seen": datetime.now(timezone.utc)}}
-            )
-        except PyMongoError as e:
-            logger.error(f"Error incrementing usage for user {user_id}: {e}")
-
-    def save_transcription(self, user_id: str, object_key: str, **kwargs):
-        try:
-            kwargs.pop('success', None)
-            kwargs.pop('processed_audio_path', None)
-            kwargs.pop('original_file_path', None)
-
-            transcription_data = {
-                "user_id": user_id,
-                "s3_object_key": object_key,
-                "created_at": datetime.now(timezone.utc),
-                **kwargs
-            }
-            self.db.transcriptions.insert_one(transcription_data)
-            logger.info(f"Saved transcription for user {user_id} with S3 key {object_key}")
-        except PyMongoError as e:
-            logger.error(f"Error saving transcription for user {user_id}: {e}")
-
-    def get_last_transcription(self, user_id: str) -> Optional[Dict[str, Any]]:
-        try:
-            return self.db.transcriptions.find_one(
-                {"user_id": user_id},
-                sort=[("created_at", -1)]
-            )
-        except PyMongoError as e:
-            logger.error(f"Error getting last transcription for user {user_id}: {e}")
-            return None
+        except LangDetectException:
+            logger.warning(f"Не удалось определить язык для текста: '{text[:70]}...'")
+            return {'language': 'unknown', 'confidence': 0.0}
