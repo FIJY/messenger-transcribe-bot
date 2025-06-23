@@ -5,7 +5,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 class TranscriptionService:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
@@ -27,7 +26,7 @@ class TranscriptionService:
 
             if result['success'] and text:
                 detected_lang = result.get('detected_language', language or 'unknown')
-                self.logger.info(f"Транскрибация успешна. Язык: {detected_lang}")
+                self.logger.info(f"Транскрипция успешна. Язык: {detected_lang}")
                 return text, detected_lang
 
             self.logger.warning("Первая попытка не дала результата, пробуем в режиме автоопределения.")
@@ -49,19 +48,17 @@ class TranscriptionService:
         try:
             with open(audio_path, "rb") as audio_file:
                 prompt_text = None
-
-                # ===> ЭКСПЕРИМЕНТАЛЬНОЕ ИСПРАВЛЕНИЕ ОШИБКИ API <===
-                api_language_param = language_hint
                 if language_hint == 'km':
-                    # Вместо 'km' отправляем полное имя, чтобы обойти баг API
-                    api_language_param = 'Khmer'
                     prompt_text = "សួស្តី, ជំរាបសួរ, អរគុណ, សូម, បាទ, ចាស, ខ្ញុំ"
-                    self.logger.info(f"Используем prompt для кхмерского и параметр языка: {api_language_param}")
+                    self.logger.info(f"Используем prompt для кхмерского языка.")
 
+                # ===> ИЗМЕНЕНИЕ ВОЗВРАЩЕНО НАЗАД <===
+                # Теперь мы всегда отправляем код языка как есть (например, 'km'),
+                # так как API требует формат ISO-639-1.
                 response = self.client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
-                    language=api_language_param,
+                    language=language_hint, # Отправляем 'km' напрямую
                     prompt=prompt_text,
                     response_format="verbose_json"
                 )
@@ -72,8 +69,7 @@ class TranscriptionService:
                 if detected_language == 'khmer':
                     detected_language = 'km'
 
-                self.logger.info(
-                    f"OpenAI определил язык: {detected_language_raw} (нормализован в {detected_language}).")
+                self.logger.info(f"OpenAI определил язык: {detected_language_raw} (нормализован в {detected_language}).")
                 return {
                     'success': True,
                     'text': transcribed_text,
