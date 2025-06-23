@@ -123,4 +123,4 @@ class MediaHandler:
         return language_names.get(detected_language, {'name': detected_language.upper(), 'native': ''})
 
     def validate_file(self, file_path: str, is_premium: bool = False) -> Tuple[bool, str]:
-        return self.audio_processor.validate_audio_file(file_path, is_premium)git status
+        return self.audio_processor.validate_audio_file(file_path, is_premium)
