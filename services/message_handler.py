@@ -7,6 +7,8 @@ import uuid
 from typing import Dict, Any, Optional, List
 from celery import Celery
 
+# НОВЫЙ ИМПОРТ
+from config import SUPPORTED_LANGUAGES_FOR_RETRY, MESSENGER_QUICK_REPLIES_LIMIT
 from .database import Database
 from .s3_service import S3Service
 from .translation_service import TranslationService
@@ -40,8 +42,7 @@ class MessageHandler:
 
             user = self.database.get_user(sender_id)
             if not user:
-                locale = messaging_event.get('sender', {}).get('locale', 'en_US').split('_')[0]
-                user = self.database.create_user(sender_id, locale=locale)
+                user = self.database.create_user(sender_id)
                 self._send_text_message(sender_id, "🎉 Добро пожаловать! Отправьте аудио или видео файл.")
                 return
 
@@ -52,8 +53,10 @@ class MessageHandler:
                         return
 
                 if 'text' in message and message.get('text'):
-                    if self._handle_text_command(sender_id, message['text'], user):
-                        return
+                    # Мы больше не используем диалог для исправления языка,
+                    # поэтому обработка текстовых команд упрощается.
+                    self._send_text_message(sender_id, "ℹ️ Чтобы начать, просто отправьте мне аудио или видео файл.")
+                    return
 
                 if 'attachments' in message:
                     self._handle_attachments(sender_id, message['attachments'], user)
@@ -61,49 +64,48 @@ class MessageHandler:
         except Exception as e:
             logger.error(f"Ошибка в handle_message: {e}", exc_info=True)
 
+    # НОВАЯ ФУНКЦИЯ для отправки кнопок
+    def send_language_correction_options(self, sender_id: str):
+        """
+        Отправляет пользователю сообщение с кнопками для выбора правильного языка.
+        """
+        try:
+            quick_replies = []
+            for lang in SUPPORTED_LANGUAGES_FOR_RETRY[:MESSENGER_QUICK_REPLIES_LIMIT]:
+                quick_replies.append({
+                    "content_type": "text",
+                    "title": lang['title'],
+                    "payload": f"RETRY_AS_{lang['code']}"  # Новый формат payload
+                })
+
+            message_data = {
+                "recipient": {"id": sender_id},
+                "messaging_type": "RESPONSE",
+                "message": {
+                    "text": "🤔 Язык определен неверно? Выберите правильный язык ниже:",
+                    "quick_replies": quick_replies
+                }
+            }
+            self._send_api_request(message_data)
+            logger.info(f"Пользователю {sender_id} отправлены кнопки для исправления языка.")
+
+        except Exception as e:
+            logger.error(f"Ошибка отправки кнопок исправления языка: {e}", exc_info=True)
+
     def _handle_quick_reply(self, sender_id: str, payload: str) -> bool:
-        """Обрабатывает нажатия на кнопки."""
-        if payload.startswith('TRANSLATE_'):
+        """Обрабатывает нажатия на быстрые кнопки."""
+        # НОВАЯ ЛОГИКА для кнопок исправления языка
+        if payload.startswith('RETRY_AS_'):
+            lang_code = payload.replace('RETRY_AS_', '').lower()
+            self._handle_retry_request(sender_id, lang_code)
+            return True
+
+        elif payload.startswith('TRANSLATE_'):
             target_lang_code = payload.replace('TRANSLATE_', '').lower()
             self._handle_translation_request(sender_id, target_lang_code)
             return True
-        elif payload == 'RETRY_INCORRECT_LANGUAGE':
-            self.database.update_user(sender_id, {'state': 'awaiting_retry_language'})
-            self._send_text_message(sender_id,
-                                    "Понял! Какой это был язык на самом деле? Отправьте его название или двухбуквенный код (например, 'Khmer' или 'km').")
-            return True
-        return False
 
-    def _handle_text_command(self, sender_id: str, text: str, user: Dict[str, Any]) -> bool:
-        """Обрабатывает текстовые сообщения, включая ответы в диалогах и команды."""
-        text_lower = text.lower().strip()
-
-        if user.get('state') == 'awaiting_retry_language':
-            # Здесь можно добавить логику для преобразования "khmer" в "km"
-            lang_code = text_lower
-            self._handle_retry_request(sender_id, lang_code)
-            self.database.update_user(sender_id, {'state': None})  # Сбрасываем состояние
-            return True
-
-        parts = text_lower.split()
-        if not parts: return False
-        command = parts[0]
-
-        if command == '/retry':
-            if len(parts) > 1:
-                self._handle_retry_request(sender_id, parts[1])
-            else:
-                self._send_text_message(sender_id, "Пожалуйста, укажите код языка, например: /retry km")
-            return True
-
-        elif command == '/locale':
-            if len(parts) > 1:
-                self.database.set_user_language_preference(sender_id, 'system', parts[1])
-                self._send_text_message(sender_id, f"✅ Язык системных сообщений изменен на: {parts[1].upper()}")
-            else:
-                self._send_text_message(sender_id, "Пожалуйста, укажите код языка, например: /locale en")
-            return True
-
+        # Старый обработчик RETRY_INCORRECT_LANGUAGE больше не нужен, так как мы сразу предлагаем кнопки
         return False
 
     def _handle_retry_request(self, sender_id: str, lang_code: str):
@@ -113,10 +115,17 @@ class MessageHandler:
             self._send_text_message(sender_id, "❌ Не нашел предыдущий файл для повторной обработки.")
             return
 
+        # Находим название языка для красивого ответа
+        lang_name = lang_code.upper()
+        for lang in SUPPORTED_LANGUAGES_FOR_RETRY:
+            if lang['code'] == lang_code:
+                lang_name = lang['title']
+                break
+
         object_key = last_doc['s3_object_key']
         user_preferences = {'preferred_language': lang_code}
 
-        self._send_text_message(sender_id, f"✅ Принято! Повторяю обработку файла с языком {lang_code.upper()}...")
+        self._send_text_message(sender_id, f"✅ Принято! Повторяю обработку, думая, что это {lang_name}...")
         if celery_app_client:
             celery_app_client.send_task('tasks.process_media', args=[sender_id, object_key, user_preferences])
 
@@ -149,11 +158,13 @@ class MessageHandler:
                 self._send_text_message(sender_id, "Пожалуйста, отправьте аудио или видео файл.")
                 return
 
+            self._send_text_message(sender_id, "⏳ Скачиваю ваш файл...")
             local_file_path = self._download_file_locally(attachment)
             if not local_file_path:
                 self._send_text_message(sender_id, "❌ Не удалось скачать файл.")
                 return
 
+            self._send_text_message(sender_id, "✔️ Файл скачан, загружаю в безопасное хранилище...")
             file_extension = os.path.splitext(local_file_path)[-1]
             object_key = f"{uuid.uuid4()}{file_extension}"
             upload_success = self.s3_service.upload_file(local_file_path, object_key)
@@ -188,9 +199,21 @@ class MessageHandler:
             return None
 
     def _send_text_message(self, recipient_id: str, message_text: str):
+        message_data = {
+            'recipient': {'id': recipient_id},
+            'message': {'text': message_text}
+        }
+        self._send_api_request(message_data)
+
+    def _send_api_request(self, message_data: Dict[str, Any]):
+        """Централизованный метод для отправки запросов к Messenger API."""
         try:
-            payload = {'recipient': {'id': recipient_id}, 'message': {'text': message_text},
-                       'access_token': self.page_access_token}
-            requests.post("https://graph.facebook.com/v18.0/me/messages", json=payload, timeout=10).raise_for_status()
+            params = {'access_token': self.page_access_token}
+            requests.post(
+                "https://graph.facebook.com/v18.0/me/messages",
+                params=params,
+                json=message_data,
+                timeout=10
+            ).raise_for_status()
         except Exception as e:
-            logger.error(f"Ошибка отправки сообщения пользователю {recipient_id}: {e}")
+            logger.error(f"Ошибка отправки сообщения пользователю {message_data.get('recipient', {}).get('id')}: {e}")
