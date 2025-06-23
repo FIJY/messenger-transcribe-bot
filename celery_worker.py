@@ -20,7 +20,7 @@ from services.s3_service import S3Service
 from services.message_handler import MessageHandler
 
 redis_url = os.getenv('REDIS_URL')
-if not redis_url: raise RuntimeError("REDIS_URL не установлен!")
+if not redis_url: raise RuntimeError("REDIS_URL is not set!")
 celery_app = Celery('tasks', broker=redis_url, backend=redis_url, include=['celery_worker'])
 
 try:
@@ -32,16 +32,16 @@ try:
     message_handler = MessageHandler(database=database, translation_service=translation_service)
     media_handler_service = MediaHandler(transcription_service, translation_service)
     PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
-    logger.info("Celery воркер: Все сервисы успешно инициализированы.")
+    logger.info("Celery worker: All services initialized successfully.")
 except Exception as e:
-    logger.error(f"Celery воркер: КРИТИЧЕСКАЯ ОШИБКА ИНИЦИАЛИЗАЦИИ: {e}", exc_info=True)
+    logger.error(f"Celery worker: CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
     media_handler_service = None
     message_handler = None
 
 
 def _send_celery_message(recipient_id: str, message_data: Dict[str, Any]):
     if not PAGE_ACCESS_TOKEN:
-        logger.error("PAGE_ACCESS_TOKEN не найден.")
+        logger.error("PAGE_ACCESS_TOKEN not found.")
         return
     try:
         payload = {
@@ -52,7 +52,7 @@ def _send_celery_message(recipient_id: str, message_data: Dict[str, Any]):
         }
         requests.post("https://graph.facebook.com/v18.0/me/messages", json=payload, timeout=10).raise_for_status()
     except Exception as e:
-        logger.error(f"Воркер не смог отправить сообщение: {e}", exc_info=True)
+        logger.error(f"Worker could not send message: {e}", exc_info=True)
 
 
 def _download_file_from_r2(object_key: str) -> Optional[str]:
@@ -65,79 +65,71 @@ def _download_file_from_r2(object_key: str) -> Optional[str]:
             os.remove(local_file_path)
             return None
     except Exception as e:
-        logger.error(f"Ошибка при скачивании файла из R2 в воркере: {e}", exc_info=True)
+        logger.error(f"Error downloading file from R2 in worker: {e}", exc_info=True)
         return None
 
 
 @celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
 def process_media_task(self, sender_id: str, object_key: str, user_preferences: dict):
     if not all([media_handler_service, s3_service, message_handler]):
-        _send_celery_message(sender_id, {'text': "❌ Ошибка сервера: обработчик не инициализирован."})
+        _send_celery_message(sender_id, {'text': "❌ Server error: handler not initialized."})
         return
 
     local_file_path = _download_file_from_r2(object_key)
     if not local_file_path:
-        _send_celery_message(sender_id, {'text': "❌ Ошибка сервера: не удалось получить файл из хранилища."})
+        _send_celery_message(sender_id, {'text': "❌ Server error: could not retrieve file from storage."})
         return
 
-    # ===> НАЧАЛО ГЛАВНЫХ ИЗМЕНЕНИЙ <===
     is_retry = bool(user_preferences.get('preferred_language'))
     result = None
     try:
         result = media_handler_service.process_media(local_file_path, user_preferences)
 
         if result.get('success'):
-            # --- ОБРАБОТКА УСПЕШНОГО РЕЗУЛЬТАТА ---
             lang_info = result.get('language_info', {})
             lang_name = lang_info.get('name', result.get('detected_language', ''))
-            response_text = f"🎯 Язык: {lang_name}\n\n📝 Транскрипция:\n{result['transcription']}"
+            response_text = f"🎯 Language: {lang_name}\n\n📝 Transcription:\n{result['transcription']}"
 
-            # Сначала отправляем сам текст
             _send_celery_message(sender_id, {'text': response_text})
 
-            # Теперь отправляем кнопки в зависимости от того, ретрай это или нет
+            # ===> ДОБАВЛЕНЫ НОВЫЕ КНОПКИ ПЕРЕВОДА <===
+            translate_buttons = [
+                {"content_type": "text", "title": "to English", "payload": "TRANSLATE_EN"},
+                {"content_type": "text", "title": "на Русский", "payload": "TRANSLATE_RU"},
+                {"content_type": "text", "title": "เป็นภาษาไทย", "payload": "TRANSLATE_TH"},
+                {"content_type": "text", "title": "ទៅជាភាសាខ្មែរ", "payload": "TRANSLATE_KM"}
+            ]
+
             if is_retry:
-                # Успешный ретрай: предлагаем ТОЛЬКО перевод
-                quick_replies = [
-                    {"content_type": "text", "title": "Translate to English", "payload": "TRANSLATE_EN"},
-                    {"content_type": "text", "title": "Перевести на Русский", "payload": "TRANSLATE_RU"}
-                ]
-                message_data = {'text': "Желаете перевести этот текст?", 'quick_replies': quick_replies}
+                message_data = {'text': "Would you like to translate this text?", 'quick_replies': translate_buttons}
                 _send_celery_message(sender_id, message_data)
             else:
-                # Успешный первый прогон: предлагаем перевод И смену языка
-                quick_replies = [
-                    {"content_type": "text", "title": "Translate to English", "payload": "TRANSLATE_EN"},
-                    {"content_type": "text", "title": "Перевести на Русский", "payload": "TRANSLATE_RU"},
-                    {"content_type": "text", "title": "🗣️ Другой язык", "payload": "CHOOSE_OTHER_LANGUAGE"}
-                ]
-                message_data = {'text': "Что делаем дальше?", 'quick_replies': quick_replies}
+                initial_buttons = translate_buttons + [
+                    {"content_type": "text", "title": "🗣️ Other language", "payload": "CHOOSE_OTHER_LANGUAGE"}]
+                message_data = {'text': "What's next?", 'quick_replies': initial_buttons}
                 _send_celery_message(sender_id, message_data)
 
             database.save_transcription(user_id=sender_id, object_key=object_key, **result)
-            if not is_retry:  # Считаем использование только при первой обработке
+            if not is_retry:
                 database.increment_usage(user_id=sender_id)
 
         else:
-            # --- ОБРАБОТКА НЕУДАЧНОГО РЕЗУЛЬТАТА ---
-            error_message = result.get('error', 'неизвестная ошибка')
+            error_message = result.get('error', 'unknown error')
             if is_retry:
-                # Неудачный ретрай (Ваш Вариант А)
-                _send_celery_message(sender_id, {'text': f"Повторная попытка не удалась. Ошибка: {error_message}"})
-                message_handler.send_language_correction_options(sender_id)  # Снова предлагаем выбор
+                _send_celery_message(sender_id, {'text': f"The retry attempt failed. Error: {error_message}"})
+                message_handler.send_language_correction_options(sender_id)
             else:
-                # Неудачный первый прогон
-                _send_celery_message(sender_id, {'text': f"❌ Не удалось обработать ваш файл. Ошибка: {error_message}"})
+                _send_celery_message(sender_id, {'text': f"❌ Failed to process your file. Error: {error_message}"})
 
     except Exception as exc:
-        logger.error(f"[{self.request.id}] Критическая ошибка в задаче Celery: {exc}", exc_info=True)
+        logger.error(f"[{self.request.id}] Critical error in Celery task: {exc}", exc_info=True)
         try:
             raise self.retry(exc=exc)
         except self.MaxRetriesExceededError:
-            _send_celery_message(sender_id, {'text': "❌ Не удалось обработать ваш файл после нескольких попыток."})
+            _send_celery_message(sender_id, {'text': "❌ Failed to process your file after multiple attempts."})
 
     finally:
         audio_processor.cleanup_temp_file(local_file_path)
         if result and result.get('processed_audio_path'):
             audio_processor.cleanup_temp_file(result.get('processed_audio_path'))
-        logger.info(f"[{self.request.id}] Задача завершена для объекта {object_key}.")
+        logger.info(f"[{self.request.id}] Task finished for object {object_key}.")

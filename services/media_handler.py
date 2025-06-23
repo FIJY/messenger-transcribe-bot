@@ -26,59 +26,50 @@ class MediaHandler:
         audio_path = None
         user_prefs = user_preferences or {}
         try:
-            # Получаем язык, если это ретрай по кнопке
             expected_language = user_prefs.get('preferred_language')
 
             audio_path = self.audio_processor.process_file(file_path)
             if not audio_path:
-                return {'success': False, 'error': 'Не удалось обработать медиа файл'}
+                return {'success': False, 'error': 'Failed to process media file'}
 
-            # ===> НАЧАЛО НОВОЙ ЛОГИКИ <===
             if expected_language:
-                # --- ЭТО ЛОГИКА ДЛЯ РЕТРАЯ (КОГДА ЯЗЫК УКАЗАН) ---
-                logger.info(f"Выполняется принудительная транскрипция для языка: {expected_language}")
-                # Вызываем транскрипцию с подсказкой
+                logger.info(f"Performing forced transcription for language: {expected_language}")
                 result_dict = self.transcription_service._transcribe_sync(audio_path, language_hint=expected_language)
                 text = result_dict.get('text', '')
-
-                # ВАЖНО: Мы полностью доверяем пользователю и ИГНОРИРУЕМ язык от Whisper.
-                # Мы сами присваиваем тот язык, который выбрал пользователь.
                 detected_language = expected_language
-                logger.info(f"Язык от Whisper проигнорирован. Принудительно установлен язык: {detected_language}")
-
+                logger.info(f"Language from Whisper ignored. Forced language: {detected_language}")
             else:
-                # --- ЭТО СТАНДАРТНАЯ ЛОГИКА (ДЛЯ ПЕРВОЙ ЗАГРУЗКИ) ---
-                logger.info("Выполняется стандартная транскрипция с автоопределением.")
+                logger.info("Performing standard transcription with auto-detection.")
                 text, detected_language = self.transcription_service.transcribe_with_fallback(audio_path)
 
-            # ===> КОНЕЦ НОВОЙ ЛОГИКИ <===
+            # ===> ВАЖНОЕ ИЗМЕНЕНИЕ: ПРОВЕРКА НА ПУСТОЙ РЕЗУЛЬТАТ <===
+            if not text or not text.strip():
+                logger.warning(
+                    f"Transcription for language '{detected_language}' resulted in empty text. Treating as failure.")
+                return {'success': False, 'error': 'Transcription result was empty.'}
 
             if text.startswith("Ошибка"):
                 return {'success': False, 'error': text, 'processed_audio_path': audio_path}
 
             final_text = text
 
-            # Проверяем на ошибочное определение как английский или тагальский (актуально для первого прогона)
             if not expected_language and detected_language in ['tl', 'en'] and self._is_likely_khmer_transliteration(
                     final_text):
-                logger.warning(f"Язык определен как '{detected_language}', но похож на кхмерский. Меняем на 'km'.")
+                logger.warning(f"Language detected as '{detected_language}' but looks like Khmer. Changing to 'km'.")
                 detected_language = 'km'
 
-            # Применяем коррекцию и постобработку, особенно для кхмерского
             if detected_language == 'km':
-                # Сначала пытаемся исправить транслитерацию
                 quality_analysis = self._analyze_transcription_quality(final_text, detected_language)
                 if quality_analysis.get('quality') == 'poor':
                     corrected_text = self.correction_service.correct_khmer_transliteration(final_text)
                     if corrected_text:
                         final_text = corrected_text
-                        logger.info("Транслитерация исправлена с помощью GPT.")
+                        logger.info("Transliteration corrected using GPT.")
 
-                # Затем "причесываем" результат
                 processed_text = self.correction_service.post_process_khmer_text(final_text)
                 if processed_text:
                     final_text = processed_text
-                    logger.info("Текст на кхмерском прошел постобработку GPT.")
+                    logger.info("Khmer text post-processed by GPT.")
 
             final_quality_analysis = self._analyze_transcription_quality(final_text, detected_language)
 
@@ -93,8 +84,8 @@ class MediaHandler:
             }
             return result
         except Exception as e:
-            logger.error(f"Критическая ошибка при обработке медиа: {e}", exc_info=True)
-            return {'success': False, 'error': 'Произошла внутренняя ошибка', 'processed_audio_path': audio_path}
+            logger.error(f"Critical error in media processing: {e}", exc_info=True)
+            return {'success': False, 'error': 'An internal error occurred', 'processed_audio_path': audio_path}
 
     def _is_likely_khmer_transliteration(self, text: str) -> bool:
         text_lower = text.lower()
@@ -107,11 +98,11 @@ class MediaHandler:
             return self.native_script_service.analyze_script_quality(text, language)
         elif language == 'en':
             if self._is_likely_khmer_transliteration(text):
-                return {'quality': 'poor', 'message': '⚠️ Похоже, кхмерский был распознан как английский.'}
+                return {'quality': 'poor', 'message': '⚠️ Looks like Khmer was recognized as English.'}
             else:
-                return {'quality': 'good', 'message': '✅ Транскрипция выполнена успешно'}
+                return {'quality': 'good', 'message': '✅ Transcription successful'}
         else:
-            return {'quality': 'good', 'message': '✅ Анализ качества для этого языка не требуется'}
+            return {'quality': 'good', 'message': '✅ Quality analysis not required for this language'}
 
     def _get_language_info_safe(self, detected_language: str) -> Dict[str, str]:
         language_names = {
