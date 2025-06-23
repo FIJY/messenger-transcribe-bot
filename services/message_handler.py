@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional, List
 from celery import Celery
 
 # НОВЫЙ ИМПОРТ
-from config import SUPPORTED_LANGUAGES_FOR_RETRY, MESSENGER_QUICK_REPLIES_LIMIT
+from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_FOR_RETRY, MESSENGER_QUICK_REPLIES_LIMIT
 from .database import Database
 from .s3_service import S3Service
 from .translation_service import TranslationService
