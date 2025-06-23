@@ -1,17 +1,15 @@
-# config.py
+# config/transcrib_suggestion_config.py
 
 # Список языков, которые будут предложены пользователю в виде кнопок
 # для быстрой коррекции языка.
-# 'code': ISO 639-1 код языка, который понимает Whisper
-# 'title': Текст, который будет на кнопке
 SUPPORTED_LANGUAGES_FOR_RETRY = [
-    {'code': 'km', 'title': '🇰🇭 Кхмерский'},
-    {'code': 'en', 'title': '🇬🇧 Английский'},
-    {'code': 'ru', 'title': '🇷🇺 Русский'},
-    {'code': 'th', 'title': '🇹🇭 Тайский'},
-    {'code': 'vi', 'title': '🇻🇳 Вьетнамский'},
-    {'code': 'zh', 'title': '🇨🇳 Китайский'},
-    # При желании можно добавить еще языки
+    # ==> ИЗМЕНЕНЫ ПОЛЯ 'title' <==
+    {'code': 'km', 'title': '🇰🇭 KM'},
+    {'code': 'en', 'title': '🇬🇧 EN'},
+    {'code': 'ru', 'title': '🇷🇺 RU'},
+    {'code': 'th', 'title': '🇹🇭 TH'},
+    {'code': 'vi', 'title': '🇻🇳 VI'},
+    {'code': 'zh', 'title': '🇨🇳 ZH'},
 ]
 
 # Максимальное количество кнопок, которое поддерживает Messenger

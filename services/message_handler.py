@@ -7,7 +7,6 @@ import uuid
 from typing import Dict, Any, Optional, List
 from celery import Celery
 
-# НОВЫЙ ИМПОРТ
 from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_FOR_RETRY, MESSENGER_QUICK_REPLIES_LIMIT
 from .database import Database
 from .s3_service import S3Service
@@ -53,36 +52,30 @@ class MessageHandler:
                         return
 
                 if 'text' in message and message.get('text'):
-                    # Мы больше не используем диалог для исправления языка,
-                    # поэтому обработка текстовых команд упрощается.
                     self._send_text_message(sender_id, "ℹ️ Чтобы начать, просто отправьте мне аудио или видео файл.")
                     return
 
                 if 'attachments' in message:
-                    self._handle_attachments(sender_id, message['attachments'], user)
+                    self._handle_attachments(sender_id, message['attachments'])
                     return
         except Exception as e:
             logger.error(f"Ошибка в handle_message: {e}", exc_info=True)
 
-    # НОВАЯ ФУНКЦИЯ для отправки кнопок
     def send_language_correction_options(self, sender_id: str):
-        """
-        Отправляет пользователю сообщение с кнопками для выбора правильного языка.
-        """
         try:
             quick_replies = []
             for lang in SUPPORTED_LANGUAGES_FOR_RETRY[:MESSENGER_QUICK_REPLIES_LIMIT]:
                 quick_replies.append({
                     "content_type": "text",
                     "title": lang['title'],
-                    "payload": f"RETRY_AS_{lang['code']}"  # Новый формат payload
+                    "payload": f"RETRY_AS_{lang['code']}"
                 })
 
             message_data = {
                 "recipient": {"id": sender_id},
                 "messaging_type": "RESPONSE",
                 "message": {
-                    "text": "🤔 Язык определен неверно? Выберите правильный язык ниже:",
+                    "text": "Понял. Какой это был язык на самом деле?",
                     "quick_replies": quick_replies
                 }
             }
@@ -93,19 +86,19 @@ class MessageHandler:
             logger.error(f"Ошибка отправки кнопок исправления языка: {e}", exc_info=True)
 
     def _handle_quick_reply(self, sender_id: str, payload: str) -> bool:
-        """Обрабатывает нажатия на быстрые кнопки."""
-        # НОВАЯ ЛОГИКА для кнопок исправления языка
         if payload.startswith('RETRY_AS_'):
             lang_code = payload.replace('RETRY_AS_', '').lower()
             self._handle_retry_request(sender_id, lang_code)
             return True
-
         elif payload.startswith('TRANSLATE_'):
             target_lang_code = payload.replace('TRANSLATE_', '').lower()
             self._handle_translation_request(sender_id, target_lang_code)
             return True
+        # ===> НОВЫЙ ОБРАБОТЧИК <===
+        elif payload == 'CHOOSE_OTHER_LANGUAGE':
+            self.send_language_correction_options(sender_id)
+            return True
 
-        # Старый обработчик RETRY_INCORRECT_LANGUAGE больше не нужен, так как мы сразу предлагаем кнопки
         return False
 
     def _handle_retry_request(self, sender_id: str, lang_code: str):
@@ -115,7 +108,6 @@ class MessageHandler:
             self._send_text_message(sender_id, "❌ Не нашел предыдущий файл для повторной обработки.")
             return
 
-        # Находим название языка для красивого ответа
         lang_name = lang_code.upper()
         for lang in SUPPORTED_LANGUAGES_FOR_RETRY:
             if lang['code'] == lang_code:
@@ -150,7 +142,7 @@ class MessageHandler:
         else:
             self._send_text_message(sender_id, f"❌ Не удалось выполнить перевод: {translation_result.get('error')}")
 
-    def _handle_attachments(self, sender_id: str, attachments: List[Dict], user: Dict[str, Any]):
+    def _handle_attachments(self, sender_id: str, attachments: List[Dict]):
         local_file_path = None
         try:
             attachment = attachments[0]
@@ -174,7 +166,9 @@ class MessageHandler:
 
             self._send_text_message(sender_id,
                                     "✅ Принял ваш файл в обработку. Результат пришлю, как только он будет готов.")
-            user_preferences = {'preferred_language': user.get('preferred_language')}
+
+            # При первой отправке user_preferences пустой
+            user_preferences = {}
 
             if celery_app_client:
                 celery_app_client.send_task('tasks.process_media', args=[sender_id, object_key, user_preferences])
@@ -206,7 +200,6 @@ class MessageHandler:
         self._send_api_request(message_data)
 
     def _send_api_request(self, message_data: Dict[str, Any]):
-        """Централизованный метод для отправки запросов к Messenger API."""
         try:
             params = {'access_token': self.page_access_token}
             requests.post(
@@ -216,4 +209,5 @@ class MessageHandler:
                 timeout=10
             ).raise_for_status()
         except Exception as e:
-            logger.error(f"Ошибка отправки сообщения пользователю {message_data.get('recipient', {}).get('id')}: {e}")
+            logger.error(f"Ошибка отправки сообщения пользователю {message_data.get('recipient', {}).get('id')}: {e}",
+                         exc_info=True)
