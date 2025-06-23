@@ -26,7 +26,6 @@ class TranscriptionService:
 
             if result['success'] and text:
                 detected_lang = result.get('detected_language', language or 'unknown')
-                self.logger.info(f"Транскрипция успешна. Язык: {detected_lang}")
                 return text, detected_lang
 
             self.logger.warning("Первая попытка не дала результата, пробуем в режиме автоопределения.")
@@ -37,11 +36,13 @@ class TranscriptionService:
                 detected_lang = fallback_result.get('detected_language', 'unknown')
                 return fallback_text, detected_lang
             else:
-                error_msg = fallback_result.get('error', result.get('error', 'Unknown error'))
-                return f"Ошибка транскрипции: {error_msg}", 'unknown'
+                # ===> ИЗМЕНЕНИЕ ЗДЕСЬ <===
+                # Пробрасываем ошибку, чтобы ее можно было поймать выше
+                raise fallback_result.get('error', result.get('error', Exception('Unknown transcription error')))
 
         except Exception as e:
             self.logger.error(f"Критическая ошибка в transcribe_with_fallback: {e}", exc_info=True)
+            # Возвращаем ошибку в понятном виде
             return f"Ошибка транскрипции: {str(e)}", 'unknown'
 
     def _transcribe_sync(self, audio_path: str, language_hint: str = None) -> dict:
@@ -52,13 +53,10 @@ class TranscriptionService:
                     prompt_text = "សួស្តី, ជំរាបសួរ, អរគុណ, សូម, បាទ, ចាស, ខ្ញុំ"
                     self.logger.info(f"Используем prompt для кхмерского языка.")
 
-                # ===> ИЗМЕНЕНИЕ ВОЗВРАЩЕНО НАЗАД <===
-                # Теперь мы всегда отправляем код языка как есть (например, 'km'),
-                # так как API требует формат ISO-639-1.
                 response = self.client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
-                    language=language_hint, # Отправляем 'km' напрямую
+                    language=language_hint,
                     prompt=prompt_text,
                     response_format="verbose_json"
                 )
@@ -75,7 +73,8 @@ class TranscriptionService:
                     'text': transcribed_text,
                     'detected_language': detected_language
                 }
-
+        # ===> ИЗМЕНЕНИЕ ЗДЕСЬ <===
         except Exception as e:
             self.logger.error(f"Ошибка транскрипции в _transcribe_sync: {e}", exc_info=True)
-            return {'success': False, 'text': '', 'error': str(e)}
+            # Возвращаем саму ошибку, а не ее текст
+            return {'success': False, 'text': '', 'error': e}
