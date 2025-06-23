@@ -55,11 +55,9 @@ def _send_celery_message(recipient_id: str, message_data: Dict[str, Any]):
 
 
 def _download_file_from_r2(object_key: str) -> Optional[str]:
-    """Скачивает файл из R2 во временный локальный файл."""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{object_key.split('.')[-1]}") as temp_f:
             local_file_path = temp_f.name
-
         download_success = s3_service.download_file(object_key, local_file_path)
         if download_success:
             logger.info(f"Файл {object_key} успешно скачан из R2 в {local_file_path}")
@@ -92,19 +90,43 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
             lang_name = lang_info.get('name', result.get('detected_language', ''))
             response_text = f"🎯 Язык: {lang_name}\n\n📝 Транскрипция:\n{result['transcription']}"
 
-            quick_replies = [
-                {"content_type": "text", "title": "Перевести на English", "payload": "TRANSLATE_EN"},
-                {"content_type": "text", "title": "Перевести на Русский", "payload": "TRANSLATE_RU"}
-            ]
-            message_data = {'text': response_text, 'quick_replies': quick_replies}
+            # --- Динамическое формирование кнопок ---
+            quick_replies = []
+
+            # 1. Добавляем кнопки для перевода
+            # Список популярных языков для перевода
+            supported_translation_languages = translation_service.get_supported_languages()
+            popular_targets = {'en': 'на English', 'ru': 'на Русский', 'th': 'на Thai', 'km': 'на Khmer'}
+
+            for code, text in popular_targets.items():
+                if code in supported_translation_languages and code != result.get('detected_language'):
+                    quick_replies.append(
+                        {"content_type": "text", "title": f"Перевести {text}", "payload": f"TRANSLATE_{code.upper()}"})
+
+            # 2. Проверяем, нужно ли предлагать исправление языка
+            quality_analysis = result.get('quality_analysis', {})
+            language_confidence = result.get('language_confidence', 1.0)
+
+            # Показываем кнопки ретрая, если качество плохое ИЛИ уверенность < 99%
+            if quality_analysis.get('quality') in ['poor', 'mixed'] or language_confidence < 0.99:
+                logger.info(
+                    f"Низкое качество ({quality_analysis.get('quality')}) или уверенность ({language_confidence}). Добавляем кнопки ретрая.")
+                retry_buttons = [
+                    {"content_type": "text", "title": "Это был 🇰🇭 Khmer", "payload": "RETRY_KM"},
+                    {"content_type": "text", "title": "Это был 🇺🇸 English", "payload": "RETRY_EN"}
+                ]
+                quick_replies.extend(retry_buttons)
+
+            message_data = {'text': response_text}
+            if quick_replies:
+                message_data['quick_replies'] = quick_replies
+
             _send_celery_message(sender_id, message_data)
 
             database.save_transcription(
                 user_id=sender_id,
-                transcription=result['transcription'],
-                detected_language=result['detected_language'],
                 object_key=object_key,
-                quality_analysis=result.get('quality_analysis', {})
+                **result
             )
             database.increment_usage(user_id=sender_id)
         else:
@@ -117,8 +139,8 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         except self.MaxRetriesExceededError:
             _send_celery_message(sender_id, {'text': "❌ Не удалось обработать ваш файл после нескольких попыток."})
     finally:
-        # НЕ УДАЛЯЕМ файл из R2. Удаляем только локальные копии.
         audio_processor.cleanup_temp_file(local_file_path)
         if result and result.get('processed_audio_path'):
             audio_processor.cleanup_temp_file(result.get('processed_audio_path'))
-        logger.info(f"[{self.request.id}] Временные локальные файлы удалены. Объект в R2 сохранен для ретраев.")
+        # Мы НЕ удаляем файл из R2, чтобы его можно было использовать для ретрая.
+        # logger.info(f"[{self.request.id}] Объект в R2 {object_key} сохранен для ретраев.")
