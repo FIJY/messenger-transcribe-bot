@@ -12,7 +12,6 @@ from telegram.ext import CallbackContext
 from .database import Database
 from .s3_service import S3Service
 from .celery_client import get_celery_app_client
-# ===> ИСПРАВЛЕНИЕ: ДОБАВЛЯЕМ НЕДОСТАЮЩИЙ ИМПОРТ <===
 from .translation_service import TranslationService
 from config.transcrib_suggestion_config import (
     DEFAULT_POPULAR_TRANSCRIPTION_LANGS,
@@ -24,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramHandler:
-    # Теперь Python знает, что такое TranslationService
     def __init__(self, token: str, database: Database, s3_service: S3Service, translation_service: TranslationService):
         if not token: raise ValueError("Telegram token is required.")
         self.token = token
@@ -34,14 +32,14 @@ class TelegramHandler:
         self.translation_service = translation_service
         self.celery_app_client = get_celery_app_client()
 
-    # ... (остальной код файла без изменений) ...
     async def handle_update(self, update_data: dict):
+        # ... (код без изменений) ...
         update = Update.de_json(update_data, bot=self.bot)
         if update.callback_query:
             await self._handle_callback_query(update.callback_query)
             return
-        if not update.message or not update.message.from_user:
-            return
+        # ... (остальной код handle_update без изменений) ...
+        if not update.message or not update.message.from_user: return
         user_id = str(update.message.from_user.id)
         user = self.database.get_user(user_id)
         if not user:
@@ -62,41 +60,42 @@ class TelegramHandler:
             await self._handle_file(file_to_process, user_id, update.message.chat_id)
 
     async def _handle_callback_query(self, query: Update.callback_query):
-        await query.answer()
+        await query.answer()  # <== Отвечаем Telegram СРАЗУ, что нажатие принято
         payload = query.data
         user_id = str(query.from_user.id)
         chat_id = query.message.chat_id
         user = self.database.get_user(user_id)
         if not user: return
 
-        action_map = {
-            'CHOOSE_OTHER_LANGUAGE': self.send_language_correction_options,
-            'CONFIRM_TRANSCRIPTION_OK': self.send_translation_options,
-        }
-        input_action_map = {
-            'INPUT_OTHER_TRANSCRIPTION_LANG': (
-            'awaiting_language_input_transcription', "Please type the source language..."),
-            'INPUT_OTHER_TRANSLATION_LANG': (
-            'awaiting_language_input_translation', "Please type the target language...")
-        }
-        if payload in action_map:
-            await action_map[payload](chat_id, user)
-            return
-        if payload in input_action_map:
-            state, message = input_action_map[payload]
-            self.database.update_user(user_id, {'state': state})
-            await self.send_message(chat_id, message)
-            return
+        # ===> НАЧАЛО НОВОЙ ЛОГИКИ <===
 
-        context_map = {'RETRY_AS_': 'transcription', 'TRANSLATE_': 'translation'}
-        for prefix, context in context_map.items():
-            if payload.startswith(prefix):
-                code = payload.replace(prefix, '').lower()
-                self.database.increment_language_usage(user_id, code, context)
-                handler = self._handle_retry_request if context == 'transcription' else self._handle_translation_request
-                await handler(user_id, chat_id, code)
-                return
+        # Действия, которые требуют долгой обработки (ретранскрипция)
+        if payload.startswith('RETRY_AS_'):
+            lang_code = payload.replace('RETRY_AS_', '').lower()
+            self.database.increment_language_usage(user_id, lang_code, 'transcription')
+            # Не ждем окончания, просто запускаем
+            await self._handle_retry_request(user_id, chat_id, lang_code)
 
+        # Действия, которые можно обработать сразу
+        elif payload.startswith('TRANSLATE_'):
+            target_lang_code = payload.replace('TRANSLATE_', '').lower()
+            self.database.increment_language_usage(user_id, target_lang_code, 'translation')
+            # Перевод - быстрая операция, делаем сразу
+            await self._handle_translation_request(user_id, chat_id, target_lang_code)
+
+        elif payload == 'CHOOSE_OTHER_LANGUAGE':
+            await self.send_language_correction_options(chat_id, user)
+        elif payload == 'CONFIRM_TRANSCRIPTION_OK':
+            await self.send_translation_options(chat_id, user)
+
+        elif payload == 'INPUT_OTHER_TRANSCRIPTION_LANG':
+            self.database.update_user(user_id, {'state': 'awaiting_language_input_transcription'})
+            await self.send_message(chat_id, "Please type the source language name or its 2-letter code.")
+        elif payload == 'INPUT_OTHER_TRANSLATION_LANG':
+            self.database.update_user(user_id, {'state': 'awaiting_language_input_translation'})
+            await self.send_message(chat_id, "Please type the target language for translation.")
+
+    # ... (остальные функции до _handle_file без изменений) ...
     def _build_smart_buttons(self, user: Dict[str, Any], context: str) -> List[List[InlineKeyboardButton]]:
         if context == 'transcription':
             defaults, stats, prefix, other_payload = DEFAULT_POPULAR_TRANSCRIPTION_LANGS, user.get(
@@ -104,7 +103,6 @@ class TelegramHandler:
         else:
             defaults, stats, prefix, other_payload = DEFAULT_POPULAR_TRANSLATION_LANGS, user.get(
                 'translation_lang_usage', {}), "TRANSLATE_", "INPUT_OTHER_TRANSLATION_LANG"
-
         sorted_user_langs = sorted(stats.keys(), key=stats.get, reverse=True)
         buttons, added_codes = [], set()
 
@@ -118,7 +116,6 @@ class TelegramHandler:
         for lang in defaults:
             if len(buttons) >= 5: break
             if lang['code'] not in added_codes: add_button(lang['code'])
-
         return [buttons, [InlineKeyboardButton("✍️ Type other...", callback_data=other_payload)]]
 
     async def send_language_correction_options(self, chat_id: int, user: Dict[str, Any]):
@@ -181,7 +178,6 @@ class TelegramHandler:
                                                  suffix=os.path.splitext(tg_file.file_path)[-1]) as temp_f:
                     local_file_path = temp_f.name
                     temp_f.write(response.content)
-
             object_key = f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
             if not self.s3_service.upload_file(local_file_path, object_key):
                 await self.send_message(chat_id, "❌ Server error: could not save file.");
