@@ -49,9 +49,12 @@ class Database:
                 "last_seen": now,
                 "is_premium": False,
                 "state": None,
-                # ===> НОВЫЕ ПОЛЯ ДЛЯ СТАТИСТИКИ <===
-                "transcription_lang_usage": {}, # e.g. {'km': 10, 'en': 5}
-                "translation_lang_usage": {}    # e.g. {'en': 8, 'ru': 2}
+                # ===> ВОЗВРАЩАЕМ ПОЛЯ ДЛЯ ОБЩЕГО СЧЕТЧИКА <===
+                "daily_usage": 0,
+                "total_transcriptions": 0,
+                # Поля для статистики языков
+                "transcription_lang_usage": {},
+                "translation_lang_usage": {}
             }
             self.db.users.insert_one(user_data)
             logger.info(f"Created new user {user_id}")
@@ -68,14 +71,20 @@ class Database:
             logger.error(f"Error updating user {user_id}: {e}")
             return False
 
-    # ===> НОВЫЙ МЕТОД ДЛЯ ОБНОВЛЕНИЯ СТАТИСТИКИ <===
+    # ===> ВОЗВРАЩАЕМ СТАРЫЙ МЕТОД ДЛЯ ОБЩЕГО ПОДСЧЕТА <===
+    def increment_usage(self, user_id: str):
+        """Increments general usage counters for a user."""
+        try:
+            self.db.users.update_one(
+                {"user_id": user_id},
+                {"$inc": {"daily_usage": 1, "total_transcriptions": 1},
+                 "$set": {"last_seen": datetime.now(timezone.utc)}}
+            )
+        except PyMongoError as e:
+            logger.error(f"Error incrementing general usage for user {user_id}: {e}")
+
     def increment_language_usage(self, user_id: str, lang_code: str, context: str):
-        """
-        Increments the usage count for a specific language in a given context.
-        :param user_id: The user's ID.
-        :param lang_code: The two-letter language code (e.g., 'km').
-        :param context: 'transcription' or 'translation'.
-        """
+        """Increments the usage count for a specific language in a given context."""
         if context not in ['transcription', 'translation']:
             logger.error(f"Invalid context '{context}' for language usage increment.")
             return

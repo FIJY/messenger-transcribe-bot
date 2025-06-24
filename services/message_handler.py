@@ -5,9 +5,6 @@ import tempfile
 import requests
 import uuid
 from typing import Dict, Any, Optional, List
-
-# Убираем celery отсюда, будем использовать централизованный клиент
-# from celery import Celery
 from .celery_client import get_celery_app_client
 
 from config.transcrib_suggestion_config import (
@@ -21,7 +18,6 @@ from .translation_service import TranslationService
 
 logger = logging.getLogger(__name__)
 
-# Используем централизованный клиент
 celery_app_client = get_celery_app_client()
 
 
@@ -32,7 +28,6 @@ class MessageHandler:
         self.translation_service = translation_service
         self.page_access_token = os.getenv('PAGE_ACCESS_TOKEN')
 
-    # ... (весь остальной код до _handle_retry_request без изменений) ...
     def handle_message(self, webhook_event: Dict[str, Any]):
         try:
             messaging = webhook_event['entry'][0]['messaging'][0]
@@ -65,33 +60,26 @@ class MessageHandler:
             logger.error(f"Error in handle_message: {e}", exc_info=True)
 
     def _build_smart_buttons(self, user: Dict[str, Any], context: str) -> List[Dict]:
-        """Builds a list of quick reply buttons based on user history and global defaults."""
         if context == 'transcription':
             default_popular_langs = DEFAULT_POPULAR_TRANSCRIPTION_LANGS
             usage_stats = user.get('transcription_lang_usage', {})
             payload_prefix = "RETRY_AS_"
             other_payload = "INPUT_OTHER_TRANSCRIPTION_LANG"
-        else:  # context == 'translation'
+        else:
             default_popular_langs = DEFAULT_POPULAR_TRANSLATION_LANGS
             usage_stats = user.get('translation_lang_usage', {})
             payload_prefix = "TRANSLATE_"
             other_payload = "INPUT_OTHER_TRANSLATION_LANG"
 
-        # Get user's personal top languages
         sorted_user_langs = sorted(usage_stats.keys(), key=usage_stats.get, reverse=True)
+        final_buttons, added_codes = [], set()
 
-        final_buttons = []
-        added_codes = set()
-
-        # Add up to 3 personal languages
         for lang_code in sorted_user_langs[:3]:
-            # Find the title for the button
             lang_info = next((lang for lang in default_popular_langs if lang['code'] == lang_code), None)
             title = lang_info['title'] if lang_info else lang_code.upper()
             final_buttons.append({"content_type": "text", "title": title, "payload": f"{payload_prefix}{lang_code}"})
             added_codes.add(lang_code)
 
-        # Add up to 4 global popular languages, avoiding duplicates
         for lang in default_popular_langs:
             if len(final_buttons) >= 7: break
             if lang['code'] not in added_codes:
@@ -99,29 +87,24 @@ class MessageHandler:
                     {"content_type": "text", "title": lang['title'], "payload": f"{payload_prefix}{lang['code']}"})
                 added_codes.add(lang['code'])
 
-        # Add the 'Type other' button
         final_buttons.append({"content_type": "text", "title": "✍️ Type other...", "payload": other_payload})
-
         return final_buttons
 
     def send_language_correction_options(self, sender_id: str, user: Dict[str, Any]):
         quick_replies = self._build_smart_buttons(user, 'transcription')
-        message_data = {
-            "recipient": {"id": sender_id}, "messaging_type": "RESPONSE",
-            "message": {"text": "Got it. What was the language, actually?", "quick_replies": quick_replies}
-        }
+        message_data = {"recipient": {"id": sender_id}, "messaging_type": "RESPONSE",
+                        "message": {"text": "Got it. What was the language, actually?", "quick_replies": quick_replies}}
         self._send_api_request(message_data)
 
     def send_translation_options(self, sender_id: str, user: Dict[str, Any]):
         quick_replies = self._build_smart_buttons(user, 'translation')
-        message_data = {
-            "recipient": {"id": sender_id}, "messaging_type": "RESPONSE",
-            "message": {"text": "What language would you like to translate to?", "quick_replies": quick_replies}
-        }
+        message_data = {"recipient": {"id": sender_id}, "messaging_type": "RESPONSE",
+                        "message": {"text": "What language would you like to translate to?",
+                                    "quick_replies": quick_replies}}
         self._send_api_request(message_data)
 
     def _handle_quick_reply(self, sender_id: str, user: Dict[str, Any], payload: str) -> bool:
-        self.database.update_user(sender_id, {'state': None})  # Reset state on any button press
+        self.database.update_user(sender_id, {'state': None})
 
         if payload.startswith('RETRY_AS_'):
             lang_code = payload.replace('RETRY_AS_', '').lower()
@@ -148,19 +131,17 @@ class MessageHandler:
             self.database.update_user(sender_id, {'state': 'awaiting_language_input_translation'})
             self._send_text_message(sender_id, "Please type the target language for translation.")
             return True
-
         return False
 
     def _handle_language_text_input(self, sender_id: str, user: Dict[str, Any], text: str, context: str):
         lang_input = text.lower().strip()
         lang_code = SUPPORTED_LANGUAGES_MAP.get(lang_input)
-
         if lang_code:
             self.database.update_user(sender_id, {'state': None})
             self.database.increment_language_usage(sender_id, lang_code, context)
             if context == 'transcription':
                 self._handle_retry_request(sender_id, lang_code)
-            else:  # context == 'translation'
+            else:
                 self._handle_translation_request(sender_id, lang_code)
         else:
             self._send_text_message(sender_id, f"Sorry, I don't recognize '{text}'. Please try again.")
@@ -173,10 +154,9 @@ class MessageHandler:
 
         lang_name = next((lang['title'] for lang in DEFAULT_POPULAR_TRANSCRIPTION_LANGS if lang['code'] == lang_code),
                          lang_code.upper())
-
         self._send_text_message(sender_id, f"✅ Got it! Retrying the process, assuming it's {lang_name}...")
         if celery_app_client:
-            # ===> ДОБАВЛЯЕМ МЕТКУ ПЛАТФОРМЫ <===
+            # ===> ИСПРАВЛЕНИЕ: ДОБАВЛЯЕМ platform_payload <===
             platform_payload = {'platform': 'messenger'}
             celery_app_client.send_task('tasks.process_media',
                                         args=[sender_id, last_doc['s3_object_key'], {'preferred_language': lang_code},
@@ -187,16 +167,15 @@ class MessageHandler:
         if not last_doc or not last_doc.get('transcription'):
             self._send_text_message(sender_id, "❌ Nothing to translate.");
             return
-        original_text = last_doc['transcription']
-        source_lang = last_doc['detected_language']
+        original_text, source_lang = last_doc['transcription'], last_doc['detected_language']
         if target_lang_code == source_lang:
             self._send_text_message(sender_id, "🤔 The text is already in this language!");
             return
 
         translation_result = self.translation_service.translate_text(original_text, target_lang_code, source_lang)
         if translation_result.get('success'):
-            response_text = f"🔄 **Translation ({target_lang_code.upper()}):**\n\n{translation_result['translated_text']}"
-            self._send_text_message(sender_id, response_text)
+            self._send_text_message(sender_id,
+                                    f"🔄 **Translation ({target_lang_code.upper()}):**\n\n{translation_result['translated_text']}")
         else:
             self._send_text_message(sender_id, f"❌ Translation failed: {translation_result.get('error')}")
 
@@ -217,7 +196,7 @@ class MessageHandler:
             self._send_text_message(sender_id,
                                     "✅ Your file has been received. I'll send the result as soon as it's ready.")
             if celery_app_client:
-                # ===> ДОБАВЛЯЕМ МЕТКУ ПЛАТФОРМЫ <===
+                # ===> ИСПРАВЛЕНИЕ: ДОБАВЛЯЕМ platform_payload <===
                 platform_payload = {'platform': 'messenger'}
                 celery_app_client.send_task('tasks.process_media', args=[sender_id, object_key, {}, platform_payload])
         except Exception as e:
