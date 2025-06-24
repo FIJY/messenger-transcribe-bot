@@ -33,12 +33,10 @@ class TelegramHandler:
         self.celery_app_client = get_celery_app_client()
 
     async def handle_update(self, update_data: dict):
-        # ... (код без изменений) ...
         update = Update.de_json(update_data, bot=self.bot)
         if update.callback_query:
             await self._handle_callback_query(update.callback_query)
             return
-        # ... (остальной код handle_update без изменений) ...
         if not update.message or not update.message.from_user: return
         user_id = str(update.message.from_user.id)
         user = self.database.get_user(user_id)
@@ -60,34 +58,25 @@ class TelegramHandler:
             await self._handle_file(file_to_process, user_id, update.message.chat_id)
 
     async def _handle_callback_query(self, query: Update.callback_query):
-        await query.answer()  # <== Отвечаем Telegram СРАЗУ, что нажатие принято
+        await query.answer()
         payload = query.data
         user_id = str(query.from_user.id)
         chat_id = query.message.chat_id
         user = self.database.get_user(user_id)
         if not user: return
 
-        # ===> НАЧАЛО НОВОЙ ЛОГИКИ <===
-
-        # Действия, которые требуют долгой обработки (ретранскрипция)
         if payload.startswith('RETRY_AS_'):
             lang_code = payload.replace('RETRY_AS_', '').lower()
             self.database.increment_language_usage(user_id, lang_code, 'transcription')
-            # Не ждем окончания, просто запускаем
             await self._handle_retry_request(user_id, chat_id, lang_code)
-
-        # Действия, которые можно обработать сразу
         elif payload.startswith('TRANSLATE_'):
             target_lang_code = payload.replace('TRANSLATE_', '').lower()
             self.database.increment_language_usage(user_id, target_lang_code, 'translation')
-            # Перевод - быстрая операция, делаем сразу
             await self._handle_translation_request(user_id, chat_id, target_lang_code)
-
         elif payload == 'CHOOSE_OTHER_LANGUAGE':
             await self.send_language_correction_options(chat_id, user)
         elif payload == 'CONFIRM_TRANSCRIPTION_OK':
             await self.send_translation_options(chat_id, user)
-
         elif payload == 'INPUT_OTHER_TRANSCRIPTION_LANG':
             self.database.update_user(user_id, {'state': 'awaiting_language_input_transcription'})
             await self.send_message(chat_id, "Please type the source language name or its 2-letter code.")
@@ -95,7 +84,6 @@ class TelegramHandler:
             self.database.update_user(user_id, {'state': 'awaiting_language_input_translation'})
             await self.send_message(chat_id, "Please type the target language for translation.")
 
-    # ... (остальные функции до _handle_file без изменений) ...
     def _build_smart_buttons(self, user: Dict[str, Any], context: str) -> List[List[InlineKeyboardButton]]:
         if context == 'transcription':
             defaults, stats, prefix, other_payload = DEFAULT_POPULAR_TRANSCRIPTION_LANGS, user.get(
@@ -107,8 +95,15 @@ class TelegramHandler:
         buttons, added_codes = [], set()
 
         def add_button(lang_code):
+            # ===> ИСПРАВЛЕНИЕ: Возвращаем флаги на кнопки <===
             title_info = next((lang for lang in defaults if lang['code'] == lang_code), None)
-            title = title_info['title'] if title_info else lang_code.upper()
+            if title_info:
+                flag = title_info.get('flag', '')
+                title_text = title_info.get('title', lang_code.upper())
+                title = f"{flag} {title_text}".strip()
+            else:
+                title = lang_code.upper()
+
             buttons.append(InlineKeyboardButton(title, callback_data=f"{prefix}{lang_code}"))
             added_codes.add(lang_code)
 
@@ -152,7 +147,7 @@ class TelegramHandler:
 
     async def _handle_translation_request(self, user_id: str, chat_id: int, target_lang_code: str):
         last_doc = self.database.get_last_transcription(user_id)
-        if not last_doc or not last_doc.get('transcription'):
+        if not last_doc or not last__doc.get('transcription'):
             await self.send_message(chat_id, "❌ Nothing to translate.");
             return
         text, source_lang = last_doc['transcription'], last_doc['detected_language']

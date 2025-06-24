@@ -13,7 +13,6 @@ from .google_stt_service import GoogleSTTService
 
 logger = logging.getLogger(__name__)
 
-# ===> ИЗМЕНЕНИЕ: Добавлен словарь для нормализации названий языков <===
 LANGUAGE_NAME_TO_CODE_MAP = {
     'khmer': 'km',
     'english': 'en',
@@ -25,9 +24,11 @@ LANGUAGE_NAME_TO_CODE_MAP = {
     'japanese': 'ja',
     'korean': 'ko',
     'tagalog': 'tl',
-    'lithuanian': 'lt',  # Добавим на всякий случай из прошлых логов
+    'lithuanian': 'lt',
     'belarusian': 'be',
-    'french': 'fr'
+    'french': 'fr',
+    # ===> ИСПРАВЛЕНИЕ: Добавлен индонезийский язык <===
+    'indonesian': 'id'
 }
 
 
@@ -58,10 +59,8 @@ class MediaHandler:
 
             language_to_process = expected_language
             if not language_to_process:
-                # Шаг 1: Whisper определяет язык и может вернуть полное имя, например, 'khmer'
                 _, detected_by_whisper = self.transcription_service.transcribe_with_fallback(audio_path)
 
-                # ===> ИЗМЕНЕНИЕ: Нормализуем полученное имя в двухбуквенный код <===
                 normalized_lang_code = LANGUAGE_NAME_TO_CODE_MAP.get(detected_by_whisper.lower())
                 if normalized_lang_code:
                     logger.info(
@@ -74,7 +73,6 @@ class MediaHandler:
 
             logger.info(f"Language pre-determined for processing: {language_to_process}")
 
-            # Теперь эта проверка будет работать корректно, т.к. language_to_process будет 'km'
             if language_to_process == 'km' and self.google_stt_service:
                 logger.info("Khmer language detected. Forcing conversion to WAV for Google STT.")
                 converted_wav_path = self.audio_processor.convert_to_wav(audio_path)
@@ -86,7 +84,6 @@ class MediaHandler:
                 detected_language = 'km'
             else:
                 logger.info(f"Routing to Whisper for language: {language_to_process} with original file.")
-                # Теперь сюда будет передан корректный код языка, например 'ru', а не 'russian'
                 result_dict = self.transcription_service._transcribe_sync(audio_path, language_hint=language_to_process)
                 if not result_dict['success']:
                     raise result_dict['error']

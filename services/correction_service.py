@@ -46,7 +46,6 @@ class CorrectionService:
             logger.error(f"Ошибка при коррекции транслитерации: {e}", exc_info=True)
             return None
 
-    # 🔧 НОВЫЙ МЕТОД ДЛЯ "ПРИЧЕСЫВАНИЯ" ТЕКСТА
     def post_process_khmer_text(self, raw_text: str) -> Optional[str]:
         """
         Использует GPT для очистки и форматирования сырого транскрибированного кхмерского текста.
@@ -77,13 +76,21 @@ class CorrectionService:
 
     def _call_gpt(self, system_prompt: str, user_content: str) -> Optional[str]:
         """Универсальный метод для вызова Chat API."""
-        response = self.client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ],
-            temperature=0.2,  # Низкая температура для точности и предсказуемости
-            max_tokens=1500,
-        )
-        return response.choices[0].message.content
+        try:
+            response = self.client.chat.completions.create(
+                # ===> ИСПРАВЛЕНИЕ: Обновлена модель для решения проблемы 404 <===
+                model="gpt-3.5-turbo-0125",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                temperature=0.2,
+                max_tokens=1500,
+            )
+            return response.choices[0].message.content
+        except openai.NotFoundError as e:
+            logger.error(f"Ошибка OpenAI (404 Not Found): Модель не найдена. Проверьте правильность названия модели. {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при вызове GPT: {e}")
+            return None
