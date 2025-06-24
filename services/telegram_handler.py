@@ -20,7 +20,6 @@ from config.transcrib_suggestion_config import (
 
 logger = logging.getLogger(__name__)
 
-
 class TelegramHandler:
     def __init__(self, token: str, database: Database, s3_service: S3Service):
         if not token: raise ValueError("Telegram token is required.")
@@ -46,6 +45,7 @@ class TelegramHandler:
         if not user:
             user = self.database.create_user(user_id)
             await self.send_message(user_id, "🎉 Welcome! Send me an audio, video, or voice message to start.")
+            return # Возвращаемся после создания пользователя
 
         if update.message.text:
             if user.get('state') == 'awaiting_language_input_transcription':
@@ -68,6 +68,10 @@ class TelegramHandler:
         chat_id = query.message.chat_id
         user = self.database.get_user(user_id)
 
+        if not user:
+            logger.warning(f"CallbackQuery received from an unknown user: {user_id}")
+            return
+
         if payload.startswith('RETRY_AS_'):
             lang_code = payload.replace('RETRY_AS_', '').lower()
             self.database.increment_language_usage(user_id, lang_code, 'transcription')
@@ -82,8 +86,7 @@ class TelegramHandler:
             await self.send_translation_options(chat_id, user)
         elif payload == 'INPUT_OTHER_TRANSCRIPTION_LANG':
             self.database.update_user(user_id, {'state': 'awaiting_language_input_transcription'})
-            await self.send_message(chat_id,
-                                    "Please type the source language name or its 2-letter code (e.g., 'German' or 'de').")
+            await self.send_message(chat_id, "Please type the source language name or its 2-letter code (e.g., 'German' or 'de').")
         elif payload == 'INPUT_OTHER_TRANSLATION_LANG':
             self.database.update_user(user_id, {'state': 'awaiting_language_input_translation'})
             await self.send_message(chat_id, "Please type the target language for translation.")
@@ -134,38 +137,33 @@ class TelegramHandler:
         if lang_code:
             self.database.update_user(user_id, {'state': None})
             self.database.increment_language_usage(user_id, lang_code, context)
+            chat_id = int(user_id) # Для личных сообщений в Telegram user_id и chat_id совпадают
             if context == 'transcription':
-                await self._handle_retry_request(user_id, int(user_id), lang_code)
+                await self._handle_retry_request(user_id, chat_id, lang_code)
             else:
-                await self._handle_translation_request(user_id, int(user_id), lang_code)
+                await self._handle_translation_request(user_id, chat_id, lang_code)
         else:
             await self.send_message(int(user_id), f"Sorry, I don't recognize '{text}'. Please try again.")
 
     async def _handle_retry_request(self, user_id: str, chat_id: int, lang_code: str):
         last_doc = self.database.get_last_transcription(user_id)
         if not last_doc or not last_doc.get('s3_object_key'):
-            await self.send_message(chat_id, "❌ Couldn't find the previous file to re-process.");
-            return
+            await self.send_message(chat_id, "❌ Couldn't find the previous file to re-process."); return
 
-        lang_name = next((lang['title'] for lang in DEFAULT_POPULAR_TRANSCRIPTION_LANGS if lang['code'] == lang_code),
-                         lang_code.upper())
+        lang_name = next((lang['title'] for lang in DEFAULT_POPULAR_TRANSCRIPTION_LANGS if lang['code'] == lang_code), lang_code.upper())
         await self.send_message(chat_id, f"✅ Got it! Retrying the process, assuming it's {lang_name}...")
         if self.celery_app_client:
             platform_payload = {'platform': 'telegram', 'chat_id': chat_id}
-            self.celery_app_client.send_task('tasks.process_media', args=[user_id, last_doc['s3_object_key'],
-                                                                          {'preferred_language': lang_code},
-                                                                          platform_payload])
+            self.celery_app_client.send_task('tasks.process_media', args=[user_id, last_doc['s3_object_key'], {'preferred_language': lang_code}, platform_payload])
 
     async def _handle_translation_request(self, user_id: str, chat_id: int, target_lang_code: str):
         last_doc = self.database.get_last_transcription(user_id)
         if not last_doc or not last_doc.get('transcription'):
-            await self.send_message(chat_id, "❌ Nothing to translate.");
-            return
+            await self.send_message(chat_id, "❌ Nothing to translate."); return
 
         original_text, source_lang = last_doc['transcription'], last_doc['detected_language']
         if target_lang_code == source_lang:
-            await self.send_message(chat_id, "🤔 The text is already in this language!");
-            return
+            await self.send_message(chat_id, "🤔 The text is already in this language!"); return
 
         translation_result = self.translation_service.translate_text(original_text, target_lang_code, source_lang)
         if translation_result.get('success'):
@@ -189,12 +187,10 @@ class TelegramHandler:
                     temp_f.write(response.content)
             object_key = f"{uuid.uuid4()}{file_extension}"
             if not self.s3_service.upload_file(local_file_path, object_key):
-                await self.send_message(chat_id, "❌ Server error: could not save the file.");
-                return
+                await self.send_message(chat_id, "❌ Server error: could not save the file."); return
             if self.celery_app_client:
                 task_payload = {'platform': 'telegram', 'chat_id': chat_id}
-                self.celery_app_client.send_task('tasks.process_media',
-                                                 args=[str(user_id), object_key, {}, task_payload])
+                self.celery_app_client.send_task('tasks.process_media', args=[str(user_id), object_key, {}, task_payload])
         except Exception as e:
             logger.error(f"Error handling Telegram file: {e}", exc_info=True)
             await self.send_message(chat_id, "❌ An error occurred while processing your file.")
