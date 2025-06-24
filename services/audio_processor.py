@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 class AudioProcessor:
     def __init__(self):
-        # ===> ИЗМЕНЕНИЕ: Добавлен формат .oga <===
         self.supported_audio_formats = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.oga']
         self.supported_video_formats = ['.mp4', '.avi', '.mov', '.mkv', '.webm']
 
@@ -24,17 +23,14 @@ class AudioProcessor:
 
         file_ext = os.path.splitext(file_path)[1].lower()
 
-        # Для Facebook .tmp файлов считаем их mp4
         if file_ext == '.tmp' and '/tmp/' in file_path:
             logger.info(f"Обрабатываем Facebook .tmp файл как mp4: {file_path}")
             file_ext = '.mp4'
 
-        # Если это уже аудио файл в поддерживаемом формате
         if file_ext in self.supported_audio_formats:
             logger.info(f"Файл уже в аудио формате: {file_ext}")
             return file_path
 
-        # Если это видео файл, извлекаем аудио
         if file_ext in self.supported_video_formats:
             logger.info(f"Извлекаем аудио из видео файла: {file_ext}")
             return self._extract_audio_from_video(file_path)
@@ -83,11 +79,41 @@ class AudioProcessor:
         except Exception as e:
             logger.warning(f"Не удалось удалить временный файл {file_path}: {e}")
 
-    # ... (остальные методы get_media_duration, get_media_info, validate_audio_file без изменений) ...
+    # ===> ИСПРАВЛЕНИЕ: Добавлен недостающий метод <===
+    def convert_to_wav(self, input_path: str) -> Optional[str]:
+        """
+        Принудительно конвертирует аудиофайл в формат WAV (pcm_s16le, 16kHz, моно).
+        Это требуется для Google STT.
+        """
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                output_path = temp_audio.name
+
+            command = [
+                'ffmpeg', '-i', input_path, '-vn', '-acodec', 'pcm_s16le',
+                '-ar', '16000', '-ac', '1', '-y', output_path
+            ]
+            logger.info(f"Выполняем принудительную конвертацию в WAV: {' '.join(command)}")
+
+            result = subprocess.run(command, capture_output=True, text=True, timeout=300)
+
+            if result.returncode == 0:
+                logger.info(f"Файл успешно сконвертирован в WAV: {output_path}")
+                return output_path
+            else:
+                logger.error(f"Ошибка ffmpeg при конвертации в WAV: {result.stderr}")
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                return None
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при конвертации в WAV: {e}")
+            return None
+
     @staticmethod
     def get_media_duration(file_path: str) -> Optional[float]:
         try:
-            command = ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
+            command = ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration', '-of',
+                       'default=noprint_wrappers=1:nokey=1', file_path]
             result = subprocess.run(command, capture_output=True, text=True, timeout=30)
             if result.returncode == 0:
                 duration_str = result.stdout.strip()
@@ -109,7 +135,8 @@ class AudioProcessor:
             max_size = 50 * 1024 * 1024
             if file_size > max_size: return False, f"Файл слишком большой ({file_size / (1024 * 1024):.1f}MB). Максимум: {max_size / (1024 * 1024)}MB"
             if file_size == 0: return False, "Файл пустой"
-        except Exception as e: return False, f"Ошибка при проверке размера файла: {e}"
+        except Exception as e:
+            return False, f"Ошибка при проверке размера файла: {e}"
         duration = self.get_media_duration(file_path)
         if duration:
             max_duration = 3600
