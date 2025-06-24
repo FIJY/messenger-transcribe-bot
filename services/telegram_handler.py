@@ -28,8 +28,8 @@ class TelegramHandler:
         self.database = database
         self.s3_service = s3_service
         self.celery_app_client = get_celery_app_client()
-        # ===> ИЗМЕНЕНИЕ: Создаем единый http-клиент <===
-        self.http_client = httpx.AsyncClient(timeout=30.0)
+        # ===> ИЗМЕНЕНИЕ: Убираем создание клиента отсюда <===
+        # self.http_client = httpx.AsyncClient(timeout=30.0)
 
     async def handle_update(self, update_data: dict):
         # ... (этот метод без изменений) ...
@@ -58,16 +58,14 @@ class TelegramHandler:
         if file_to_process:
             await self._handle_file(file_to_process, user_id, update.message.chat_id)
 
-    # ... (все методы до _handle_file без изменений) ...
     async def _handle_callback_query(self, query: Update.callback_query):
+        # ... (этот метод без изменений) ...
         await query.answer()
         payload = query.data
         user_id = str(query.from_user.id)
         chat_id = query.message.chat_id
         user = self.database.get_user(user_id)
-        if not user:
-            logger.warning(f"CallbackQuery received from an unknown user: {user_id}")
-            return
+        if not user: logger.warning(f"CallbackQuery received from an unknown user: {user_id}"); return
         if payload.startswith('RETRY_AS_'):
             lang_code = payload.replace('RETRY_AS_', '').lower()
             self.database.increment_language_usage(user_id, lang_code, 'transcription')
@@ -89,16 +87,13 @@ class TelegramHandler:
             await self.send_message(chat_id, "Please type the target language for translation.")
 
     def _build_smart_buttons(self, user: Dict[str, Any], context: str) -> List[List[InlineKeyboardButton]]:
+        # ... (этот метод без изменений) ...
         if context == 'transcription':
-            default_popular_langs = DEFAULT_POPULAR_TRANSCRIPTION_LANGS
-            usage_stats = user.get('transcription_lang_usage', {})
-            payload_prefix = "RETRY_AS_"
-            other_payload = "INPUT_OTHER_TRANSCRIPTION_LANG"
+            default_popular_langs, usage_stats, payload_prefix, other_payload = DEFAULT_POPULAR_TRANSCRIPTION_LANGS, user.get(
+                'transcription_lang_usage', {}), "RETRY_AS_", "INPUT_OTHER_TRANSCRIPTION_LANG"
         else:
-            default_popular_langs = DEFAULT_POPULAR_TRANSLATION_LANGS
-            usage_stats = user.get('translation_lang_usage', {})
-            payload_prefix = "TRANSLATE_"
-            other_payload = "INPUT_OTHER_TRANSLATION_LANG"
+            default_popular_langs, usage_stats, payload_prefix, other_payload = DEFAULT_POPULAR_TRANSLATION_LANGS, user.get(
+                'translation_lang_usage', {}), "TRANSLATE_", "INPUT_OTHER_TRANSLATION_LANG"
         sorted_user_langs = sorted(usage_stats.keys(), key=usage_stats.get, reverse=True)
         button_row, added_codes = [], set()
         for lang_code in sorted_user_langs[:3]:
@@ -115,16 +110,19 @@ class TelegramHandler:
         return [button_row, other_button_row]
 
     async def send_language_correction_options(self, chat_id: int, user: Dict[str, Any]):
+        # ... (этот метод без изменений) ...
         keyboard = self._build_smart_buttons(user, 'transcription')
         reply_markup = InlineKeyboardMarkup(keyboard)
         await self.send_message(chat_id, "Got it. What was the language, actually?", reply_markup)
 
     async def send_translation_options(self, chat_id: int, user: Dict[str, Any]):
+        # ... (этот метод без изменений) ...
         keyboard = self._build_smart_buttons(user, 'translation')
         reply_markup = InlineKeyboardMarkup(keyboard)
         await self.send_message(chat_id, "What language would you like to translate to?", reply_markup)
 
     async def _handle_language_text_input(self, user_id: str, user: Dict[str, Any], text: str, context: str):
+        # ... (этот метод без изменений) ...
         lang_input = text.lower().strip()
         lang_code = SUPPORTED_LANGUAGES_MAP.get(lang_input)
         if lang_code:
@@ -139,6 +137,7 @@ class TelegramHandler:
             await self.send_message(int(user_id), f"Sorry, I don't recognize '{text}'. Please try again.")
 
     async def _handle_retry_request(self, user_id: str, chat_id: int, lang_code: str):
+        # ... (этот метод без изменений) ...
         last_doc = self.database.get_last_transcription(user_id)
         if not last_doc or not last_doc.get('s3_object_key'):
             await self.send_message(chat_id, "❌ Couldn't find the previous file to re-process.");
@@ -153,6 +152,7 @@ class TelegramHandler:
                                                                           platform_payload])
 
     async def _handle_translation_request(self, user_id: str, chat_id: int, target_lang_code: str):
+        # ... (этот метод без изменений) ...
         last_doc = self.database.get_last_transcription(user_id)
         if not last_doc or not last_doc.get('transcription'):
             await self.send_message(chat_id, "❌ Nothing to translate.");
@@ -163,8 +163,8 @@ class TelegramHandler:
             return
         translation_result = self.translation_service.translate_text(original_text, target_lang_code, source_lang)
         if translation_result.get('success'):
-            response_text = f"🔄 *Translation ({target_lang_code.upper()}):*\n\n{translation_result['translated_text']}"
-            await self.send_message(chat_id, response_text)
+            await self.send_message(chat_id,
+                                    f"🔄 *Translation ({target_lang_code.upper()}):*\n\n{translation_result['translated_text']}")
         else:
             await self.send_message(chat_id, f"❌ Translation failed: {translation_result.get('error')}")
 
@@ -173,18 +173,16 @@ class TelegramHandler:
         local_file_path = None
         try:
             tg_file = await file_obj.get_file()
-            # ===> ИЗМЕНЕНИЕ: Используем единый http-клиент <===
-            response = await self.http_client.get(tg_file.file_path)
-            response.raise_for_status()
+            # ===> ИЗМЕНЕНИЕ: Создаем клиент для каждого запроса <===
+            async with httpx.AsyncClient() as client:
+                response = await client.get(tg_file.file_path, timeout=60)
+                response.raise_for_status()
+                with tempfile.NamedTemporaryFile(delete=False,
+                                                 suffix=os.path.splitext(tg_file.file_path)[-1]) as temp_f:
+                    local_file_path = temp_f.name
+                    temp_f.write(response.content)
 
-            original_filename = file_obj.file_name if hasattr(file_obj, 'file_name') and file_obj.file_name else ''
-            file_extension = os.path.splitext(original_filename)[-1] if original_filename else '.tmp'
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_f:
-                local_file_path = temp_f.name
-                temp_f.write(response.content)
-
-            object_key = f"{uuid.uuid4()}{file_extension}"
+            object_key = f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
             if not self.s3_service.upload_file(local_file_path, object_key):
                 await self.send_message(chat_id, "❌ Server error: could not save the file.");
                 return
@@ -204,8 +202,9 @@ class TelegramHandler:
         if reply_markup:
             payload['reply_markup'] = reply_markup.to_json()
         try:
-            # ===> ИЗМЕНЕНИЕ: Используем единый http-клиент <===
-            response = await self.http_client.post(url, json=payload)
-            response.raise_for_status()
+            # ===> ИЗМЕНЕНИЕ: Создаем клиент для каждого запроса <===
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json=payload, timeout=10)
+                response.raise_for_status()
         except Exception as e:
             logger.error(f"Failed to send message to Telegram chat {chat_id}: {e}")
