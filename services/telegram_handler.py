@@ -30,6 +30,16 @@ class TelegramHandler:
         self.s3_service = s3_service
         self.celery_app_client = get_celery_app_client()
 
+    def __init__(self, token: str, database: Database, s3_service: S3Service, translation_service: TranslationService):
+        if not token: raise ValueError("Telegram token is required.")
+        self.token = token
+        self.bot = Bot(token=self.token)
+        self.database = database
+        self.s3_service = s3_service
+        # ===> ИЗМЕНЕНИЕ: Сохраняем сервис <===
+        self.translation_service = translation_service
+        self.celery_app_client = get_celery_app_client()
+
     async def handle_update(self, update_data: dict):
         update = Update.de_json(update_data, bot=self.bot)
         if update.callback_query:
