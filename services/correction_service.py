@@ -40,7 +40,9 @@ class CorrectionService:
         )
         try:
             corrected_text = self._call_gpt(system_prompt, latin_text)
-            logger.info(f"Транслитерация успешно скорректирована.")
+            # ===> ИСПРАВЛЕНИЕ: Логируем успех только если есть результат <===
+            if corrected_text:
+                logger.info(f"Транслитерация успешно скорректирована.")
             return corrected_text
         except Exception as e:
             logger.error(f"Ошибка при коррекции транслитерации: {e}", exc_info=True)
@@ -68,7 +70,9 @@ class CorrectionService:
         )
         try:
             processed_text = self._call_gpt(system_prompt, raw_text)
-            logger.info(f"Текст успешно прошел пост-обработку.")
+            # ===> ИСПРАВЛЕНИЕ: Логируем успех только если есть результат <===
+            if processed_text:
+                logger.info(f"Текст успешно прошел пост-обработку.")
             return processed_text
         except Exception as e:
             logger.error(f"Ошибка при пост-обработке текста: {e}", exc_info=True)
@@ -78,7 +82,6 @@ class CorrectionService:
         """Универсальный метод для вызова Chat API."""
         try:
             response = self.client.chat.completions.create(
-                # ===> ИСПРАВЛЕНИЕ: Обновлена модель для решения проблемы 404 <===
                 model="gpt-3.5-turbo-0125",
                 messages=[
                     {"role": "system", "content": system_prompt},

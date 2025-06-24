@@ -95,7 +95,6 @@ class TelegramHandler:
         buttons, added_codes = [], set()
 
         def add_button(lang_code):
-            # ===> ИСПРАВЛЕНИЕ: Возвращаем флаги на кнопки <===
             title_info = next((lang for lang in defaults if lang['code'] == lang_code), None)
             if title_info:
                 flag = title_info.get('flag', '')
@@ -147,7 +146,8 @@ class TelegramHandler:
 
     async def _handle_translation_request(self, user_id: str, chat_id: int, target_lang_code: str):
         last_doc = self.database.get_last_transcription(user_id)
-        if not last_doc or not last__doc.get('transcription'):
+        # ===> ИСПРАВЛЕНИЕ: Устранена опечатка (было last__doc) <===
+        if not last_doc or not last_doc.get('transcription'):
             await self.send_message(chat_id, "❌ Nothing to translate.");
             return
         text, source_lang = last_doc['transcription'], last_doc['detected_language']
