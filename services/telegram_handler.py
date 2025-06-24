@@ -4,7 +4,7 @@ import logging
 import tempfile
 import httpx
 import uuid
-import asyncio  # <== ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ
+import asyncio
 from typing import Dict, Any, List, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import CallbackContext
@@ -12,6 +12,8 @@ from telegram.ext import CallbackContext
 from .database import Database
 from .s3_service import S3Service
 from .celery_client import get_celery_app_client
+# ===> ИСПРАВЛЕНИЕ: ДОБАВЛЯЕМ НЕДОСТАЮЩИЙ ИМПОРТ <===
+from .translation_service import TranslationService
 from config.transcrib_suggestion_config import (
     DEFAULT_POPULAR_TRANSCRIPTION_LANGS,
     DEFAULT_POPULAR_TRANSLATION_LANGS,
@@ -22,24 +24,17 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramHandler:
-    def __init__(self, token: str, database: Database, s3_service: S3Service):
-        if not token: raise ValueError("Telegram token is required.")
-        self.token = token
-        self.bot = Bot(token=self.token)
-        self.database = database
-        self.s3_service = s3_service
-        self.celery_app_client = get_celery_app_client()
-
+    # Теперь Python знает, что такое TranslationService
     def __init__(self, token: str, database: Database, s3_service: S3Service, translation_service: TranslationService):
         if not token: raise ValueError("Telegram token is required.")
         self.token = token
         self.bot = Bot(token=self.token)
         self.database = database
         self.s3_service = s3_service
-        # ===> ИЗМЕНЕНИЕ: Сохраняем сервис <===
         self.translation_service = translation_service
         self.celery_app_client = get_celery_app_client()
 
+    # ... (остальной код файла без изменений) ...
     async def handle_update(self, update_data: dict):
         update = Update.de_json(update_data, bot=self.bot)
         if update.callback_query:
@@ -74,31 +69,25 @@ class TelegramHandler:
         user = self.database.get_user(user_id)
         if not user: return
 
-        # Словарь для простых действий
         action_map = {
             'CHOOSE_OTHER_LANGUAGE': self.send_language_correction_options,
             'CONFIRM_TRANSCRIPTION_OK': self.send_translation_options,
         }
-
-        # Словарь для действий с вводом текста
         input_action_map = {
-            'INPUT_OTHER_TRANSCRIPTION_LANG': ('awaiting_language_input_transcription',
-                                               "Please type the source language name or its 2-letter code (e.g., 'German' or 'de')."),
+            'INPUT_OTHER_TRANSCRIPTION_LANG': (
+            'awaiting_language_input_transcription', "Please type the source language..."),
             'INPUT_OTHER_TRANSLATION_LANG': (
-            'awaiting_language_input_translation', "Please type the target language for translation.")
+            'awaiting_language_input_translation', "Please type the target language...")
         }
-
         if payload in action_map:
             await action_map[payload](chat_id, user)
             return
-
         if payload in input_action_map:
             state, message = input_action_map[payload]
             self.database.update_user(user_id, {'state': state})
             await self.send_message(chat_id, message)
             return
 
-        # Обработка динамических payload'ов
         context_map = {'RETRY_AS_': 'transcription', 'TRANSLATE_': 'translation'}
         for prefix, context in context_map.items():
             if payload.startswith(prefix):
@@ -192,6 +181,7 @@ class TelegramHandler:
                                                  suffix=os.path.splitext(tg_file.file_path)[-1]) as temp_f:
                     local_file_path = temp_f.name
                     temp_f.write(response.content)
+
             object_key = f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
             if not self.s3_service.upload_file(local_file_path, object_key):
                 await self.send_message(chat_id, "❌ Server error: could not save file.");
