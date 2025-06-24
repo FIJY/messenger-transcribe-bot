@@ -34,3 +34,6 @@ services:
     name: bot-redis
     plan: free
     ipAllowList: []
+
+
+    # Force sync on June 25, 2025
