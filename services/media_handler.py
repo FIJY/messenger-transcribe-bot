@@ -9,6 +9,7 @@ from .transcription_service import TranscriptionService
 from .translation_service import TranslationService
 from .native_script_service import NativeScriptService
 from .correction_service import CorrectionService
+from .google_stt_service import GoogleSTTService  # <== НОВЫЙ ИМПОРТ
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +19,18 @@ class MediaHandler:
         self.audio_processor = AudioProcessor()
         self.language_detector = LanguageDetector()
         self.native_script_service = NativeScriptService()
+        self.correction_service = CorrectionService()
+
+        # Сохраняем сервисы, которые нам передали
         self.transcription_service = transcription_service
         self.translation_service = translation_service
-        self.correction_service = CorrectionService()
+
+        # ===> ИНИЦИАЛИЗИРУЕМ НОВЫЙ СЕРВИС GOOGLE <===
+        try:
+            self.google_stt_service = GoogleSTTService()
+        except Exception as e:
+            logger.error(f"Could not initialize GoogleSTTService. Khmer transcription will fail. Error: {e}")
+            self.google_stt_service = None
 
     def process_media(self, file_path: str, user_preferences: Optional[Dict] = None) -> Dict[str, Any]:
         audio_path = None
@@ -32,49 +42,51 @@ class MediaHandler:
             if not audio_path:
                 return {'success': False, 'error': Exception('Failed to process media file')}
 
-            if expected_language:
-                logger.info(f"Performing forced transcription for language: {expected_language}")
-                result_dict = self.transcription_service._transcribe_sync(audio_path, language_hint=expected_language)
-                text = result_dict.get('text', '')
+            # ===> НАЧАЛО ЛОГИКИ "УМНОГО ПЕРЕКЛЮЧАТЕЛЯ" <===
 
-                # Если транскрипция вернула ошибку, пробрасываем ее дальше
+            # Шаг 1: Определяем язык, с которым будем работать.
+            language_to_process = expected_language
+            if not language_to_process:
+                # Если язык не указан пользователем, делаем быстрое автоопределение с помощью Whisper
+                _, detected_by_whisper = self.transcription_service.transcribe_with_fallback(audio_path)
+                language_to_process = detected_by_whisper
+
+            logger.info(f"Language pre-determined for processing: {language_to_process}")
+
+            # Шаг 2: Выбираем движок в зависимости от языка.
+            if language_to_process == 'km' and self.google_stt_service:
+                # --- Используем Google для кхмерского языка ---
+                logger.info("Routing to Google STT for Khmer language.")
+                # Google требует BCP-47 код, например 'km-KH'
+                text = self.google_stt_service.transcribe_audio(audio_path, language_code='km-KH')
+                detected_language = 'km'
+            else:
+                # --- Используем Whisper для всех остальных языков ---
+                logger.info(f"Routing to Whisper for language: {language_to_process}")
+                result_dict = self.transcription_service._transcribe_sync(audio_path, language_hint=language_to_process)
                 if not result_dict['success']:
                     raise result_dict['error']
+                text = result_dict.get('text', '')
+                detected_language = result_dict.get('detected_language')
 
-                detected_language = expected_language
-                logger.info(f"Language from Whisper ignored. Forced language: {detected_language}")
-            else:
-                logger.info("Performing standard transcription with auto-detection.")
-                text, detected_language = self.transcription_service.transcribe_with_fallback(audio_path)
+            # ===> КОНЕЦ ЛОГИКИ "УМНОГО ПЕРЕКЛЮЧАТЕЛЯ" <===
 
             if not text or not text.strip():
                 logger.warning(
                     f"Transcription for language '{detected_language}' resulted in empty text. Treating as failure.")
-                # ===> ИЗМЕНЕНИЕ ЗДЕСЬ: Возвращаем объект Exception <===
                 return {'success': False, 'error': Exception('Transcription result was empty.')}
 
-            if text.startswith("Ошибка"):
-                return {'success': False, 'error': Exception(text), 'processed_audio_path': audio_path}
-
+            # Постобработка и коррекция остаются без изменений.
+            # Теперь они будут применяться к гораздо более качественному тексту от Google для кхмерского.
             final_text = text
-
-            if not expected_language and detected_language in ['tl', 'en'] and self._is_likely_khmer_transliteration(
-                    final_text):
-                logger.warning(f"Language detected as '{detected_language}' but looks like Khmer. Changing to 'km'.")
-                detected_language = 'km'
-
             if detected_language == 'km':
                 quality_analysis = self._analyze_transcription_quality(final_text, detected_language)
                 if quality_analysis.get('quality') == 'poor':
                     corrected_text = self.correction_service.correct_khmer_transliteration(final_text)
-                    if corrected_text:
-                        final_text = corrected_text
-                        logger.info("Transliteration corrected using GPT.")
+                    if corrected_text: final_text = corrected_text
 
                 processed_text = self.correction_service.post_process_khmer_text(final_text)
-                if processed_text:
-                    final_text = processed_text
-                    logger.info("Khmer text post-processed by GPT.")
+                if processed_text: final_text = processed_text
 
             final_quality_analysis = self._analyze_transcription_quality(final_text, detected_language)
 
