@@ -43,20 +43,18 @@ class Database:
     def create_user(self, user_id: str, **kwargs) -> Dict[str, Any]:
         try:
             now = datetime.now(timezone.utc)
-            locale = kwargs.get('locale', 'en_US').split('_')[0]
             user_data = {
                 "user_id": user_id,
                 "created_at": now,
                 "last_seen": now,
-                "daily_usage": 0,
-                "total_transcriptions": 0,
                 "is_premium": False,
-                "preferred_language": None,
-                "system_locale": locale,
-                "state": None
+                "state": None,
+                # ===> НОВЫЕ ПОЛЯ ДЛЯ СТАТИСТИКИ <===
+                "transcription_lang_usage": {}, # e.g. {'km': 10, 'en': 5}
+                "translation_lang_usage": {}    # e.g. {'en': 8, 'ru': 2}
             }
             self.db.users.insert_one(user_data)
-            logger.info(f"Created new user {user_id} with locale '{locale}'")
+            logger.info(f"Created new user {user_id}")
             return user_data
         except PyMongoError as e:
             logger.error(f"Error creating user {user_id}: {e}")
@@ -70,15 +68,28 @@ class Database:
             logger.error(f"Error updating user {user_id}: {e}")
             return False
 
-    def increment_usage(self, user_id: str):
+    # ===> НОВЫЙ МЕТОД ДЛЯ ОБНОВЛЕНИЯ СТАТИСТИКИ <===
+    def increment_language_usage(self, user_id: str, lang_code: str, context: str):
+        """
+        Increments the usage count for a specific language in a given context.
+        :param user_id: The user's ID.
+        :param lang_code: The two-letter language code (e.g., 'km').
+        :param context: 'transcription' or 'translation'.
+        """
+        if context not in ['transcription', 'translation']:
+            logger.error(f"Invalid context '{context}' for language usage increment.")
+            return
+
+        field_to_update = f"{context}_lang_usage.{lang_code}"
         try:
             self.db.users.update_one(
                 {"user_id": user_id},
-                {"$inc": {"daily_usage": 1, "total_transcriptions": 1},
-                 "$set": {"last_seen": datetime.now(timezone.utc)}}
+                {"$inc": {field_to_update: 1}}
             )
+            logger.info(f"Incremented {context} usage for lang '{lang_code}' for user {user_id}")
         except PyMongoError as e:
-            logger.error(f"Error incrementing usage for user {user_id}: {e}")
+            logger.error(f"Error incrementing language usage for user {user_id}: {e}")
+
 
     def save_transcription(self, user_id: str, object_key: str, **kwargs):
         try:
@@ -86,12 +97,7 @@ class Database:
             kwargs.pop('processed_audio_path', None)
             kwargs.pop('original_file_path', None)
 
-            transcription_data = {
-                "user_id": user_id,
-                "s3_object_key": object_key,
-                "created_at": datetime.now(timezone.utc),
-                **kwargs
-            }
+            transcription_data = { "user_id": user_id, "s3_object_key": object_key, "created_at": datetime.now(timezone.utc), **kwargs }
             self.db.transcriptions.insert_one(transcription_data)
             logger.info(f"Saved transcription for user {user_id} with S3 key {object_key}")
         except PyMongoError as e:
@@ -99,10 +105,7 @@ class Database:
 
     def get_last_transcription(self, user_id: str) -> Optional[Dict[str, Any]]:
         try:
-            return self.db.transcriptions.find_one(
-                {"user_id": user_id},
-                sort=[("created_at", -1)]
-            )
+            return self.db.transcriptions.find_one( {"user_id": user_id}, sort=[("created_at", -1)])
         except PyMongoError as e:
             logger.error(f"Error getting last transcription for user {user_id}: {e}")
             return None
