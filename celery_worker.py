@@ -4,11 +4,12 @@ import logging
 import requests
 import tempfile
 import asyncio
+import redis  # <== НОВЫЙ ИМПОРТ
 from celery import Celery
+from celery.schedules import crontab  # <== НОВЫЙ ИМПОРТ
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any
 import openai
-# ===> НОВЫЙ ИМПОРТ ДЛЯ КНОПОК TELEGRAM <===
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 # ... (импорты ваших сервисов без изменений) ...
@@ -29,6 +30,34 @@ redis_url = os.getenv('REDIS_URL')
 if not redis_url: raise RuntimeError("REDIS_URL is not set!")
 celery_app = Celery('tasks', broker=redis_url, backend=redis_url, include=['celery_worker'])
 
+# ===> НАЧАЛО НОВОГО КОДА: РАСПИСАНИЕ ДЛЯ CELERY BEAT <===
+
+celery_app.conf.beat_schedule = {
+    'ping-redis-every-10-minutes': {
+        'task': 'celery_worker.ping_redis_task',
+        'schedule': crontab(minute='*/10'),  # Выполнять каждые 10 минут
+    },
+}
+
+
+@celery_app.task(name='celery_worker.ping_redis_task')
+def ping_redis_task():
+    """
+    Простая задача, которая "пингует" Redis, чтобы он не "засыпал" на бесплатном тарифе.
+    """
+    try:
+        redis_client = redis.from_url(redis_url)
+        if redis_client.ping():
+            logger.info("Redis PING successful, keep-alive confirmed.")
+        else:
+            logger.warning("Redis PING failed.")
+    except Exception as e:
+        logger.error(f"Error while pinging Redis: {e}")
+
+
+# ===> КОНЕЦ НОВОГО КОДА <===
+
+
 # ... (инициализация сервисов без изменений) ...
 try:
     database = Database()
@@ -36,15 +65,12 @@ try:
     audio_processor = AudioProcessor()
     transcription_service = TranscriptionService()
     translation_service = TranslationService()
-
     messenger_handler = MessageHandler(database=database, translation_service=translation_service)
-
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     if telegram_token:
         telegram_handler = TelegramHandler(token=telegram_token, database=database, s3_service=s3_service)
     else:
         telegram_handler = None
-
     media_handler_service = MediaHandler(transcription_service, translation_service)
     logger.info("Celery worker: All services initialized successfully.")
 except Exception as e:
@@ -54,7 +80,7 @@ except Exception as e:
     telegram_handler = None
 
 
-# ... (основная часть celery_worker.py до handle_telegram_success без изменений) ...
+# ... (остальной код celery_worker.py без изменений) ...
 @celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
 def process_media_task(self, sender_id: str, object_key: str, user_preferences: dict, platform_payload: dict):
     if not all([media_handler_service, messenger_handler]):
@@ -105,7 +131,6 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
 
 def handle_messenger_success(sender_id, user, result, user_preferences):
-    # ... (эта функция без изменений) ...
     is_retry = bool(user_preferences.get('preferred_language'))
     lang_info = result.get('language_info', {})
     lang_name = lang_info.get('name', 'N/A')
@@ -125,27 +150,20 @@ def handle_messenger_success(sender_id, user, result, user_preferences):
         })
 
 
-# ===> ПОЛНОСТЬЮ ОБНОВЛЕННАЯ ФУНКЦИЯ <===
 def handle_telegram_success(chat_id, user, result, user_preferences):
-    """Отправляет успешный результат и кнопки в Telegram."""
     if not telegram_handler: return
 
     is_retry = bool(user_preferences.get('preferred_language'))
     lang_info = result.get('language_info', {})
     lang_name = lang_info.get('name', 'N/A')
 
-    # Сначала отправляем текст транскрипции
     response_text = f"📝 *Transcription ({lang_name}):*\n\n{result['transcription']}"
     asyncio.run(telegram_handler.send_message(chat_id, response_text))
 
-    # Теперь строим и отправляем кнопки
     keyboard = []
     if is_retry:
-        # Успешный ретрай: предлагаем ТОЛЬКО перевод
-        # Логика постройки кнопок перевода теперь внутри telegram_handler
         asyncio.run(telegram_handler.send_translation_options(chat_id, user))
     else:
-        # Успешный первый прогон: предлагаем подтвердить или исправить
         keyboard = [[
             InlineKeyboardButton("✅ Looks Good", callback_data="CONFIRM_TRANSCRIPTION_OK"),
             InlineKeyboardButton("🗣️ Other language", callback_data="CHOOSE_OTHER_LANGUAGE")

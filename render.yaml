@@ -1,5 +1,5 @@
 services:
-  # 1. Веб-сервис (может быть бесплатным)
+  # 1. Веб-сервис
   - type: web
     name: messenger-transcribe-bot
     env: python
@@ -10,7 +10,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.11
 
-  # 2. Фоновый воркер (платный, так как выполняет тяжелую работу)
+  # 2. Фоновый воркер (выполняет задачи)
   - type: worker
     name: celery-worker
     env: python
@@ -21,7 +21,19 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.11
 
-  # 3. База данных Redis
+  # ===> НОВЫЙ СЕРВИС: ПЛАНИРОВЩИК <===
+  # 3. Планировщик задач (отправляет PING)
+  - type: worker
+    name: celery-beat
+    env: python
+    plan: free # Планировщик не требует много ресурсов
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "celery -A celery_worker.celery_app beat --loglevel=info"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+
+  # 4. База данных Redis
   - type: redis
     name: bot-redis
     plan: free
