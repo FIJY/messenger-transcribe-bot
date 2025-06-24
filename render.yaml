@@ -21,7 +21,6 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.11
 
-  # ===> НОВЫЙ СЕРВИС: ПЛАНИРОВЩИК <===
   # 3. Планировщик задач (отправляет PING)
   - type: worker
     name: celery-beat
@@ -37,6 +36,4 @@ services:
   - type: redis
     name: bot-redis
     plan: free
-    ipAllowList:
-      - source: 0.0.0.0/0
-        description: "Allow all"
+    ipAllowList: [] # Render автоматически разрешит доступ для сервисов внутри проекта
