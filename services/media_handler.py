@@ -13,6 +13,23 @@ from .google_stt_service import GoogleSTTService
 
 logger = logging.getLogger(__name__)
 
+# ===> ИЗМЕНЕНИЕ: Добавлен словарь для нормализации названий языков <===
+LANGUAGE_NAME_TO_CODE_MAP = {
+    'khmer': 'km',
+    'english': 'en',
+    'russian': 'ru',
+    'thai': 'th',
+    'vietnamese': 'vi',
+    'chinese': 'zh',
+    'german': 'de',
+    'japanese': 'ja',
+    'korean': 'ko',
+    'tagalog': 'tl',
+    'lithuanian': 'lt',  # Добавим на всякий случай из прошлых логов
+    'belarusian': 'be',
+    'french': 'fr'
+}
+
 
 class MediaHandler:
     def __init__(self, transcription_service: TranscriptionService, translation_service: TranslationService):
@@ -30,7 +47,7 @@ class MediaHandler:
 
     def process_media(self, file_path: str, user_preferences: Optional[Dict] = None) -> Dict[str, Any]:
         audio_path = None
-        converted_wav_path = None  # Переменная для пути к временному .wav файлу
+        converted_wav_path = None
         user_prefs = user_preferences or {}
         try:
             expected_language = user_prefs.get('preferred_language')
@@ -41,34 +58,40 @@ class MediaHandler:
 
             language_to_process = expected_language
             if not language_to_process:
+                # Шаг 1: Whisper определяет язык и может вернуть полное имя, например, 'khmer'
                 _, detected_by_whisper = self.transcription_service.transcribe_with_fallback(audio_path)
-                language_to_process = detected_by_whisper
+
+                # ===> ИЗМЕНЕНИЕ: Нормализуем полученное имя в двухбуквенный код <===
+                normalized_lang_code = LANGUAGE_NAME_TO_CODE_MAP.get(detected_by_whisper.lower())
+                if normalized_lang_code:
+                    logger.info(
+                        f"Normalized detected language '{detected_by_whisper}' to code '{normalized_lang_code}'.")
+                    language_to_process = normalized_lang_code
+                else:
+                    logger.warning(
+                        f"Could not map detected language '{detected_by_whisper}' to a known code. Using original value.")
+                    language_to_process = detected_by_whisper
 
             logger.info(f"Language pre-determined for processing: {language_to_process}")
 
-            # ===> НАЧАЛО ИЗМЕНЕННОЙ ЛОГИКИ <===
+            # Теперь эта проверка будет работать корректно, т.к. language_to_process будет 'km'
             if language_to_process == 'km' and self.google_stt_service:
-                # --- Ветка для кхмерского языка ---
                 logger.info("Khmer language detected. Forcing conversion to WAV for Google STT.")
-
-                # Шаг 1: Принудительно конвертируем файл в WAV
                 converted_wav_path = self.audio_processor.convert_to_wav(audio_path)
                 if not converted_wav_path:
                     raise Exception("Failed to convert audio to WAV for Google STT")
 
-                # Шаг 2: Отправляем в Google сконвертированный .wav файл
                 logger.info("Routing to Google STT with WAV file.")
                 text = self.google_stt_service.transcribe_audio(converted_wav_path, language_code='km-KH')
                 detected_language = 'km'
             else:
-                # --- Ветка для всех остальных языков (без изменений) ---
                 logger.info(f"Routing to Whisper for language: {language_to_process} with original file.")
+                # Теперь сюда будет передан корректный код языка, например 'ru', а не 'russian'
                 result_dict = self.transcription_service._transcribe_sync(audio_path, language_hint=language_to_process)
                 if not result_dict['success']:
                     raise result_dict['error']
                 text = result_dict.get('text', '')
                 detected_language = result_dict.get('detected_language')
-            # ===> КОНЕЦ ИЗМЕНЕННОЙ ЛОГИКИ <===
 
             if not text or not text.strip():
                 logger.warning(
@@ -101,7 +124,6 @@ class MediaHandler:
             logger.error(f"Critical error in media processing: {e}", exc_info=True)
             return {'success': False, 'error': e, 'processed_audio_path': audio_path}
         finally:
-            # ===> ИЗМЕНЕНИЕ: Добавлен блок для очистки временного .wav файла <===
             if converted_wav_path:
                 self.audio_processor.cleanup_temp_file(converted_wav_path)
 
