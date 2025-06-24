@@ -7,7 +7,8 @@ import uuid
 from typing import Dict, Any, Optional, List
 from celery import Celery
 
-from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_FOR_RETRY, MESSENGER_QUICK_REPLIES_LIMIT
+# ===> ИЗМЕНЯЕМ ИМПОРТЫ <===
+from config.transcrib_suggestion_config import POPULAR_LANGUAGES, SUPPORTED_LANGUAGES_MAP
 from .database import Database
 from .s3_service import S3Service
 from .translation_service import TranslationService
@@ -50,9 +51,15 @@ class MessageHandler:
                 if 'quick_reply' in message and message['quick_reply'].get('payload'):
                     if self._handle_quick_reply(sender_id, message['quick_reply']['payload']):
                         return
+
                 if 'text' in message and message.get('text'):
-                    self._send_text_message(sender_id, "ℹ️ To get started, just send me an audio or video file.")
+                    # ===> НОВАЯ ЛОГИКА ДЛЯ ТЕКСТОВОГО ВВОДА ЯЗЫКА <===
+                    if user.get('state') == 'awaiting_language_input':
+                        self._handle_language_text_input(sender_id, message['text'])
+                    else:
+                        self._send_text_message(sender_id, "ℹ️ To get started, just send me an audio or video file.")
                     return
+
                 if 'attachments' in message:
                     self._handle_attachments(sender_id, message['attachments'])
                     return
@@ -62,9 +69,14 @@ class MessageHandler:
     def send_language_correction_options(self, sender_id: str):
         try:
             quick_replies = []
-            for lang in SUPPORTED_LANGUAGES_FOR_RETRY[:MESSENGER_QUICK_REPLIES_LIMIT]:
+            for lang in POPULAR_LANGUAGES:
                 quick_replies.append(
                     {"content_type": "text", "title": lang['title'], "payload": f"RETRY_AS_{lang['code']}"})
+
+            # Добавляем кнопку для ручного ввода
+            quick_replies.append(
+                {"content_type": "text", "title": "✍️ Type other...", "payload": "INPUT_OTHER_LANGUAGE"})
+
             message_data = {
                 "recipient": {"id": sender_id},
                 "messaging_type": "RESPONSE",
@@ -93,6 +105,7 @@ class MessageHandler:
 
     def _handle_quick_reply(self, sender_id: str, payload: str) -> bool:
         if payload.startswith('RETRY_AS_'):
+            self.database.update_user(sender_id, {'state': None})  # Сбрасываем состояние
             lang_code = payload.replace('RETRY_AS_', '').lower()
             self._handle_retry_request(sender_id, lang_code)
             return True
@@ -103,19 +116,45 @@ class MessageHandler:
         elif payload == 'CHOOSE_OTHER_LANGUAGE':
             self.send_language_correction_options(sender_id)
             return True
-        # ===> НОВЫЙ ОБРАБОТЧИК <===
         elif payload == 'CONFIRM_TRANSCRIPTION_OK':
             self.send_translation_options(sender_id)
             return True
+        # ===> НОВЫЙ ОБРАБОТЧИК <===
+        elif payload == 'INPUT_OTHER_LANGUAGE':
+            # Устанавливаем состояние пользователя в ожидание ввода языка
+            self.database.update_user(sender_id, {'state': 'awaiting_language_input'})
+            self._send_text_message(sender_id,
+                                    "Please type the language name or its 2-letter code (e.g., 'German' or 'de').")
+            return True
         return False
+
+    def _handle_language_text_input(self, sender_id: str, text: str):
+        # Приводим введенный текст к нижнему регистру
+        lang_input = text.lower().strip()
+        # Ищем код языка в нашей новой карте
+        lang_code = SUPPORTED_LANGUAGES_MAP.get(lang_input)
+
+        if lang_code:
+            # Если язык найден, сбрасываем состояние и запускаем ретрай
+            self.database.update_user(sender_id, {'state': None})
+            self._handle_retry_request(sender_id, lang_code)
+        else:
+            # Если язык не найден, просим попробовать еще раз
+            self._send_text_message(sender_id, f"Sorry, I don't recognize '{text}'. Please try again.")
 
     def _handle_retry_request(self, sender_id: str, lang_code: str):
         last_doc = self.database.get_last_transcription(sender_id)
         if not last_doc or not last_doc.get('s3_object_key'):
             self._send_text_message(sender_id, "❌ Couldn't find the previous file to re-process.")
             return
-        lang_name = next((lang['title'] for lang in SUPPORTED_LANGUAGES_FOR_RETRY if lang['code'] == lang_code),
-                         lang_code.upper())
+
+        # Находим красивое имя для ответа
+        lang_name = lang_code.upper()
+        for lang in POPULAR_LANGUAGES:  # Ищем в популярных
+            if lang['code'] == lang_code:
+                lang_name = lang['title'];
+                break
+
         self._send_text_message(sender_id, f"✅ Got it! Retrying the process, assuming it's {lang_name}...")
         if celery_app_client:
             celery_app_client.send_task('tasks.process_media',
