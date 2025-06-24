@@ -5,12 +5,13 @@ services:
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn --bind 0.0.0.0:$PORT app:app --timeout 120"
+    # ===> ИЗМЕНЕНИЕ: Gunicorn -> Hypercorn <===
+    startCommand: "hypercorn app:app -b 0.0.0.0:$PORT"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
 
-  # 2. Фоновый воркер (выполняет задачи)
+  # ... (остальные сервисы - celery-worker, celery-beat, redis - без изменений) ...
   - type: worker
     name: celery-worker
     env: python
@@ -20,20 +21,16 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
-
-  # 3. Планировщик задач (отправляет PING)
   - type: worker
     name: celery-beat
     env: python
-    plan: free # Планировщик не требует много ресурсов
+    plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app beat --loglevel=info"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
-
-  # 4. База данных Redis
   - type: redis
     name: bot-redis
     plan: free
-    ipAllowList: [] # Render автоматически разрешит доступ для сервисов внутри проекта
+    ipAllowList: []

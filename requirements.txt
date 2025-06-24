@@ -13,3 +13,5 @@ redis
 boto3
 python-telegram-bot
 google-cloud-speech
+quart
+hypercorn
