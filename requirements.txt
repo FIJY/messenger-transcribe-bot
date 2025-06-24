@@ -11,3 +11,4 @@ deep-translator
 celery
 redis
 boto3
+python-telegram-bot

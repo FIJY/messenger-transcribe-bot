@@ -5,7 +5,10 @@ import tempfile
 import requests
 import uuid
 from typing import Dict, Any, Optional, List
-from celery import Celery
+
+# Убираем celery отсюда, будем использовать централизованный клиент
+# from celery import Celery
+from .celery_client import get_celery_app_client
 
 from config.transcrib_suggestion_config import (
     DEFAULT_POPULAR_TRANSCRIPTION_LANGS,
@@ -18,12 +21,8 @@ from .translation_service import TranslationService
 
 logger = logging.getLogger(__name__)
 
-redis_url = os.getenv('REDIS_URL')
-if not redis_url:
-    logger.warning("REDIS_URL not found, Celery client will not work.")
-    celery_app_client = None
-else:
-    celery_app_client = Celery('tasks_client', broker=redis_url)
+# Используем централизованный клиент
+celery_app_client = get_celery_app_client()
 
 
 class MessageHandler:
@@ -33,6 +32,7 @@ class MessageHandler:
         self.translation_service = translation_service
         self.page_access_token = os.getenv('PAGE_ACCESS_TOKEN')
 
+    # ... (весь остальной код до _handle_retry_request без изменений) ...
     def handle_message(self, webhook_event: Dict[str, Any]):
         try:
             messaging = webhook_event['entry'][0]['messaging'][0]
@@ -171,14 +171,16 @@ class MessageHandler:
             self._send_text_message(sender_id, "❌ Couldn't find the previous file to re-process.");
             return
 
-        lang_name = lang_code.upper()  # Fallback name
-        for lang in DEFAULT_POPULAR_TRANSCRIPTION_LANGS:
-            if lang['code'] == lang_code: lang_name = lang['title']; break
+        lang_name = next((lang['title'] for lang in DEFAULT_POPULAR_TRANSCRIPTION_LANGS if lang['code'] == lang_code),
+                         lang_code.upper())
 
         self._send_text_message(sender_id, f"✅ Got it! Retrying the process, assuming it's {lang_name}...")
         if celery_app_client:
+            # ===> ДОБАВЛЯЕМ МЕТКУ ПЛАТФОРМЫ <===
+            platform_payload = {'platform': 'messenger'}
             celery_app_client.send_task('tasks.process_media',
-                                        args=[sender_id, last_doc['s3_object_key'], {'preferred_language': lang_code}])
+                                        args=[sender_id, last_doc['s3_object_key'], {'preferred_language': lang_code},
+                                              platform_payload])
 
     def _handle_translation_request(self, sender_id: str, target_lang_code: str):
         last_doc = self.database.get_last_transcription(sender_id)
@@ -193,7 +195,6 @@ class MessageHandler:
 
         translation_result = self.translation_service.translate_text(original_text, target_lang_code, source_lang)
         if translation_result.get('success'):
-            # Using the agreed-upon format
             response_text = f"🔄 **Translation ({target_lang_code.upper()}):**\n\n{translation_result['translated_text']}"
             self._send_text_message(sender_id, response_text)
         else:
@@ -216,7 +217,9 @@ class MessageHandler:
             self._send_text_message(sender_id,
                                     "✅ Your file has been received. I'll send the result as soon as it's ready.")
             if celery_app_client:
-                celery_app_client.send_task('tasks.process_media', args=[sender_id, object_key, {}])
+                # ===> ДОБАВЛЯЕМ МЕТКУ ПЛАТФОРМЫ <===
+                platform_payload = {'platform': 'messenger'}
+                celery_app_client.send_task('tasks.process_media', args=[sender_id, object_key, {}, platform_payload])
         except Exception as e:
             logger.error(f"Error queuing task: {e}", exc_info=True)
         finally:
