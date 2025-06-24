@@ -4,15 +4,14 @@ import logging
 import requests
 import tempfile
 import asyncio
-import redis  # <== НОВЫЙ ИМПОРТ
+import redis
 from celery import Celery
-from celery.schedules import crontab  # <== НОВЫЙ ИМПОРТ
+from celery.schedules import crontab
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any
 import openai
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-# ... (импорты ваших сервисов без изменений) ...
 from services.media_handler import MediaHandler
 from services.transcription_service import TranscriptionService
 from services.translation_service import TranslationService
@@ -30,21 +29,16 @@ redis_url = os.getenv('REDIS_URL')
 if not redis_url: raise RuntimeError("REDIS_URL is not set!")
 celery_app = Celery('tasks', broker=redis_url, backend=redis_url, include=['celery_worker'])
 
-# ===> НАЧАЛО НОВОГО КОДА: РАСПИСАНИЕ ДЛЯ CELERY BEAT <===
-
 celery_app.conf.beat_schedule = {
     'ping-redis-every-10-minutes': {
         'task': 'celery_worker.ping_redis_task',
-        'schedule': crontab(minute='*/10'),  # Выполнять каждые 10 минут
+        'schedule': crontab(minute='*/10'),
     },
 }
 
 
 @celery_app.task(name='celery_worker.ping_redis_task')
 def ping_redis_task():
-    """
-    Простая задача, которая "пингует" Redis, чтобы он не "засыпал" на бесплатном тарифе.
-    """
     try:
         redis_client = redis.from_url(redis_url)
         if redis_client.ping():
@@ -55,22 +49,28 @@ def ping_redis_task():
         logger.error(f"Error while pinging Redis: {e}")
 
 
-# ===> КОНЕЦ НОВОГО КОДА <===
-
-
-# ... (инициализация сервисов без изменений) ...
+# Инициализируем все сервисы
 try:
     database = Database()
     s3_service = S3Service()
     audio_processor = AudioProcessor()
     transcription_service = TranscriptionService()
     translation_service = TranslationService()
+
     messenger_handler = MessageHandler(database=database, translation_service=translation_service)
+
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     if telegram_token:
-        telegram_handler = TelegramHandler(token=telegram_token, database=database, s3_service=s3_service)
+        # ===> ИСПРАВЛЕНИЕ: Передаем недостающий translation_service <===
+        telegram_handler = TelegramHandler(
+            token=telegram_token,
+            database=database,
+            s3_service=s3_service,
+            translation_service=translation_service
+        )
     else:
         telegram_handler = None
+
     media_handler_service = MediaHandler(transcription_service, translation_service)
     logger.info("Celery worker: All services initialized successfully.")
 except Exception as e:
@@ -83,7 +83,7 @@ except Exception as e:
 # ... (остальной код celery_worker.py без изменений) ...
 @celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
 def process_media_task(self, sender_id: str, object_key: str, user_preferences: dict, platform_payload: dict):
-    if not all([media_handler_service, messenger_handler]):
+    if not all([media_handler_service, messenger_handler, telegram_handler]):
         logger.error("Worker handlers not initialized.");
         return
 
@@ -105,7 +105,7 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
             user = database.get_user(sender_id)
             if platform == 'telegram':
                 handle_telegram_success(chat_id, user, result, user_preferences)
-            else:  # Messenger
+            else:
                 handle_messenger_success(sender_id, user, result, user_preferences)
 
             database.save_transcription(user_id=sender_id, object_key=object_key, **result)
@@ -160,7 +160,6 @@ def handle_telegram_success(chat_id, user, result, user_preferences):
     response_text = f"📝 *Transcription ({lang_name}):*\n\n{result['transcription']}"
     asyncio.run(telegram_handler.send_message(chat_id, response_text))
 
-    keyboard = []
     if is_retry:
         asyncio.run(telegram_handler.send_translation_options(chat_id, user))
     else:
