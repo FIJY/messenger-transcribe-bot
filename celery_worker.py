@@ -3,16 +3,15 @@ import os
 import logging
 import requests
 import tempfile
+import asyncio
 from celery import Celery
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any
 import openai
+# ===> НОВЫЙ ИМПОРТ ДЛЯ КНОПОК TELEGRAM <===
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Импортируем оба обработчика
+# ... (импорты ваших сервисов без изменений) ...
 from services.media_handler import MediaHandler
 from services.transcription_service import TranscriptionService
 from services.translation_service import TranslationService
@@ -22,11 +21,15 @@ from services.s3_service import S3Service
 from services.message_handler import MessageHandler
 from services.telegram_handler import TelegramHandler
 
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 redis_url = os.getenv('REDIS_URL')
 if not redis_url: raise RuntimeError("REDIS_URL is not set!")
 celery_app = Celery('tasks', broker=redis_url, backend=redis_url, include=['celery_worker'])
 
-# Инициализируем все сервисы, которые могут понадобиться
+# ... (инициализация сервисов без изменений) ...
 try:
     database = Database()
     s3_service = S3Service()
@@ -34,7 +37,6 @@ try:
     transcription_service = TranscriptionService()
     translation_service = TranslationService()
 
-    # Инициализируем оба хендлера, чтобы воркер мог им отправлять сообщения
     messenger_handler = MessageHandler(database=database, translation_service=translation_service)
 
     telegram_token = os.getenv('TELEGRAM_TOKEN')
@@ -52,9 +54,9 @@ except Exception as e:
     telegram_handler = None
 
 
+# ... (основная часть celery_worker.py до handle_telegram_success без изменений) ...
 @celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
 def process_media_task(self, sender_id: str, object_key: str, user_preferences: dict, platform_payload: dict):
-    # Проверяем, что все нужные хендлеры живы
     if not all([media_handler_service, messenger_handler]):
         logger.error("Worker handlers not initialized.");
         return
@@ -62,8 +64,8 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
     local_file_path = None
     processed_audio_path = None
 
-    platform = platform_payload.get('platform', 'messenger')  # По умолчанию - мессенджер
-    chat_id = platform_payload.get('chat_id', sender_id)  # Для телеграма chat_id, для мессенджера sender_id
+    platform = platform_payload.get('platform', 'messenger')
+    chat_id = platform_payload.get('chat_id', sender_id)
 
     try:
         local_file_path = _download_file_from_r2(object_key)
@@ -74,14 +76,12 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         processed_audio_path = result.get('processed_audio_path')
 
         if result.get('success'):
-            user = database.get_user(sender_id)  # Получаем свежие данные о пользователе
-            # Отправляем результат в зависимости от платформы
+            user = database.get_user(sender_id)
             if platform == 'telegram':
-                handle_telegram_success(chat_id, result)
+                handle_telegram_success(chat_id, user, result, user_preferences)
             else:  # Messenger
                 handle_messenger_success(sender_id, user, result, user_preferences)
 
-            # Сохраняем в базу
             database.save_transcription(user_id=sender_id, object_key=object_key, **result)
             if not user_preferences.get('preferred_language'):
                 database.increment_usage(user_id=sender_id)
@@ -90,10 +90,11 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
     except Exception as exc:
         logger.error(f"[{self.request.id}] Error in Celery task: {exc}", exc_info=True)
-        # Отправляем сообщение об ошибке в нужный чат
         error_message = f"❌ Failed to process your file. Error: {str(exc)}"
+
         if platform == 'telegram':
-            if telegram_handler: telegram_handler.send_message(chat_id, error_message)
+            if telegram_handler:
+                asyncio.run(telegram_handler.send_message(chat_id, error_message))
         else:
             messenger_handler._send_text_message(sender_id, error_message)
 
@@ -104,7 +105,7 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
 
 def handle_messenger_success(sender_id, user, result, user_preferences):
-    """Отправляет успешный результат в Facebook Messenger."""
+    # ... (эта функция без изменений) ...
     is_retry = bool(user_preferences.get('preferred_language'))
     lang_info = result.get('language_info', {})
     lang_name = lang_info.get('name', 'N/A')
@@ -124,14 +125,34 @@ def handle_messenger_success(sender_id, user, result, user_preferences):
         })
 
 
-def handle_telegram_success(chat_id, result):
-    """Отправляет успешный результат в Telegram."""
+# ===> ПОЛНОСТЬЮ ОБНОВЛЕННАЯ ФУНКЦИЯ <===
+def handle_telegram_success(chat_id, user, result, user_preferences):
+    """Отправляет успешный результат и кнопки в Telegram."""
     if not telegram_handler: return
+
+    is_retry = bool(user_preferences.get('preferred_language'))
     lang_info = result.get('language_info', {})
     lang_name = lang_info.get('name', 'N/A')
+
+    # Сначала отправляем текст транскрипции
     response_text = f"📝 *Transcription ({lang_name}):*\n\n{result['transcription']}"
-    telegram_handler.send_message(chat_id, response_text)
-    # TODO: В будущем добавить кнопки для Telegram, пока отправляем только текст
+    asyncio.run(telegram_handler.send_message(chat_id, response_text))
+
+    # Теперь строим и отправляем кнопки
+    keyboard = []
+    if is_retry:
+        # Успешный ретрай: предлагаем ТОЛЬКО перевод
+        # Логика постройки кнопок перевода теперь внутри telegram_handler
+        asyncio.run(telegram_handler.send_translation_options(chat_id, user))
+    else:
+        # Успешный первый прогон: предлагаем подтвердить или исправить
+        keyboard = [[
+            InlineKeyboardButton("✅ Looks Good", callback_data="CONFIRM_TRANSCRIPTION_OK"),
+            InlineKeyboardButton("🗣️ Other language", callback_data="CHOOSE_OTHER_LANGUAGE")
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        asyncio.run(telegram_handler.send_message(chat_id, "Is the language and transcription correct?",
+                                                  reply_markup=reply_markup))
 
 
 def _download_file_from_r2(object_key: str) -> Optional[str]:
