@@ -1,14 +1,14 @@
 # app.py
 import os
 import logging
+import asyncio  # <== ИСПРАВЛЕНИЕ: ДОБАВЛЕН ИМПОРТ
 from flask import Flask, request, jsonify, render_template
 from dotenv import load_dotenv
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ===> НОВЫЕ ИМПОРТЫ <===
 from services.message_handler import MessageHandler
 from services.telegram_handler import TelegramHandler
 from services.database import Database
@@ -24,10 +24,8 @@ try:
     s3_service = S3Service()
     translation_service = TranslationService()
 
-    # Инициализация обработчика для Messenger
     message_handler = MessageHandler(database=database, translation_service=translation_service)
 
-    # ===> ИНИЦИАЛИЗАЦИЯ ОБРАБОТЧИКА ДЛЯ TELEGRAM <===
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     if telegram_token:
         telegram_handler = TelegramHandler(token=telegram_token, database=database, s3_service=s3_service)
@@ -74,14 +72,15 @@ def webhook_handler():
         return 'OK', 200
 
 
-# ===> НОВЫЙ РОУТ ДЛЯ TELEGRAM <===
+# --- Роут для Telegram ---
 @app.route('/telegram_webhook', methods=['POST'])
 def telegram_webhook_handler():
     try:
         data = request.get_json()
         if data:
             if telegram_handler:
-                telegram_handler.handle_update(data)
+                # ===> ИСПРАВЛЕНИЕ: ЗАПУСКАЕМ АСИНХРОННУЮ ФУНКЦИЮ ПРАВИЛЬНО <===
+                asyncio.run(telegram_handler.handle_update(data))
             else:
                 logger.error("TelegramHandler was not initialized.")
         return 'OK', 200
