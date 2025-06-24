@@ -6,7 +6,7 @@ import tempfile
 from celery import Celery
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any
-import openai  # <== НОВЫЙ ИМПОРТ
+import openai
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -76,12 +76,10 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
     is_retry = bool(user_preferences.get('preferred_language'))
     result = None
-    processed_audio_for_debug = None
-
+    processed_audio_path = None
     try:
         result = media_handler_service.process_media(local_file_path, user_preferences)
-        # Сохраняем путь к обработанному аудио для возможной отладки
-        processed_audio_for_debug = result.get('processed_audio_path')
+        processed_audio_path = result.get('processed_audio_path')  # Запоминаем путь
 
         if result.get('success'):
             lang_info = result.get('language_info', {})
@@ -102,29 +100,31 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
             database.save_transcription(user_id=sender_id, object_key=object_key, **result)
             if not is_retry: database.increment_usage(user_id=sender_id)
         else:
-            raise result.get('error', Exception('Unknown error during media processing'))
+            # ===> ИСПРАВЛЕННАЯ ЛОГИКА ВЫЗОВА ОШИБКИ <===
+            # Убеждаемся, что 'error' является объектом Exception
+            error_obj = result.get('error')
+            if isinstance(error_obj, Exception):
+                raise error_obj
+            else:
+                raise Exception(str(error_obj or 'Unknown error during media processing'))
 
-    # ===> НОВЫЙ БЛОК ОБРАБОТКИ ОШИБОК <===
     except openai.BadRequestError as e:
-        # Ловим конкретно нашу ошибку от OpenAI
         error_str = str(e).lower()
         if 'language' in error_str and 'not supported' in error_str:
-            logger.warning(f"Перехвачена ошибка 'Language not supported'. Сохраняем аудио для отладки.")
-            # Сохраняем проблемный файл в R2
-            if processed_audio_for_debug and os.path.exists(processed_audio_for_debug):
-                debug_filename = f"debug/{os.path.basename(processed_audio_for_debug)}"
-                s3_service.upload_file(processed_audio_for_debug, debug_filename)
+            logger.warning(f"Intercepted 'Language not supported' error. Saving audio for debug.")
+            if processed_audio_path and os.path.exists(processed_audio_path):
+                debug_filename = f"debug/{os.path.basename(processed_audio_path)}"
+                s3_service.upload_file(processed_audio_path, debug_filename)
                 _send_celery_message(sender_id, {
-                    'text': f"Обнаружена специфическая ошибка API. Отладочный файл сохранен как: {debug_filename}"})
+                    'text': f"An API error was detected. A debug file has been saved as: {debug_filename}"})
             else:
                 _send_celery_message(sender_id, {
-                    'text': "Обнаружена специфическая ошибка API, но не удалось сохранить отладочный файл."})
+                    'text': "An API error was detected, but the debug audio file could not be saved."})
         else:
-            # Другие ошибки от OpenAI
             _send_celery_message(sender_id, {'text': f"❌ API Error: {e}"})
 
     except Exception as exc:
-        logger.error(f"[{self.request.id}] Критическая ошибка в задаче Celery: {exc}", exc_info=True)
+        logger.error(f"[{self.request.id}] Critical error in Celery task: {exc}", exc_info=True)
         try:
             raise self.retry(exc=exc)
         except self.MaxRetriesExceededError:
@@ -132,7 +132,5 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
     finally:
         if local_file_path: audio_processor.cleanup_temp_file(local_file_path)
-        # Не удаляем отладочный файл, если он еще нужен
-        if processed_audio_for_debug and os.path.exists(processed_audio_for_debug):
-            audio_processor.cleanup_temp_file(processed_audio_for_debug)
+        if processed_audio_path: audio_processor.cleanup_temp_file(processed_audio_path)
         logger.info(f"[{self.request.id}] Task finished for object {object_key}.")

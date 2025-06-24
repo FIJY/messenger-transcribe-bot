@@ -30,26 +30,31 @@ class MediaHandler:
 
             audio_path = self.audio_processor.process_file(file_path)
             if not audio_path:
-                return {'success': False, 'error': 'Failed to process media file'}
+                return {'success': False, 'error': Exception('Failed to process media file')}
 
             if expected_language:
                 logger.info(f"Performing forced transcription for language: {expected_language}")
                 result_dict = self.transcription_service._transcribe_sync(audio_path, language_hint=expected_language)
                 text = result_dict.get('text', '')
+
+                # Если транскрипция вернула ошибку, пробрасываем ее дальше
+                if not result_dict['success']:
+                    raise result_dict['error']
+
                 detected_language = expected_language
                 logger.info(f"Language from Whisper ignored. Forced language: {detected_language}")
             else:
                 logger.info("Performing standard transcription with auto-detection.")
                 text, detected_language = self.transcription_service.transcribe_with_fallback(audio_path)
 
-            # ===> ВАЖНОЕ ИЗМЕНЕНИЕ: ПРОВЕРКА НА ПУСТОЙ РЕЗУЛЬТАТ <===
             if not text or not text.strip():
                 logger.warning(
                     f"Transcription for language '{detected_language}' resulted in empty text. Treating as failure.")
-                return {'success': False, 'error': 'Transcription result was empty.'}
+                # ===> ИЗМЕНЕНИЕ ЗДЕСЬ: Возвращаем объект Exception <===
+                return {'success': False, 'error': Exception('Transcription result was empty.')}
 
             if text.startswith("Ошибка"):
-                return {'success': False, 'error': text, 'processed_audio_path': audio_path}
+                return {'success': False, 'error': Exception(text), 'processed_audio_path': audio_path}
 
             final_text = text
 
@@ -85,7 +90,7 @@ class MediaHandler:
             return result
         except Exception as e:
             logger.error(f"Critical error in media processing: {e}", exc_info=True)
-            return {'success': False, 'error': 'An internal error occurred', 'processed_audio_path': audio_path}
+            return {'success': False, 'error': e, 'processed_audio_path': audio_path}
 
     def _is_likely_khmer_transliteration(self, text: str) -> bool:
         text_lower = text.lower()
