@@ -2,8 +2,11 @@
 import openai
 import os
 import logging
+# ===> НОВЫЙ ИМПОРТ <===
+from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_MAP
 
 logger = logging.getLogger(__name__)
+
 
 class TranscriptionService:
     def __init__(self):
@@ -22,27 +25,31 @@ class TranscriptionService:
         try:
             self.logger.info(f"Запускаем транскрибацию для языка: {language or 'auto'}")
             result = self._transcribe_sync(audio_file_path, language)
-            text = result.get('text', '').strip()
 
-            if result['success'] and text:
-                detected_lang = result.get('detected_language', language or 'unknown')
-                return text, detected_lang
+            if result['success']:
+                # Успешная транскрипция с первого раза
+                text = result.get('text', '').strip()
+                if text:
+                    detected_lang = result.get('detected_language')
+                    self.logger.info(f"Транскрипция успешна. Язык: {detected_lang}")
+                    return text, detected_lang
 
-            self.logger.warning("Первая попытка не дала результата, пробуем в режиме автоопределения.")
+            # Если первая попытка не дала результата, пробуем еще раз в режиме автоопределения.
+            self.logger.warning("Первая попытка не дала результата или текст пустой, пробуем в режиме автоопределения.")
             fallback_result = self._transcribe_sync(audio_file_path, None)
-            fallback_text = fallback_result.get('text', '').strip()
 
-            if fallback_result['success'] and fallback_text:
-                detected_lang = fallback_result.get('detected_language', 'unknown')
-                return fallback_text, detected_lang
-            else:
-                # ===> ИЗМЕНЕНИЕ ЗДЕСЬ <===
-                # Пробрасываем ошибку, чтобы ее можно было поймать выше
-                raise fallback_result.get('error', result.get('error', Exception('Unknown transcription error')))
+            if fallback_result['success']:
+                fallback_text = fallback_result.get('text', '').strip()
+                if fallback_text:
+                    detected_lang = fallback_result.get('detected_language')
+                    return fallback_text, detected_lang
+
+            # Если обе попытки не удались
+            error_obj = fallback_result.get('error', result.get('error', Exception('Unknown transcription error')))
+            raise error_obj
 
         except Exception as e:
             self.logger.error(f"Критическая ошибка в transcribe_with_fallback: {e}", exc_info=True)
-            # Возвращаем ошибку в понятном виде
             return f"Ошибка транскрипции: {str(e)}", 'unknown'
 
     def _transcribe_sync(self, audio_path: str, language_hint: str = None) -> dict:
@@ -61,20 +68,21 @@ class TranscriptionService:
                     response_format="verbose_json"
                 )
 
-                detected_language_raw = response.language
+                detected_language_name = response.language.lower()
                 transcribed_text = response.text.strip() if response.text else ''
-                detected_language = detected_language_raw.lower()
-                if detected_language == 'khmer':
-                    detected_language = 'km'
 
-                self.logger.info(f"OpenAI определил язык: {detected_language_raw} (нормализован в {detected_language}).")
+                # ===> ГЛАВНОЕ ИСПРАВЛЕНИЕ: НОРМАЛИЗАЦИЯ ЛЮБОГО ЯЗЫКА <===
+                # Преобразуем "russian" -> "ru", "english" -> "en" и т.д.
+                # Если название не найдено, оставляем как есть (на случай новых языков от OpenAI)
+                final_lang_code = SUPPORTED_LANGUAGES_MAP.get(detected_language_name, detected_language_name)
+
+                self.logger.info(f"OpenAI определил язык: {detected_language_name} (нормализован в {final_lang_code}).")
+
                 return {
                     'success': True,
                     'text': transcribed_text,
-                    'detected_language': detected_language
+                    'detected_language': final_lang_code
                 }
-        # ===> ИЗМЕНЕНИЕ ЗДЕСЬ <===
         except Exception as e:
             self.logger.error(f"Ошибка транскрипции в _transcribe_sync: {e}", exc_info=True)
-            # Возвращаем саму ошибку, а не ее текст
             return {'success': False, 'text': '', 'error': e}
