@@ -4,6 +4,8 @@ import logging
 import tempfile
 import httpx
 import uuid
+# ===> ИСПРАВЛЕНИЕ: ДОБАВЛЯЕМ НУЖНЫЕ ИМПОРТЫ <===
+from typing import Dict, Any, List, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackContext
 
@@ -31,7 +33,6 @@ class TelegramHandler:
         """Главный роутер для всех входящих апдейтов от Telegram."""
         update = Update.de_json(update_data, bot=None)
 
-        # ===> НОВАЯ ЛОГИКА: ОБРАБАТЫВАЕМ НАЖАТИЯ НА КНОПКИ <===
         if update.callback_query:
             await self._handle_callback_query(update.callback_query)
             return
@@ -46,7 +47,6 @@ class TelegramHandler:
             user = self.database.create_user(user_id)
             await self.send_message(user_id, "🎉 Welcome! Send me an audio, video, or voice message to start.")
 
-        # Обработка текстовых сообщений (включая ввод языка)
         if update.message.text:
             if user.get('state') == 'awaiting_language_input_transcription':
                 await self._handle_language_text_input(user_id, user, update.message.text, 'transcription')
@@ -56,14 +56,13 @@ class TelegramHandler:
                 await self.send_message(user_id, "ℹ️ To get started, please send me an audio, video, or voice message.")
             return
 
-        # Обработка файлов
         file_to_process = update.message.document or update.message.audio or update.message.video or update.message.voice
         if file_to_process:
             await self._handle_file(file_to_process, user_id, update.message.chat_id)
 
     async def _handle_callback_query(self, query: Update.callback_query):
         """Обрабатывает нажатия на inline-кнопки."""
-        await query.answer()  # Обязательно, чтобы убрать "часики" на кнопке
+        await query.answer()
         payload = query.data
         user_id = str(query.from_user.id)
         chat_id = query.message.chat_id
@@ -90,23 +89,19 @@ class TelegramHandler:
             await self.send_message(chat_id, "Please type the target language for translation.")
 
     def _build_smart_buttons(self, user: Dict[str, Any], context: str) -> List[List[InlineKeyboardButton]]:
-        # ... (логика этой функции остается почти такой же, но возвращает другой формат)
-        # ... я ее немного адаптирую ниже ...
         if context == 'transcription':
             default_popular_langs = DEFAULT_POPULAR_TRANSCRIPTION_LANGS
             usage_stats = user.get('transcription_lang_usage', {})
             payload_prefix = "RETRY_AS_"
             other_payload = "INPUT_OTHER_TRANSCRIPTION_LANG"
-        else:  # context == 'translation'
+        else:
             default_popular_langs = DEFAULT_POPULAR_TRANSLATION_LANGS
             usage_stats = user.get('translation_lang_usage', {})
             payload_prefix = "TRANSLATE_"
             other_payload = "INPUT_OTHER_TRANSLATION_LANG"
 
         sorted_user_langs = sorted(usage_stats.keys(), key=usage_stats.get, reverse=True)
-
-        button_row = []
-        added_codes = set()
+        button_row, added_codes = [], set()
 
         for lang_code in sorted_user_langs[:3]:
             lang_info = next((lang for lang in default_popular_langs if lang['code'] == lang_code), None)
@@ -115,13 +110,13 @@ class TelegramHandler:
             added_codes.add(lang_code)
 
         for lang in default_popular_langs:
-            if len(button_row) >= 5: break  # Ограничим количество кнопок в ряду
+            if len(button_row) >= 5: break
             if lang['code'] not in added_codes:
                 button_row.append(InlineKeyboardButton(lang['title'], callback_data=f"{payload_prefix}{lang['code']}"))
                 added_codes.add(lang['code'])
 
         other_button_row = [InlineKeyboardButton("✍️ Type other...", callback_data=other_payload)]
-        return [button_row, other_button_row]  # Возвращаем список рядов кнопок
+        return [button_row, other_button_row]
 
     async def send_language_correction_options(self, chat_id: int, user: Dict[str, Any]):
         keyboard = self._build_smart_buttons(user, 'transcription')
@@ -140,11 +135,11 @@ class TelegramHandler:
             self.database.update_user(user_id, {'state': None})
             self.database.increment_language_usage(user_id, lang_code, context)
             if context == 'transcription':
-                await self._handle_retry_request(user_id, user_id, lang_code)  # chat_id == user_id для личных сообщений
+                await self._handle_retry_request(user_id, int(user_id), lang_code)
             else:
-                await self._handle_translation_request(user_id, user_id, lang_code)
+                await self._handle_translation_request(user_id, int(user_id), lang_code)
         else:
-            await self.send_message(user_id, f"Sorry, I don't recognize '{text}'. Please try again.")
+            await self.send_message(int(user_id), f"Sorry, I don't recognize '{text}'. Please try again.")
 
     async def _handle_retry_request(self, user_id: str, chat_id: int, lang_code: str):
         last_doc = self.database.get_last_transcription(user_id)
@@ -206,7 +201,7 @@ class TelegramHandler:
         finally:
             if local_file_path and os.path.exists(local_file_path): os.remove(local_file_path)
 
-    async def send_message(self, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup = None):
+    async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None):
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
         if reply_markup:
