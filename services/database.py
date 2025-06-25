@@ -28,7 +28,8 @@ class Database:
 
     def connect(self):
         try:
-            self.client = MongoClient(self.mongodb_uri)
+            # ===> ИСПРАВЛЕНИЕ: Добавлен tz_aware=True для корректной работы с датами <===
+            self.client = MongoClient(self.mongodb_uri, tz_aware=True, tzinfo=timezone.utc)
             self.db = self.client.messenger_transcribe_bot
             self.client.admin.command('ping')
             logger.info("Successfully connected to MongoDB")
@@ -40,12 +41,11 @@ class Database:
     def _create_indexes(self):
         self.db.users.create_index("user_id", unique=True)
         self.db.transcriptions.create_index([("user_id", 1), ("created_at", -1)])
-        # Счетчик для акции "первые 100 пользователей"
         self.db.app_counters.create_index("name", unique=True)
 
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         try:
-            return self.db.users.find_one({"user_id": user_id})
+            return self.db.users.find_one({"user_id": str(user_id)})
         except PyMongoError as e:
             logger.error(f"Error getting user {user_id}: {e}")
             return None
@@ -54,7 +54,6 @@ class Database:
         try:
             now = datetime.now(timezone.utc)
 
-            # Определяем лимит для нового пользователя, увеличивая счетчик атомарно
             user_count_doc = self.db.app_counters.find_one_and_update(
                 {'name': 'total_users'},
                 {'$inc': {'count': 1}},
@@ -111,6 +110,24 @@ class Database:
             logger.error(f"Error updating subscription for user {user_id}: {e}")
             return None
 
+    def downgrade_user_to_free(self, user_id: str):
+        """Переводит пользователя на бесплатный тариф (например, по истечении подписки)."""
+        try:
+            free_plan_details = PLANS['free']
+            # При даунгрейде даем стандартные 5 минут, а не акционные 15
+            free_minutes = 5
+
+            update_fields = {
+                "plan": "free",
+                "minutes_limit": free_minutes,
+                "minutes_used": 0.0,
+                "subscription_expires_at": None
+            }
+            self.db.users.update_one({"user_id": str(user_id)}, {"$set": update_fields})
+            logger.info(f"User {user_id} has been downgraded to the free plan.")
+        except PyMongoError as e:
+            logger.error(f"Error downgrading user {user_id} to free plan: {e}")
+
     def update_minutes_used(self, user_id: str, minutes_to_add: float):
         """Добавляет использованные минуты к счетчику пользователя."""
         try:
@@ -143,7 +160,6 @@ class Database:
 
     def save_transcription(self, user_id: str, object_key: str, **kwargs):
         try:
-            # Удаляем технические поля, которые не нужно сохранять
             kwargs.pop('success', None)
             kwargs.pop('processed_audio_path', None)
             kwargs.pop('original_file_path', None)

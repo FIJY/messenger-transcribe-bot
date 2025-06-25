@@ -17,7 +17,6 @@ from services.translation_service import TranslationService
 from services.database import Database
 from services.audio_processor import AudioProcessor
 from services.s3_service import S3Service
-from services.message_handler import MessageHandler
 from services.telegram_handler import TelegramHandler
 from services.payment_service import PaymentService
 from telegram import Bot
@@ -37,11 +36,9 @@ celery_app.conf.beat_schedule = {
     },
 }
 
-
 class LimitExceededError(Exception):
     """Кастомное исключение для превышения лимитов."""
     pass
-
 
 @celery_app.task(name='celery_worker.ping_redis_task')
 def ping_redis_task():
@@ -54,8 +51,6 @@ def ping_redis_task():
     except Exception as e:
         logger.error(f"Error while pinging Redis: {e}")
 
-
-# Инициализируем все сервисы
 try:
     database = Database()
     s3_service = S3Service()
@@ -103,6 +98,16 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         if not user:
             raise Exception(f"User {sender_id} not found in database.")
 
+        # ===> ИЗМЕНЕНИЕ: Логика проверки подписки и лимитов <===
+        # 1. Проверяем, не истекла ли платная подписка
+        if user.get('plan') in ['basic', 'premium']:
+            expires_at = user.get('subscription_expires_at')
+            if expires_at and expires_at < datetime.now(timezone.utc):
+                logger.info(f"Subscription for user {sender_id} has expired. Downgrading to free plan.")
+                database.downgrade_user_to_free(sender_id)
+                user = database.get_user(sender_id) # Перезагружаем данные пользователя
+
+        # 2. Проверяем лимиты для текущего плана
         local_file_path = _download_file_from_r2(object_key)
         if not local_file_path:
             raise Exception("Could not retrieve file from storage.")
@@ -110,16 +115,12 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         file_duration_sec = audio_processor.get_media_duration(local_file_path)
         file_duration_min = (file_duration_sec / 60) if file_duration_sec else 0
 
-        # Проверяем, активна ли подписка
-        is_active_premium = (user.get('plan') in ['basic', 'premium'] and
-                             user.get('subscription_expires_at') and
-                             user.get('subscription_expires_at') > datetime.now(timezone.utc))
+        minutes_limit = user.get('minutes_limit', 0)
+        minutes_used = user.get('minutes_used', 0)
+        minutes_left = minutes_limit - minutes_used
 
-        if not is_active_premium:
-            minutes_left = user.get('minutes_limit', 0) - user.get('minutes_used', 0)
-            if file_duration_min > minutes_left:
-                raise LimitExceededError(
-                    f"User {sender_id} limit exceeded. Required: {file_duration_min:.2f}, Left: {minutes_left:.2f}")
+        if file_duration_min > minutes_left:
+            raise LimitExceededError(f"User {sender_id} limit exceeded. Required: {file_duration_min:.2f}, Left: {minutes_left:.2f}")
 
         # Если проверка пройдена, запускаем обработку
         result = media_handler_service.process_media(local_file_path, user_preferences)
@@ -160,10 +161,8 @@ def handle_telegram_success(chat_id, user, result, user_preferences):
     response_text = f"📝 *Transcription ({lang_name}):*\n\n{result['transcription']}"
     asyncio.run(telegram_handler.send_message(chat_id, response_text))
 
-    # Для Премиум пользователей сразу предлагаем перевод
     if user.get('plan') == 'premium':
         asyncio.run(telegram_handler.send_translation_options(chat_id, user))
-    # Для остальных - стандартные кнопки
     elif not is_retry:
         keyboard = [[
             InlineKeyboardButton("✅ Looks Good", callback_data="CONFIRM_TRANSCRIPTION_OK"),

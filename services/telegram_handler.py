@@ -105,9 +105,10 @@ class TelegramHandler:
         minutes_limit = user.get('minutes_limit', 0)
 
         if plan == 'Free':
+            minutes_left = minutes_limit - minutes_used
             message = (f"📊 *Your Status*\n\n"
                        f"Plan: {plan}\n"
-                       f"Minutes used: {minutes_used:.1f} / {minutes_limit} minutes")
+                       f"Minutes left: {minutes_left:.1f} / {minutes_limit} minutes")
         else:
             expires_at = user.get('subscription_expires_at')
             expires_str = expires_at.strftime('%d %B %Y') if expires_at else 'N/A'
