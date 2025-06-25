@@ -37,6 +37,8 @@ class TelegramHandler:
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
         self.payment_qr_file_id = os.getenv('PAYMENT_QR_CODE_FILE_ID')
         self.support_contact = os.getenv('SUPPORT_CONTACT')
+        self.base_url = os.getenv('RENDER_EXTERNAL_URL', 'https://your-app-name.onrender.com')
+
 
     async def handle_update(self, update_data: dict):
         update = Update.de_json(update_data, bot=self.bot)
@@ -100,17 +102,19 @@ class TelegramHandler:
         if not user:
             user = self.database.create_user(user_id, username=username)
 
+        # ===> ИЗМЕНЕНИЕ: Добавлены ссылки на документы <===
         welcome_message = (
             "🎉 *Welcome to the Transcription Bot!*\n\n"
             "To get started, just send me an audio or video file.\n\n"
-            "Type /help to see all available commands and features."
+            "Type /help to see all available commands and features.\n\n"
+            f"By using this bot, you agree to our [Terms of Service]({self.base_url}/terms) and [Privacy Policy]({self.base_url}/privacy)."
         )
         await self.send_message(chat_id, welcome_message)
         return user
 
     async def _handle_help_command(self, chat_id: int):
         """Отправляет пользователю справочное сообщение."""
-        # ===> ИЗМЕНЕНИЕ: Добавлена информация о сроке действия <===
+        # ===> ИЗМЕНЕНИЕ: Добавлены ссылки на документы <===
         help_text = (
             "🤖 *Bot Help & Information*\n\n"
             "**How to Use Me:**\n"
@@ -122,7 +126,7 @@ class TelegramHandler:
             "**Our Monthly Plans:**\n"
             "🔹 **Basic ($2/month):** A package of 100 minutes for high-quality transcription.\n"
             "💎 **Premium ($5/month):** An extended package of 200 minutes with access to all features, including text translation.\n\n"
-            "_All paid plans are valid for 30 days from the date of activation._\n\n"
+            f"For more details, please see our [Terms of Service]({self.base_url}/terms) and [Privacy Policy]({self.base_url}/privacy).\n\n"
         )
         if self.support_contact:
             help_text += f"If you have any questions, please contact our support: {self.support_contact}"
@@ -251,7 +255,6 @@ class TelegramHandler:
             await self.send_message(chat_id, "Please type the target language for translation.")
 
     async def _handle_payment_proof(self, message: Message):
-        """Обрабатывает полученный скриншот об оплате."""
         user = message.from_user
         user_id = str(user.id)
         chat_id = message.chat_id
@@ -317,7 +320,6 @@ class TelegramHandler:
         await self.send_message(chat_id, "What language would you like to translate to?", reply_markup)
 
     async def send_limit_exceeded_message(self, chat_id: int, user_id: str):
-        # ===> ИЗМЕНЕНИЕ: Добавлена информация о сроке действия <===
         payment_link = "https://pay.ababank.com/qLuyZbAyLDpyq9VSA"
         message = (
             f"⏳ *You have used all your available minutes.*\n\n"
