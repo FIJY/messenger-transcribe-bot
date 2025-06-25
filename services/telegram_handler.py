@@ -6,7 +6,7 @@ import httpx
 import uuid
 import asyncio
 from typing import Dict, Any, List, Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot, Message
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot, Message, BotCommand
 from datetime import datetime, timezone
 
 from .database import Database
@@ -35,10 +35,21 @@ class TelegramHandler:
         self.celery_app_client = get_celery_app_client()
         self.payment_service = payment_service
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
-        self.payment_qr_file_id = os.getenv('PAYMENT_QR_CODE_FILE_ID')
         self.support_contact = os.getenv('SUPPORT_CONTACT')
         self.base_url = os.getenv('RENDER_EXTERNAL_URL', 'https://your-app-name.onrender.com')
 
+    async def set_bot_commands(self):
+        """Устанавливает список команд, видимых в меню Telegram."""
+        commands = [
+            BotCommand("start", "Start or restart the bot"),
+            BotCommand("status", "Check your plan and minute balance"),
+            BotCommand("help", "Get help and information")
+        ]
+        try:
+            await self.bot.set_my_commands(commands)
+            logger.info("Bot commands have been set successfully.")
+        except Exception as e:
+            logger.error(f"Failed to set bot commands: {e}")
 
     async def handle_update(self, update_data: dict):
         update = Update.de_json(update_data, bot=self.bot)
@@ -80,7 +91,8 @@ class TelegramHandler:
 
         if update.message.photo:
             if user.get('state') == 'awaiting_payment_proof':
-                await self._handle_payment_proof(update.message)
+                # ===> ИЗМЕНЕНИЕ: Логика делегируется в PaymentService <===
+                await self.payment_service.handle_payment_proof(update.message)
                 return
 
         if update.message.text:
@@ -102,7 +114,6 @@ class TelegramHandler:
         if not user:
             user = self.database.create_user(user_id, username=username)
 
-        # ===> ИЗМЕНЕНИЕ: Добавлены ссылки на документы <===
         welcome_message = (
             "🎉 *Welcome to the Transcription Bot!*\n\n"
             "To get started, just send me an audio or video file.\n\n"
@@ -113,8 +124,6 @@ class TelegramHandler:
         return user
 
     async def _handle_help_command(self, chat_id: int):
-        """Отправляет пользователю справочное сообщение."""
-        # ===> ИЗМЕНЕНИЕ: Добавлены ссылки на документы <===
         help_text = (
             "🤖 *Bot Help & Information*\n\n"
             "**How to Use Me:**\n"
@@ -242,8 +251,9 @@ class TelegramHandler:
             else:
                 await query.edit_message_text(text="✅ Done! Send another file to continue.")
         elif payload == 'SHOW_PAYMENT_QR':
-            if self.payment_qr_file_id:
-                await self.bot.send_photo(chat_id, photo=self.payment_qr_file_id,
+            # Доступ к payment_qr_file_id теперь через payment_service
+            if self.payment_service.payment_qr_file_id:
+                await self.bot.send_photo(chat_id, photo=self.payment_service.payment_qr_file_id,
                                           caption="Scan this QR code in your ABA app.")
             else:
                 await self.send_message(chat_id, "Sorry, the QR code is temporarily unavailable.")
@@ -253,35 +263,6 @@ class TelegramHandler:
         elif payload == 'INPUT_OTHER_TRANSLATION_LANG':
             self.database.update_user(user_id, {'state': 'awaiting_language_input_translation'})
             await self.send_message(chat_id, "Please type the target language for translation.")
-
-    async def _handle_payment_proof(self, message: Message):
-        user = message.from_user
-        user_id = str(user.id)
-        chat_id = message.chat_id
-        admin_id = self.admin_telegram_id
-
-        if not admin_id:
-            logger.warning("Admin ID not set, cannot forward payment proof.")
-            await self.send_message(chat_id, "Thank you! Your proof is in the queue and will be reviewed shortly.")
-            return
-
-        try:
-            await self.send_message(chat_id,
-                                    "🙏 Thank you! Your payment proof has been received and sent for verification. Your plan will be activated shortly.")
-
-            user_mention = f"@{user.username}" if user.username else f"ID: `{user_id}`"
-            admin_caption = (
-                f"🔔 *Payment Proof Received*\n\n"
-                f"From User: {user_mention}\n"
-                f"Please verify and activate their plan using `/confirm {user_id} <plan_name>`."
-            )
-
-            await message.forward(chat_id=admin_id)
-            await self.bot.send_message(chat_id=admin_id, text=admin_caption, parse_mode='Markdown')
-            self.database.update_user(user_id, {'state': None})
-
-        except Exception as e:
-            logger.error(f"Failed to process payment proof for user {user_id}: {e}", exc_info=True)
 
     def _build_smart_buttons(self, user: Dict[str, Any], context: str) -> List[List[InlineKeyboardButton]]:
         if context == 'transcription':
@@ -318,31 +299,6 @@ class TelegramHandler:
     async def send_translation_options(self, chat_id: int, user: Dict[str, Any]):
         reply_markup = InlineKeyboardMarkup(self._build_smart_buttons(user, 'translation'))
         await self.send_message(chat_id, "What language would you like to translate to?", reply_markup)
-
-    async def send_limit_exceeded_message(self, chat_id: int, user_id: str):
-        payment_link = "https://pay.ababank.com/qLuyZbAyLDpyq9VSA"
-        message = (
-            f"⏳ *You have used all your available minutes.*\n\n"
-            f"To continue, please choose a monthly package:\n\n"
-            f"🔹 **Basic: $2/month**\n"
-            f"• 100 minutes of transcription\n"
-            f"• Files up to 20 minutes\n\n"
-            f"💎 **Premium: $5/month**\n"
-            f"• 200 minutes for all features\n"
-            f"• Files up to 60 minutes\n\n"
-            f"💳 **Payment Options:**\n\n"
-            f"**1. ABA Bank Transfer**\n"
-            f"   Account Name: `SHMYKOVA OLGA`\n"
-            f"   Account Number: `000 686 883`\n\n"
-            f"**2. ABA Pay Link**\n"
-            f"   [Tap here to pay with ABA Pay]({payment_link})\n\n"
-            f"❗️**Important:** After payment, please **send a screenshot of the receipt** to this chat for verification."
-        )
-        keyboard = [[InlineKeyboardButton("📱 Show QR Code for Payment", callback_data="SHOW_PAYMENT_QR")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await self.send_message(chat_id, message, reply_markup)
-        self.database.update_user(user_id, {'state': 'awaiting_payment_proof'})
 
     async def _handle_language_text_input(self, user_id: str, user: Dict[str, Any], text: str, context: str):
         lang_code = SUPPORTED_LANGUAGES_MAP.get(text.lower().strip())

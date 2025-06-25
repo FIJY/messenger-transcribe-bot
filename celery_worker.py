@@ -61,7 +61,8 @@ try:
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     if telegram_token:
         bot_instance = Bot(token=telegram_token)
-        payment_service = PaymentService(bot=bot_instance)
+        # ===> ИЗМЕНЕНИЕ: Передаем database в PaymentService <===
+        payment_service = PaymentService(bot=bot_instance, database=database)
         telegram_handler = TelegramHandler(
             token=telegram_token,
             database=database,
@@ -81,11 +82,11 @@ except Exception as e:
     logger.error(f"Celery worker: CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
     media_handler_service = None
     telegram_handler = None
-
+    payment_service = None
 
 @celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
 def process_media_task(self, sender_id: str, object_key: str, user_preferences: dict, platform_payload: dict):
-    if not all([media_handler_service, telegram_handler, database, audio_processor]):
+    if not all([media_handler_service, database, audio_processor, payment_service]):
         logger.error("Worker handlers not initialized.");
         return
 
@@ -98,16 +99,15 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         if not user:
             raise Exception(f"User {sender_id} not found in database.")
 
-        # ===> ИЗМЕНЕНИЕ: Логика проверки подписки и лимитов <===
-        # 1. Проверяем, не истекла ли платная подписка
         if user.get('plan') in ['basic', 'premium']:
             expires_at = user.get('subscription_expires_at')
+            if expires_at and expires_at.tzinfo is None:
+                 expires_at = expires_at.replace(tzinfo=timezone.utc)
             if expires_at and expires_at < datetime.now(timezone.utc):
                 logger.info(f"Subscription for user {sender_id} has expired. Downgrading to free plan.")
                 database.downgrade_user_to_free(sender_id)
-                user = database.get_user(sender_id) # Перезагружаем данные пользователя
+                user = database.get_user(sender_id)
 
-        # 2. Проверяем лимиты для текущего плана
         local_file_path = _download_file_from_r2(object_key)
         if not local_file_path:
             raise Exception("Could not retrieve file from storage.")
@@ -122,23 +122,27 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         if file_duration_min > minutes_left:
             raise LimitExceededError(f"User {sender_id} limit exceeded. Required: {file_duration_min:.2f}, Left: {minutes_left:.2f}")
 
-        # Если проверка пройдена, запускаем обработку
         result = media_handler_service.process_media(local_file_path, user_preferences)
 
         if result.get('success'):
             if platform == 'telegram' and telegram_handler and chat_id:
                 handle_telegram_success(chat_id, user, result, user_preferences)
-
-            # Списываем минуты с баланса
             duration_to_charge = result.get('duration_minutes', file_duration_min)
             database.update_minutes_used(sender_id, duration_to_charge)
+            database.save_transcription(
+                user_id=sender_id, object_key=object_key,
+                transcription=result.get('transcription'),
+                detected_language=result.get('detected_language'),
+                duration_minutes=duration_to_charge
+            )
         else:
             raise result.get('error', Exception('Unknown error during media processing'))
 
     except LimitExceededError as e:
         logger.warning(str(e))
-        if platform == 'telegram' and telegram_handler and chat_id:
-            asyncio.run(telegram_handler.send_limit_exceeded_message(chat_id, sender_id))
+        # ===> ИЗМЕНЕНИЕ: Вызываем метод из PaymentService <===
+        if platform == 'telegram' and payment_service and chat_id:
+            asyncio.run(payment_service.send_payment_instructions(chat_id, sender_id))
 
     except Exception as exc:
         logger.error(f"[{self.request.id}] Error in Celery task: {exc}", exc_info=True)
