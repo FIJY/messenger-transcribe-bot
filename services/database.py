@@ -1,13 +1,21 @@
 # services/database.py
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
 logger = logging.getLogger(__name__)
+
+# Тарифные планы
+PLANS = {
+    'free': {'limit_minutes': 15, 'duration_days': 9999, 'price_usd': 0},
+    'basic': {'limit_minutes': 100, 'duration_days': 30, 'price_usd': 2},
+    'premium': {'limit_minutes': 200, 'duration_days': 30, 'price_usd': 5}
+}
+
 
 class Database:
     def __init__(self):
@@ -32,6 +40,8 @@ class Database:
     def _create_indexes(self):
         self.db.users.create_index("user_id", unique=True)
         self.db.transcriptions.create_index([("user_id", 1), ("created_at", -1)])
+        # Счетчик для акции "первые 100 пользователей"
+        self.db.app_counters.create_index("name", unique=True)
 
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         try:
@@ -43,70 +53,107 @@ class Database:
     def create_user(self, user_id: str, **kwargs) -> Dict[str, Any]:
         try:
             now = datetime.now(timezone.utc)
+
+            # Определяем лимит для нового пользователя, увеличивая счетчик атомарно
+            user_count_doc = self.db.app_counters.find_one_and_update(
+                {'name': 'total_users'},
+                {'$inc': {'count': 1}},
+                upsert=True,
+                return_document=True
+            )
+            user_count = user_count_doc.get('count', 0)
+
+            free_minutes = 15 if user_count <= 100 else 5
+
             user_data = {
-                "user_id": user_id,
+                "user_id": str(user_id),
+                "username": kwargs.get('username'),
                 "created_at": now,
                 "last_seen": now,
-                "is_premium": False,
+                "plan": "free",
+                "minutes_limit": free_minutes,
+                "minutes_used": 0.0,
+                "subscription_expires_at": None,
                 "state": None,
-                # ===> ВОЗВРАЩАЕМ ПОЛЯ ДЛЯ ОБЩЕГО СЧЕТЧИКА <===
-                "daily_usage": 0,
-                "total_transcriptions": 0,
-                # Поля для статистики языков
                 "transcription_lang_usage": {},
                 "translation_lang_usage": {}
             }
             self.db.users.insert_one(user_data)
-            logger.info(f"Created new user {user_id}")
+            logger.info(f"Created new user {user_id} with {free_minutes} free minutes (user #{user_count}).")
             return user_data
         except PyMongoError as e:
             logger.error(f"Error creating user {user_id}: {e}")
             raise
 
+    def update_user_subscription(self, user_id: str, plan_name: str) -> Optional[Dict[str, Any]]:
+        """Активирует или обновляет подписку пользователя."""
+        if plan_name not in PLANS:
+            logger.error(f"Attempted to activate invalid plan '{plan_name}' for user {user_id}")
+            return None
+
+        plan_details = PLANS[plan_name]
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(days=plan_details['duration_days'])
+
+        update_fields = {
+            "plan": plan_name,
+            "minutes_limit": plan_details['limit_minutes'],
+            "minutes_used": 0.0,
+            "subscription_expires_at": expires_at,
+            "last_seen": now
+        }
+
+        try:
+            self.db.users.update_one({"user_id": str(user_id)}, {"$set": update_fields})
+            logger.info(f"User {user_id} subscription activated for plan '{plan_name}', expires at {expires_at}.")
+            return update_fields
+        except PyMongoError as e:
+            logger.error(f"Error updating subscription for user {user_id}: {e}")
+            return None
+
+    def update_minutes_used(self, user_id: str, minutes_to_add: float):
+        """Добавляет использованные минуты к счетчику пользователя."""
+        try:
+            self.db.users.update_one(
+                {"user_id": str(user_id)},
+                {"$inc": {"minutes_used": minutes_to_add}}
+            )
+        except PyMongoError as e:
+            logger.error(f"Error updating minutes used for user {user_id}: {e}")
+
     def update_user(self, user_id: str, update_data: Dict[str, Any]) -> bool:
         try:
-            result = self.db.users.update_one({"user_id": user_id}, {"$set": update_data})
+            result = self.db.users.update_one({"user_id": str(user_id)}, {"$set": update_data})
             return result.modified_count > 0
         except PyMongoError as e:
             logger.error(f"Error updating user {user_id}: {e}")
             return False
 
-    # ===> ВОЗВРАЩАЕМ СТАРЫЙ МЕТОД ДЛЯ ОБЩЕГО ПОДСЧЕТА <===
-    def increment_usage(self, user_id: str):
-        """Increments general usage counters for a user."""
-        try:
-            self.db.users.update_one(
-                {"user_id": user_id},
-                {"$inc": {"daily_usage": 1, "total_transcriptions": 1},
-                 "$set": {"last_seen": datetime.now(timezone.utc)}}
-            )
-        except PyMongoError as e:
-            logger.error(f"Error incrementing general usage for user {user_id}: {e}")
-
     def increment_language_usage(self, user_id: str, lang_code: str, context: str):
-        """Increments the usage count for a specific language in a given context."""
         if context not in ['transcription', 'translation']:
             logger.error(f"Invalid context '{context}' for language usage increment.")
             return
 
         field_to_update = f"{context}_lang_usage.{lang_code}"
         try:
-            self.db.users.update_one(
-                {"user_id": user_id},
-                {"$inc": {field_to_update: 1}}
-            )
+            self.db.users.update_one({"user_id": str(user_id)}, {"$inc": {field_to_update: 1}})
             logger.info(f"Incremented {context} usage for lang '{lang_code}' for user {user_id}")
         except PyMongoError as e:
             logger.error(f"Error incrementing language usage for user {user_id}: {e}")
 
-
     def save_transcription(self, user_id: str, object_key: str, **kwargs):
         try:
+            # Удаляем технические поля, которые не нужно сохранять
             kwargs.pop('success', None)
             kwargs.pop('processed_audio_path', None)
             kwargs.pop('original_file_path', None)
 
-            transcription_data = { "user_id": user_id, "s3_object_key": object_key, "created_at": datetime.now(timezone.utc), **kwargs }
+            transcription_data = {
+                "user_id": str(user_id),
+                "s3_object_key": object_key,
+                "created_at": datetime.now(timezone.utc),
+                **kwargs
+            }
             self.db.transcriptions.insert_one(transcription_data)
             logger.info(f"Saved transcription for user {user_id} with S3 key {object_key}")
         except PyMongoError as e:
@@ -114,7 +161,10 @@ class Database:
 
     def get_last_transcription(self, user_id: str) -> Optional[Dict[str, Any]]:
         try:
-            return self.db.transcriptions.find_one( {"user_id": user_id}, sort=[("created_at", -1)])
+            return self.db.transcriptions.find_one(
+                {"user_id": str(user_id)},
+                sort=[("created_at", -1)]
+            )
         except PyMongoError as e:
             logger.error(f"Error getting last transcription for user {user_id}: {e}")
             return None

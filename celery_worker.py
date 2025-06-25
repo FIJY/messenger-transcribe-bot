@@ -1,16 +1,15 @@
 # celery_worker.py
 import os
 import logging
-import requests
 import tempfile
 import asyncio
 import redis
 from celery import Celery
 from celery.schedules import crontab
 from dotenv import load_dotenv
-from typing import Optional, Dict, Any
-import openai
+from typing import Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from datetime import datetime, timezone
 
 from services.media_handler import MediaHandler
 from services.transcription_service import TranscriptionService
@@ -20,6 +19,8 @@ from services.audio_processor import AudioProcessor
 from services.s3_service import S3Service
 from services.message_handler import MessageHandler
 from services.telegram_handler import TelegramHandler
+from services.payment_service import PaymentService
+from telegram import Bot
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -35,6 +36,11 @@ celery_app.conf.beat_schedule = {
         'schedule': crontab(minute='*/10'),
     },
 }
+
+
+class LimitExceededError(Exception):
+    """Кастомное исключение для превышения лимитов."""
+    pass
 
 
 @celery_app.task(name='celery_worker.ping_redis_task')
@@ -57,97 +63,91 @@ try:
     transcription_service = TranscriptionService()
     translation_service = TranslationService()
 
-    messenger_handler = MessageHandler(database=database, translation_service=translation_service)
-
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     if telegram_token:
-        # ===> ИСПРАВЛЕНИЕ: Передаем недостающий translation_service <===
+        bot_instance = Bot(token=telegram_token)
+        payment_service = PaymentService(bot=bot_instance)
         telegram_handler = TelegramHandler(
             token=telegram_token,
             database=database,
             s3_service=s3_service,
-            translation_service=translation_service
+            translation_service=translation_service,
+            payment_service=payment_service
         )
     else:
         telegram_handler = None
+        payment_service = None
+        bot_instance = None
+        logger.warning("Telegram Bot is disabled due to missing token.")
 
     media_handler_service = MediaHandler(transcription_service, translation_service)
     logger.info("Celery worker: All services initialized successfully.")
 except Exception as e:
     logger.error(f"Celery worker: CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
-    media_handler_service = None;
-    messenger_handler = None;
+    media_handler_service = None
     telegram_handler = None
 
 
-# ... (остальной код celery_worker.py без изменений) ...
 @celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
 def process_media_task(self, sender_id: str, object_key: str, user_preferences: dict, platform_payload: dict):
-    if not all([media_handler_service, messenger_handler, telegram_handler]):
+    if not all([media_handler_service, telegram_handler, database, audio_processor]):
         logger.error("Worker handlers not initialized.");
         return
 
     local_file_path = None
-    processed_audio_path = None
-
-    platform = platform_payload.get('platform', 'messenger')
-    chat_id = platform_payload.get('chat_id', sender_id)
+    platform = platform_payload.get('platform')
+    chat_id = platform_payload.get('chat_id')
 
     try:
+        user = database.get_user(sender_id)
+        if not user:
+            raise Exception(f"User {sender_id} not found in database.")
+
         local_file_path = _download_file_from_r2(object_key)
         if not local_file_path:
             raise Exception("Could not retrieve file from storage.")
 
+        file_duration_sec = audio_processor.get_media_duration(local_file_path)
+        file_duration_min = (file_duration_sec / 60) if file_duration_sec else 0
+
+        # Проверяем, активна ли подписка
+        is_active_premium = (user.get('plan') in ['basic', 'premium'] and
+                             user.get('subscription_expires_at') and
+                             user.get('subscription_expires_at') > datetime.now(timezone.utc))
+
+        if not is_active_premium:
+            minutes_left = user.get('minutes_limit', 0) - user.get('minutes_used', 0)
+            if file_duration_min > minutes_left:
+                raise LimitExceededError(
+                    f"User {sender_id} limit exceeded. Required: {file_duration_min:.2f}, Left: {minutes_left:.2f}")
+
+        # Если проверка пройдена, запускаем обработку
         result = media_handler_service.process_media(local_file_path, user_preferences)
-        processed_audio_path = result.get('processed_audio_path')
 
         if result.get('success'):
-            user = database.get_user(sender_id)
-            if platform == 'telegram':
+            if platform == 'telegram' and telegram_handler and chat_id:
                 handle_telegram_success(chat_id, user, result, user_preferences)
-            else:
-                handle_messenger_success(sender_id, user, result, user_preferences)
 
-            database.save_transcription(user_id=sender_id, object_key=object_key, **result)
-            if not user_preferences.get('preferred_language'):
-                database.increment_usage(user_id=sender_id)
+            # Списываем минуты с баланса
+            duration_to_charge = result.get('duration_minutes', file_duration_min)
+            database.update_minutes_used(sender_id, duration_to_charge)
         else:
             raise result.get('error', Exception('Unknown error during media processing'))
 
+    except LimitExceededError as e:
+        logger.warning(str(e))
+        if platform == 'telegram' and telegram_handler and chat_id:
+            asyncio.run(telegram_handler.send_limit_exceeded_message(chat_id, sender_id))
+
     except Exception as exc:
         logger.error(f"[{self.request.id}] Error in Celery task: {exc}", exc_info=True)
-        error_message = f"❌ Failed to process your file. Error: {str(exc)}"
-
-        if platform == 'telegram':
-            if telegram_handler:
-                asyncio.run(telegram_handler.send_message(chat_id, error_message))
-        else:
-            messenger_handler._send_text_message(sender_id, error_message)
+        error_message = "❌ Failed to process your file. Please try again later."
+        if platform == 'telegram' and telegram_handler and chat_id:
+            asyncio.run(telegram_handler.send_message(chat_id, error_message))
 
     finally:
         if local_file_path: audio_processor.cleanup_temp_file(local_file_path)
-        if processed_audio_path: audio_processor.cleanup_temp_file(processed_audio_path)
         logger.info(f"[{self.request.id}] Task finished for object {object_key}.")
-
-
-def handle_messenger_success(sender_id, user, result, user_preferences):
-    is_retry = bool(user_preferences.get('preferred_language'))
-    lang_info = result.get('language_info', {})
-    lang_name = lang_info.get('name', 'N/A')
-    response_text = f"📝 **Transcription ({lang_name}):**\n\n{result['transcription']}"
-    messenger_handler._send_text_message(sender_id, response_text)
-
-    if is_retry:
-        messenger_handler.send_translation_options(sender_id, user)
-    else:
-        quick_replies = [
-            {"content_type": "text", "title": "✅ Looks Good", "payload": "CONFIRM_TRANSCRIPTION_OK"},
-            {"content_type": "text", "title": "🗣️ Other language", "payload": "CHOOSE_OTHER_LANGUAGE"}
-        ]
-        messenger_handler._send_api_request({
-            'recipient': {'id': sender_id},
-            'message': {'text': "Is the language and transcription correct?", 'quick_replies': quick_replies}
-        })
 
 
 def handle_telegram_success(chat_id, user, result, user_preferences):
@@ -160,9 +160,11 @@ def handle_telegram_success(chat_id, user, result, user_preferences):
     response_text = f"📝 *Transcription ({lang_name}):*\n\n{result['transcription']}"
     asyncio.run(telegram_handler.send_message(chat_id, response_text))
 
-    if is_retry:
+    # Для Премиум пользователей сразу предлагаем перевод
+    if user.get('plan') == 'premium':
         asyncio.run(telegram_handler.send_translation_options(chat_id, user))
-    else:
+    # Для остальных - стандартные кнопки
+    elif not is_retry:
         keyboard = [[
             InlineKeyboardButton("✅ Looks Good", callback_data="CONFIRM_TRANSCRIPTION_OK"),
             InlineKeyboardButton("🗣️ Other language", callback_data="CHOOSE_OTHER_LANGUAGE")
@@ -176,8 +178,8 @@ def _download_file_from_r2(object_key: str) -> Optional[str]:
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{object_key.split('.')[-1]}") as f:
             if s3_service.download_file(object_key, f.name): return f.name
-            os.remove(f.name);
+            os.remove(f.name)
             return None
     except Exception as e:
-        logger.error(f"Error downloading file from R2 in worker: {e}", exc_info=True);
+        logger.error(f"Error downloading file from R2 in worker: {e}", exc_info=True)
         return None

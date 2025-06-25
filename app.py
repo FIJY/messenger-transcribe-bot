@@ -4,6 +4,7 @@ import logging
 import asyncio
 from quart import Quart, request, jsonify, render_template
 from dotenv import load_dotenv
+from telegram import Bot
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
@@ -15,12 +16,12 @@ from services.telegram_handler import TelegramHandler
 from services.database import Database
 from services.translation_service import TranslationService
 from services.s3_service import S3Service
+from services.payment_service import PaymentService
 
 # Инициализируем Quart приложение
 app = Quart(__name__)
 
-# --- Инициализация сервисов ---
-# Мы используем глобальные переменные для хендлеров, чтобы они были доступны в роутах
+# Глобальные переменные для хендлеров
 message_handler = None
 telegram_handler = None
 
@@ -38,26 +39,29 @@ async def startup():
         s3_service = S3Service()
         translation_service = TranslationService()
 
-        # Инициализация обработчика для Messenger
-        message_handler = MessageHandler(database=database, translation_service=translation_service)
+        # Инициализация обработчика для Messenger (если используется)
+        # message_handler = MessageHandler(database=database, translation_service=translation_service)
 
         # Инициализация обработчика для Telegram
         telegram_token = os.getenv('TELEGRAM_TOKEN')
         if telegram_token:
+            bot_instance = Bot(token=telegram_token)
+            payment_service = PaymentService(bot=bot_instance)
+
             telegram_handler = TelegramHandler(
                 token=telegram_token,
                 database=database,
                 s3_service=s3_service,
-                translation_service=translation_service  # <== Важное исправление
+                translation_service=translation_service,
+                payment_service=payment_service
             )
-            logger.info("✅ Telegram Handler initialized successfully.")
+            logger.info("✅ Telegram Handler and services initialized successfully.")
         else:
             logger.warning("TELEGRAM_TOKEN not found. Telegram bot will be disabled.")
 
         logger.info("✅ Web services initialized successfully.")
     except Exception as e:
         logger.error(f"❌ CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
-        # Если что-то пошло не так, хендлеры останутся None, и бот не будет работать
 
 
 # --- Роуты ---
@@ -68,7 +72,7 @@ async def health_check():
     return jsonify({'status': 'Bot web service is running'})
 
 
-# --- Роуты для Messenger ---
+# --- Роуты для Messenger (сейчас не используются, но можно оставить) ---
 @app.route('/webhook', methods=['GET'])
 async def webhook_verify():
     """Верификация вебхука для Facebook Messenger"""
@@ -81,18 +85,8 @@ async def webhook_verify():
 @app.route('/webhook', methods=['POST'])
 async def webhook_handler():
     """Обработка входящих сообщений от Facebook Messenger"""
-    try:
-        data = await request.get_json()
-        if data and data.get('object') == 'page':
-            if message_handler:
-                # Этот хендлер пока синхронный, вызываем его напрямую
-                message_handler.handle_message(data)
-            else:
-                logger.error("MessageHandler was not initialized.")
-        return 'OK', 200
-    except Exception as e:
-        logger.error(f"Critical error in webhook_handler: {e}", exc_info=True)
-        return 'OK', 200
+    # ... логика для Messenger
+    return 'OK', 200
 
 
 # --- Роут для Telegram ---
@@ -123,6 +117,3 @@ async def privacy_policy():
 async def terms_of_service():
     """Рендерит страницу с условиями использования из шаблона"""
     return await render_template('terms_of_service.html')
-
-# Запуск приложения через Hypercorn будет осуществляться командой из render.yaml,
-# поэтому блок if __name__ == '__main__' больше не нужен.

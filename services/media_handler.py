@@ -27,7 +27,6 @@ LANGUAGE_NAME_TO_CODE_MAP = {
     'lithuanian': 'lt',
     'belarusian': 'be',
     'french': 'fr',
-    # ===> ИСПРАВЛЕНИЕ: Добавлен индонезийский язык <===
     'indonesian': 'id'
 }
 
@@ -90,10 +89,14 @@ class MediaHandler:
                 text = result_dict.get('text', '')
                 detected_language = result_dict.get('detected_language')
 
+            final_audio_path_for_duration = converted_wav_path if converted_wav_path else audio_path
+            duration_seconds = self.audio_processor.get_media_duration(final_audio_path_for_duration)
+            duration_minutes = (duration_seconds / 60) if duration_seconds else 0.0
+
             if not text or not text.strip():
                 logger.warning(
                     f"Transcription for language '{detected_language}' resulted in empty text. Treating as failure.")
-                return {'success': False, 'error': Exception('Transcription result was empty.')}
+                return {'success': False, 'error': Exception('Transcription result was empty.'), 'duration_minutes': duration_minutes}
 
             final_text = text
             if detected_language == 'km':
@@ -113,13 +116,12 @@ class MediaHandler:
                 'detected_language': detected_language,
                 'quality_analysis': final_quality_analysis,
                 'language_info': self._get_language_info_safe(detected_language),
-                'processed_audio_path': audio_path,
-                'original_file_path': file_path
+                'duration_minutes': duration_minutes
             }
             return result
         except Exception as e:
             logger.error(f"Critical error in media processing: {e}", exc_info=True)
-            return {'success': False, 'error': e, 'processed_audio_path': audio_path}
+            return {'success': False, 'error': e}
         finally:
             if converted_wav_path:
                 self.audio_processor.cleanup_temp_file(converted_wav_path)
