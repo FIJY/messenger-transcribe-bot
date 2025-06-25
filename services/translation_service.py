@@ -2,23 +2,10 @@
 import os
 import logging
 import openai
+import pycountry
 from typing import Dict
 
 logger = logging.getLogger(__name__)
-
-# Карта для более понятных названий языков в промптах для GPT
-LANGUAGE_FULL_NAMES = {
-    'en': 'English',
-    'ru': 'Russian',
-    'km': 'Khmer',
-    'de': 'German',
-    'es': 'Spanish',
-    'fr': 'French',
-    'it': 'Italian',
-    'uk': 'Ukrainian',
-    'zh': 'Chinese',
-    'ja': 'Japanese'
-}
 
 
 class TranslationService:
@@ -36,6 +23,14 @@ class TranslationService:
             logger.error(f"Failed to initialize OpenAI client for TranslationService: {e}", exc_info=True)
             self.client = None
 
+    def _get_language_name(self, lang_code: str) -> str:
+        """Получает полное английское название языка по его ISO 639-1 коду."""
+        try:
+            language = pycountry.languages.get(alpha_2=lang_code)
+            return language.name if language else lang_code.capitalize()
+        except Exception:
+            return lang_code.capitalize()
+
     def translate_text(self, text: str, target_language: str, source_language: str = 'auto') -> Dict:
         """
         Переводит текст с помощью модели GPT-4o от OpenAI.
@@ -45,18 +40,18 @@ class TranslationService:
         if not text or not text.strip():
             return {'success': False, 'error': 'Empty text provided for translation'}
 
-        target_language_name = LANGUAGE_FULL_NAMES.get(target_language, target_language.capitalize())
+        target_language_name = self._get_language_name(target_language)
 
         if source_language == 'auto':
             user_prompt = f"Translate the following text to {target_language_name}:\n\n---\n\n{text}"
         else:
-            source_language_name = LANGUAGE_FULL_NAMES.get(source_language, source_language.capitalize())
+            source_language_name = self._get_language_name(source_language)
             user_prompt = f"Translate the following text from {source_language_name} to {target_language_name}:\n\n---\n\n{text}"
 
         system_prompt = "You are an expert translator. Your task is to accurately translate the user's text. Provide only the translated text as a direct response, without any additional comments, explanations, or conversational phrases."
 
         try:
-            self.logger.info(f"Translating text to '{target_language}' using GPT-4o.")
+            self.logger.info(f"Translating text to '{target_language_name}' using GPT-4o.")
 
             response = self.client.chat.completions.create(
                 model="gpt-4o",
