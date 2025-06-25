@@ -1,8 +1,8 @@
 # config/transcrib_suggestion_config.py
 
 # Список популярных языков для кнопок с быстрым выбором
-# Добавлены флаги для красоты
 DEFAULT_POPULAR_TRANSCRIPTION_LANGS = [
+    {'code': 'km', 'title': 'Khmer', 'flag': '🇰🇭'},
     {'code': 'en', 'title': 'English', 'flag': '🇬🇧'},
     {'code': 'ru', 'title': 'Russian', 'flag': '🇷🇺'},
     {'code': 'de', 'title': 'German', 'flag': '🇩🇪'},
@@ -13,6 +13,7 @@ DEFAULT_POPULAR_TRANSCRIPTION_LANGS = [
 ]
 
 DEFAULT_POPULAR_TRANSLATION_LANGS = [
+    {'code': 'km', 'title': 'Khmer', 'flag': '🇰🇭'},
     {'code': 'en', 'title': 'English', 'flag': '🇬🇧'},
     {'code': 'ru', 'title': 'Russian', 'flag': '🇷🇺'},
     {'code': 'de', 'title': 'German', 'flag': '🇩🇪'},

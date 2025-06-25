@@ -15,3 +15,4 @@ python-telegram-bot
 google-cloud-speech
 quart
 hypercorn
+google-cloud-translate==3.13.0
