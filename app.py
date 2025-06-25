@@ -56,6 +56,10 @@ async def startup():
                 payment_service=payment_service
             )
             logger.info("✅ Telegram Handler and services initialized successfully.")
+
+            # ===> НОВОЕ: Установка команд меню при старте <===
+            await telegram_handler.set_bot_commands()
+
         else:
             logger.warning("TELEGRAM_TOKEN not found. Telegram bot will be disabled.")
 
