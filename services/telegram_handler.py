@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot, Message, BotCommand
 from datetime import datetime, timezone
 
-from .database import Database
+from .database import Database, PLANS
 from .s3_service import S3Service
 from .celery_client import get_celery_app_client
 from .translation_service import TranslationService
@@ -43,6 +43,7 @@ class TelegramHandler:
         commands = [
             BotCommand("start", "Start or restart the bot"),
             BotCommand("status", "Check your plan and minute balance"),
+            BotCommand("languages", "See list of supported languages"),
             BotCommand("help", "Get help and information")
         ]
         try:
@@ -76,6 +77,9 @@ class TelegramHandler:
             if command == '/help':
                 await self._handle_help_command(chat_id)
                 return
+            if command == '/languages':
+                await self._handle_languages_command(chat_id)
+                return
 
             if user_id == self.admin_telegram_id:
                 if command == '/confirm':
@@ -91,7 +95,6 @@ class TelegramHandler:
 
         if update.message.photo:
             if user.get('state') == 'awaiting_payment_proof':
-                # ===> ИЗМЕНЕНИЕ: Логика делегируется в PaymentService <===
                 await self.payment_service.handle_payment_proof(update.message)
                 return
 
@@ -123,18 +126,37 @@ class TelegramHandler:
         await self.send_message(chat_id, welcome_message)
         return user
 
+    async def _handle_languages_command(self, chat_id: int):
+        """Отправляет список поддерживаемых языков."""
+        transcription_langs = ", ".join(
+            [f"{lang['flag']} {lang['title']}" for lang in DEFAULT_POPULAR_TRANSCRIPTION_LANGS])
+
+        message = (
+            "🌐 *Supported Languages*\n\n"
+            "**Transcription:**\n"
+            "I can recognize speech in most world languages. For best results with quick selection, here are the main supported languages:\n"
+            f"_{transcription_langs}_\n"
+            "You can also specify another language by choosing '✍️ Type other...'\n\n"
+            "**Translation:**\n"
+            "I can translate text to and from most languages supported by modern AI models."
+        )
+        await self.send_message(chat_id, message)
+
     async def _handle_help_command(self, chat_id: int):
+        basic_plan = PLANS['basic']
+        premium_plan = PLANS['premium']
         help_text = (
             "🤖 *Bot Help & Information*\n\n"
             "**How to Use Me:**\n"
-            "Simply send me an audio or video file (as a file or a voice message), and I will transcribe it into text for you.\n\n"
+            "Simply send me an audio or video file, and I will transcribe it into text for you.\n\n"
             "**Available Commands:**\n"
             "`/start` - Start or restart the bot.\n"
-            "`/status` - Check your current plan, remaining minutes, and subscription status.\n"
+            "`/status` - Check your current plan and minute balance.\n"
+            "`/languages` - See the main list of supported languages.\n"
             "`/help` - Show this help message.\n\n"
             "**Our Monthly Plans:**\n"
-            "🔹 **Basic ($2/month):** A package of 100 minutes for high-quality transcription.\n"
-            "💎 **Premium ($5/month):** An extended package of 200 minutes with access to all features, including text translation.\n\n"
+            f"🔹 **Basic (${basic_plan['price_usd']}/month):** A package of {basic_plan['limit_minutes']} minutes for transcription.\n"
+            f"💎 **Premium (${premium_plan['price_usd']}/month):** An extended package of {premium_plan['limit_minutes']} minutes with access to all features, including text translation.\n\n"
             f"For more details, please see our [Terms of Service]({self.base_url}/terms) and [Privacy Policy]({self.base_url}/privacy).\n\n"
         )
         if self.support_contact:
@@ -186,7 +208,8 @@ class TelegramHandler:
         if target_user.get('plan') == plan_name:
             expires_at = target_user.get('subscription_expires_at')
             if expires_at and expires_at > datetime.now(timezone.utc):
-                await self.send_message(chat_id, f"⚠️ **Warning:** User `{user_to_activate}` is already on the `{plan_name}` plan. No action was taken to prevent duplicate activation.")
+                await self.send_message(chat_id,
+                                        f"⚠️ **Warning:** User `{user_to_activate}` is already on the `{plan_name}` plan. No action was taken to prevent duplicate activation.")
                 return
 
         self.database.update_user_subscription(user_to_activate, plan_name)
@@ -238,22 +261,16 @@ class TelegramHandler:
             lang_code = payload.replace('RETRY_AS_', '').lower()
             await self._handle_retry_request(user_id, chat_id, lang_code)
         elif payload.startswith('TRANSLATE_'):
-            if user.get('plan') != 'premium':
-                await self.send_message(chat_id, "Translation is a Premium feature. Please upgrade to use it.")
-                return
             target_lang_code = payload.replace('TRANSLATE_', '').lower()
             await self._handle_translation_request(user_id, chat_id, target_lang_code)
         elif payload == 'CHOOSE_OTHER_LANGUAGE':
             await self.send_language_correction_options(chat_id, user)
         elif payload == 'CONFIRM_TRANSCRIPTION_OK':
-            if user.get('plan') == 'premium':
-                await self.send_translation_options(chat_id, user)
-            else:
-                await query.edit_message_text(text="✅ Done! Send another file to continue.")
+            await self.send_translation_options(chat_id, user)
         elif payload == 'SHOW_PAYMENT_QR':
-            # Доступ к payment_qr_file_id теперь через payment_service
-            if self.payment_service.payment_qr_file_id:
-                await self.bot.send_photo(chat_id, photo=self.payment_service.payment_qr_file_id,
+            payment_qr_file_id = os.getenv('PAYMENT_QR_CODE_FILE_ID')
+            if payment_qr_file_id:
+                await self.bot.send_photo(chat_id, photo=payment_qr_file_id,
                                           caption="Scan this QR code in your ABA app.")
             else:
                 await self.send_message(chat_id, "Sorry, the QR code is temporarily unavailable.")
@@ -305,9 +322,6 @@ class TelegramHandler:
         chat_id = int(user_id)
         if lang_code:
             self.database.update_user(user_id, {'state': None})
-            if context == 'translation' and user.get('plan') != 'premium':
-                await self.send_message(chat_id, "Translation is a Premium feature.")
-                return
             self.database.increment_language_usage(user_id, lang_code, context)
             handler = self._handle_retry_request if context == 'transcription' else self._handle_translation_request
             await handler(user_id, chat_id, lang_code)

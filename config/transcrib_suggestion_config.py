@@ -6,10 +6,10 @@ DEFAULT_POPULAR_TRANSCRIPTION_LANGS = [
     {'code': 'en', 'title': 'English', 'flag': '🇬🇧'},
     {'code': 'ru', 'title': 'Russian', 'flag': '🇷🇺'},
     {'code': 'de', 'title': 'German', 'flag': '🇩🇪'},
+    {'code': 'de', 'title': 'Swiss German', 'flag': '🇨🇭'}, # Использует код 'de'
+    {'code': 'ga', 'title': 'Irish', 'flag': '🇮🇪'},
     {'code': 'es', 'title': 'Spanish', 'flag': '🇪🇸'},
     {'code': 'fr', 'title': 'French', 'flag': '🇫🇷'},
-    {'code': 'it', 'title': 'Italian', 'flag': '🇮🇹'},
-    {'code': 'uk', 'title': 'Ukrainian', 'flag': '🇺🇦'},
 ]
 
 DEFAULT_POPULAR_TRANSLATION_LANGS = [
@@ -17,16 +17,15 @@ DEFAULT_POPULAR_TRANSLATION_LANGS = [
     {'code': 'en', 'title': 'English', 'flag': '🇬🇧'},
     {'code': 'ru', 'title': 'Russian', 'flag': '🇷🇺'},
     {'code': 'de', 'title': 'German', 'flag': '🇩🇪'},
+    {'code': 'de', 'title': 'Swiss German', 'flag': '🇨🇭'}, # Использует код 'de'
+    {'code': 'ga', 'title': 'Irish', 'flag': '🇮🇪'},
     {'code': 'es', 'title': 'Spanish', 'flag': '🇪🇸'},
     {'code': 'fr', 'title': 'French', 'flag': '🇫🇷'},
-    {'code': 'it', 'title': 'Italian', 'flag': '🇮🇹'},
-    {'code': 'uk', 'title': 'Ukrainian', 'flag': '🇺🇦'},
 ]
 
 # Полная карта поддерживаемых языков для текстового ввода
-# Ключ - то, что может ввести пользователь (название или код)
-# Значение - стандартный 2-буквенный код языка
 SUPPORTED_LANGUAGES_MAP = {
+    'khmer': 'km', 'km': 'km',
     'afrikaans': 'af', 'af': 'af',
     'arabic': 'ar', 'ar': 'ar',
     'armenian': 'hy', 'hy': 'hy',
@@ -46,12 +45,14 @@ SUPPORTED_LANGUAGES_MAP = {
     'french': 'fr', 'fr': 'fr',
     'galician': 'gl', 'gl': 'gl',
     'german': 'de', 'de': 'de',
+    'swiss german': 'de', # Добавляем текстовый ввод
     'greek': 'el', 'el': 'el',
     'hebrew': 'he', 'iw': 'he',
     'hindi': 'hi', 'hi': 'hi',
     'hungarian': 'hu', 'hu': 'hu',
     'icelandic': 'is', 'is': 'is',
     'indonesian': 'id', 'id': 'id',
+    'irish': 'ga', 'ga': 'ga',
     'italian': 'it', 'it': 'it',
     'japanese': 'ja', 'ja': 'ja',
     'kannada': 'kn', 'kn': 'kn',

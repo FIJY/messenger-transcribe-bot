@@ -5,27 +5,27 @@ from google.cloud import speech
 
 logger = logging.getLogger(__name__)
 
+
 class GoogleSTTService:
     def __init__(self):
-        # Библиотека Google автоматически найдет ключ, если установлена
-        # переменная окружения GOOGLE_APPLICATION_CREDENTIALS.
         try:
             self.client = speech.SpeechClient()
             logger.info("Google Speech-to-Text client initialized successfully.")
         except Exception as e:
             logger.error(f"Failed to initialize Google STT client: {e}", exc_info=True)
-            # Если мы не смогли инициализировать клиент, дальнейшая работа невозможна.
-            # Лучше всего "упасть" здесь, чтобы сразу увидеть проблему в логах.
             raise
 
-    def transcribe_audio(self, audio_file_path: str, language_code: str = "km-KH") -> str:
+    def transcribe_audio(self, audio_file_path: str, language_code: str = "km-KH") -> dict:
         """
-        Transcribes an audio file using Google Cloud Speech-to-Text.
-        :param audio_file_path: Path to the local audio file.
-        :param language_code: BCP-47 language code (e.g., 'km-KH' for Khmer).
-        :return: The transcribed text.
+        Transcribes an audio file and returns a dictionary with the main transcript,
+        confidence score, and alternatives.
         """
         logger.info(f"Sending audio to Google STT with language code: {language_code}")
+        result = {
+            'transcript': "",
+            'confidence': 0.0,
+            'alternatives': []
+        }
         try:
             with open(audio_file_path, "rb") as audio_file:
                 content = audio_file.read()
@@ -35,21 +35,31 @@ class GoogleSTTService:
                 encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
                 sample_rate_hertz=16000,
                 language_code=language_code,
-                # Включаем автоматическую пунктуацию для лучшего результата
                 enable_automatic_punctuation=True,
+                # ===> ИЗМЕНЕНИЕ: Запрашиваем альтернативы <===
+                max_alternatives=3,
             )
 
             response = self.client.recognize(config=config, audio=audio)
 
             if response.results:
-                transcript = response.results[0].alternatives[0].transcript
-                logger.info(f"Google STT transcription successful. Transcript length: {len(transcript)}")
-                return transcript
+                # Берем список всех альтернатив для первого результата
+                alternatives = response.results[0].alternatives
+
+                # Основной результат - первый в списке
+                main_alternative = alternatives[0]
+                result['transcript'] = main_alternative.transcript
+                result['confidence'] = main_alternative.confidence
+
+                # Собираем тексты остальных альтернатив
+                result['alternatives'] = [alt.transcript for alt in alternatives]
+
+                logger.info(f"Google STT transcription successful. Confidence: {result['confidence']:.2f}")
             else:
                 logger.warning("Google STT returned no results.")
-                return ""
+
+            return result
 
         except Exception as e:
             logger.error(f"Error during Google STT transcription: {e}", exc_info=True)
-            # В случае ошибки возвращаем пустую строку, чтобы не ломать основной процесс.
-            return ""
+            return result  # Возвращаем пустой result в случае ошибки

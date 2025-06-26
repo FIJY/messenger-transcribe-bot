@@ -9,11 +9,11 @@ from pymongo.errors import PyMongoError
 
 logger = logging.getLogger(__name__)
 
-# Тарифные планы
+# ===> ИЗМЕНЕНИЕ: Новые тарифы и лимиты <===
 PLANS = {
-    'free': {'limit_minutes': 15, 'duration_days': 9999, 'price_usd': 0},
-    'basic': {'limit_minutes': 100, 'duration_days': 30, 'price_usd': 2},
-    'premium': {'limit_minutes': 200, 'duration_days': 30, 'price_usd': 5}
+    'free': {'limit_minutes': 10, 'duration_days': 9999, 'price_usd': 0},  # Промо-лимит для первых 50
+    'basic': {'limit_minutes': 60, 'duration_days': 30, 'price_usd': 5},
+    'premium': {'limit_minutes': 150, 'duration_days': 30, 'price_usd': 10}
 }
 
 
@@ -28,7 +28,6 @@ class Database:
 
     def connect(self):
         try:
-            # ===> ИСПРАВЛЕНИЕ: Добавлен tz_aware=True для корректной работы с датами <===
             self.client = MongoClient(self.mongodb_uri, tz_aware=True, tzinfo=timezone.utc)
             self.db = self.client.messenger_transcribe_bot
             self.client.admin.command('ping')
@@ -62,7 +61,8 @@ class Database:
             )
             user_count = user_count_doc.get('count', 0)
 
-            free_minutes = 15 if user_count <= 100 else 5
+            # ===> ИЗМЕНЕНИЕ: Новая логика для промо-акции <===
+            free_minutes = 10 if user_count <= 50 else 5
 
             user_data = {
                 "user_id": str(user_id),
@@ -113,8 +113,7 @@ class Database:
     def downgrade_user_to_free(self, user_id: str):
         """Переводит пользователя на бесплатный тариф (например, по истечении подписки)."""
         try:
-            free_plan_details = PLANS['free']
-            # При даунгрейде даем стандартные 5 минут, а не акционные 15
+            # При даунгрейде даем стандартные 5 минут
             free_minutes = 5
 
             update_fields = {

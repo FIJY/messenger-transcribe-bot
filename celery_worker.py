@@ -61,7 +61,6 @@ try:
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     if telegram_token:
         bot_instance = Bot(token=telegram_token)
-        # ===> ИЗМЕНЕНИЕ: Передаем database в PaymentService <===
         payment_service = PaymentService(bot=bot_instance, database=database)
         telegram_handler = TelegramHandler(
             token=telegram_token,
@@ -103,6 +102,7 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
             expires_at = user.get('subscription_expires_at')
             if expires_at and expires_at.tzinfo is None:
                  expires_at = expires_at.replace(tzinfo=timezone.utc)
+
             if expires_at and expires_at < datetime.now(timezone.utc):
                 logger.info(f"Subscription for user {sender_id} has expired. Downgrading to free plan.")
                 database.downgrade_user_to_free(sender_id)
@@ -140,7 +140,6 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
     except LimitExceededError as e:
         logger.warning(str(e))
-        # ===> ИЗМЕНЕНИЕ: Вызываем метод из PaymentService <===
         if platform == 'telegram' and payment_service and chat_id:
             asyncio.run(payment_service.send_payment_instructions(chat_id, sender_id))
 
@@ -162,12 +161,21 @@ def handle_telegram_success(chat_id, user, result, user_preferences):
     lang_info = result.get('language_info', {})
     lang_name = lang_info.get('name', 'N/A')
 
-    response_text = f"📝 *Transcription ({lang_name}):*\n\n{result['transcription']}"
+    response_text = f"📝 *Transcription ({lang_name}):*\n\n{result.get('transcription', '')}"
+
+    confidence = result.get('confidence')
+    if confidence:
+        response_text += f"\n\n*Confidence:* {confidence:.0%}"
+
+    alternatives = result.get('alternatives')
+    if alternatives and len(alternatives) > 1:
+        response_text += "\n\n*Other likely options:*"
+        for i, alt_text in enumerate(alternatives[1:3], 1): # Показываем до 2х альтернатив
+            response_text += f"\n{i+1}. `{alt_text}`"
+
     asyncio.run(telegram_handler.send_message(chat_id, response_text))
 
-    if user.get('plan') == 'premium':
-        asyncio.run(telegram_handler.send_translation_options(chat_id, user))
-    elif not is_retry:
+    if not is_retry:
         keyboard = [[
             InlineKeyboardButton("✅ Looks Good", callback_data="CONFIRM_TRANSCRIPTION_OK"),
             InlineKeyboardButton("🗣️ Other language", callback_data="CHOOSE_OTHER_LANGUAGE")
