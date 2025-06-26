@@ -14,7 +14,7 @@ from .s3_service import S3Service
 from .celery_client import get_celery_app_client
 from .translation_service import TranslationService
 from .payment_service import PaymentService
-from .telegram_ui import TelegramUI  # ===> НОВЫЙ ИМПОРТ <===
+from .telegram_ui import TelegramUI
 from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_MAP
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,8 @@ class TelegramHandler:
     def __init__(self, token: str, database: Database, s3_service: S3Service,
                  translation_service: TranslationService, payment_service: PaymentService):
         if not token: raise ValueError("Telegram token is required.")
+        # ===> ИСПРАВЛЕНИЕ 1: Возвращена недостающая строка <===
+        self.token = token
         self.bot = Bot(token=token)
         self.database = database
         self.s3_service = s3_service
@@ -31,7 +33,6 @@ class TelegramHandler:
         self.celery_app_client = get_celery_app_client()
         self.payment_service = payment_service
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
-        # ===> НОВЫЙ СЕРВИС ДЛЯ UI <===
         self.ui = TelegramUI()
 
     async def set_bot_commands(self):
@@ -119,7 +120,7 @@ class TelegramHandler:
         message_chunks = self.ui.get_languages_message_chunks()
         for chunk in message_chunks:
             await self.send_message(chat_id, chunk)
-            await asyncio.sleep(0.5)  # Небольшая задержка, чтобы не спамить API
+            await asyncio.sleep(0.5)
 
     async def _handle_status_command(self, user_id: str, chat_id: int):
         user = self.database.get_user(user_id)
@@ -169,7 +170,6 @@ class TelegramHandler:
             await self.send_message(chat_id, f"❌ User with ID `{user_to_check}` not found.")
             return
 
-        # Используем UI сервис для форматирования статуса
         message = self.ui.get_status_message(user_data)
         await self.send_message(chat_id, f"ℹ️ *Status for user `{user_to_check}`*\n\n" + message)
 
@@ -279,13 +279,16 @@ class TelegramHandler:
         finally:
             if local_file_path and os.path.exists(local_file_path): os.remove(local_file_path)
 
+    # ===> ИСПРАВЛЕНИЕ 2: Метод переписан для использования self.bot <===
     async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None):
-        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
-        if reply_markup:
-            payload['reply_markup'] = reply_markup.to_json()
+        """Отправляет сообщение, используя встроенный клиент."""
         try:
-            async with httpx.AsyncClient() as client:
-                await client.post(url, json=payload, timeout=10)
+            await self.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown',
+                reply_markup=reply_markup,
+                timeout=10
+            )
         except Exception as e:
             logger.error(f"Failed to send message to Telegram chat {chat_id}: {e}")
