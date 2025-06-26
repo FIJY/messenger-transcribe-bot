@@ -133,6 +133,8 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
                 user_id=sender_id, object_key=object_key,
                 transcription=result.get('transcription'),
                 detected_language=result.get('detected_language'),
+                confidence=result.get('confidence'),
+                alternatives=result.get('alternatives'),
                 duration_minutes=duration_to_charge
             )
         else:
@@ -170,19 +172,20 @@ def handle_telegram_success(chat_id, user, result, user_preferences):
     alternatives = result.get('alternatives')
     if alternatives and len(alternatives) > 1:
         response_text += "\n\n*Other likely options:*"
-        for i, alt_text in enumerate(alternatives[1:3], 1): # Показываем до 2х альтернатив
+        for i, alt_text in enumerate(alternatives[1:3], 1):
             response_text += f"\n{i+1}. `{alt_text}`"
 
-    asyncio.run(telegram_handler.send_message(chat_id, response_text))
-
+    # ===> ИЗМЕНЕНИЕ: Отправка результата и кнопок одним сообщением <===
+    reply_markup = None
     if not is_retry:
         keyboard = [[
             InlineKeyboardButton("✅ Looks Good", callback_data="CONFIRM_TRANSCRIPTION_OK"),
             InlineKeyboardButton("🗣️ Other language", callback_data="CHOOSE_OTHER_LANGUAGE")
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        asyncio.run(telegram_handler.send_message(chat_id, "Is the language and transcription correct?",
-                                                  reply_markup=reply_markup))
+        response_text += "\n\nIs the language and transcription correct?"
+
+    asyncio.run(telegram_handler.send_message(chat_id, response_text, reply_markup=reply_markup))
 
 
 def _download_file_from_r2(object_key: str) -> Optional[str]:

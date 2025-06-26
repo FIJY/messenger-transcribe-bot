@@ -12,12 +12,9 @@ from .google_stt_service import GoogleSTTService
 
 logger = logging.getLogger(__name__)
 
-LANGUAGE_NAME_TO_CODE_MAP = {
-    'khmer': 'km', 'english': 'en', 'russian': 'ru', 'thai': 'th',
-    'vietnamese': 'vi', 'chinese': 'zh', 'german': 'de', 'japanese': 'ja',
-    'korean': 'ko', 'tagalog': 'tl', 'lithuanian': 'lt', 'belarusian': 'be',
-    'french': 'fr', 'indonesian': 'id', 'irish': 'ga',
-}
+
+# Этот словарь больше не нужен здесь, так как нормализация происходит в transcription_service
+# LANGUAGE_NAME_TO_CODE_MAP = { ... }
 
 
 class MediaHandler:
@@ -45,20 +42,16 @@ class MediaHandler:
                 return {'success': False, 'error': Exception('Failed to process media file')}
 
             language_to_process = expected_language
+
+            # ===> ИЗМЕНЕНИЕ: Упрощена и исправлена логика определения языка <===
             if not language_to_process:
-                _, detected_by_whisper = self.transcription_service.transcribe_with_fallback(audio_path)
-                normalized_lang_code = LANGUAGE_NAME_TO_CODE_MAP.get(detected_by_whisper.lower())
-                if normalized_lang_code:
-                    logger.info(
-                        f"Normalized detected language '{detected_by_whisper}' to code '{normalized_lang_code}'.")
-                    language_to_process = normalized_lang_code
-                else:
-                    logger.warning(f"Could not map detected language '{detected_by_whisper}'. Using original value.")
-                    language_to_process = detected_by_whisper
+                # transcription_service уже возвращает нормализованный код языка
+                lang_code, lang_full_name = self.transcription_service.transcribe_with_fallback(audio_path)
+                logger.info(f"Language auto-detected as '{lang_full_name}' (code: {lang_code}).")
+                language_to_process = lang_code
 
             logger.info(f"Language pre-determined for processing: {language_to_process}")
 
-            # Временные переменные для хранения доп. данных
             confidence = None
             alternatives = None
 
@@ -80,6 +73,7 @@ class MediaHandler:
                 if not result_dict['success']:
                     raise result_dict['error']
                 text = result_dict.get('text', '')
+                # `detected_language` здесь уже будет кодом, т.к. _transcribe_sync его нормализует
                 detected_language = result_dict.get('detected_language')
 
             final_audio_path_for_duration = converted_wav_path if converted_wav_path else audio_path
