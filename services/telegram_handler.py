@@ -6,19 +6,16 @@ import httpx
 import uuid
 import asyncio
 from typing import Dict, Any, List, Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot, Message, BotCommand
+from telegram import Update, InlineKeyboardMarkup, Bot, Message, BotCommand
 from datetime import datetime, timezone
 
-from .database import Database, PLANS
+from .database import Database
 from .s3_service import S3Service
 from .celery_client import get_celery_app_client
 from .translation_service import TranslationService
 from .payment_service import PaymentService
-from config.transcrib_suggestion_config import (
-    DEFAULT_POPULAR_TRANSCRIPTION_LANGS,
-    DEFAULT_POPULAR_TRANSLATION_LANGS,
-    SUPPORTED_LANGUAGES_MAP
-)
+from .telegram_ui import TelegramUI  # ===> НОВЫЙ ИМПОРТ <===
+from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -27,16 +24,15 @@ class TelegramHandler:
     def __init__(self, token: str, database: Database, s3_service: S3Service,
                  translation_service: TranslationService, payment_service: PaymentService):
         if not token: raise ValueError("Telegram token is required.")
-        self.token = token
-        self.bot = Bot(token=self.token)
+        self.bot = Bot(token=token)
         self.database = database
         self.s3_service = s3_service
         self.translation_service = translation_service
         self.celery_app_client = get_celery_app_client()
         self.payment_service = payment_service
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
-        self.support_contact = os.getenv('SUPPORT_CONTACT')
-        self.base_url = os.getenv('RENDER_EXTERNAL_URL', 'https://your-app-name.onrender.com')
+        # ===> НОВЫЙ СЕРВИС ДЛЯ UI <===
+        self.ui = TelegramUI()
 
     async def set_bot_commands(self):
         """Устанавливает список команд, видимых в меню Telegram."""
@@ -75,7 +71,7 @@ class TelegramHandler:
                 await self._handle_status_command(user_id, chat_id)
                 return
             if command == '/help':
-                await self._handle_help_command(chat_id)
+                await self.send_message(chat_id, self.ui.get_help_message())
                 return
             if command == '/languages':
                 await self._handle_languages_command(chat_id)
@@ -116,88 +112,31 @@ class TelegramHandler:
         user = self.database.get_user(user_id)
         if not user:
             user = self.database.create_user(user_id, username=username)
-
-        welcome_message = (
-            "🎉 *Welcome to the Transcription Bot!*\n\n"
-            "To get started, just send me an audio or video file.\n\n"
-            "Type /help to see all available commands and features.\n\n"
-            f"By using this bot, you agree to our [Terms of Service]({self.base_url}/terms) and [Privacy Policy]({self.base_url}/privacy)."
-        )
-        await self.send_message(chat_id, welcome_message)
+        await self.send_message(chat_id, self.ui.get_welcome_message())
         return user
 
     async def _handle_languages_command(self, chat_id: int):
-        """Отправляет список поддерживаемых языков."""
-        transcription_langs = ", ".join(
-            [f"{lang['flag']} {lang['title']}" for lang in DEFAULT_POPULAR_TRANSCRIPTION_LANGS])
-
-        message = (
-            "🌐 *Supported Languages*\n\n"
-            "**Transcription:**\n"
-            "I can recognize speech in most world languages. For best results with quick selection, here are the main supported languages:\n"
-            f"_{transcription_langs}_\n"
-            "You can also specify another language by choosing '✍️ Type other...'\n\n"
-            "**Translation:**\n"
-            "I can translate text to and from most languages supported by modern AI models."
-        )
-        await self.send_message(chat_id, message)
-
-    async def _handle_help_command(self, chat_id: int):
-        basic_plan = PLANS['basic']
-        premium_plan = PLANS['premium']
-        help_text = (
-            "🤖 *Bot Help & Information*\n\n"
-            "**How to Use Me:**\n"
-            "Simply send me an audio or video file, and I will transcribe it into text for you.\n\n"
-            "**Available Commands:**\n"
-            "`/start` - Start or restart the bot.\n"
-            "`/status` - Check your current plan and minute balance.\n"
-            "`/languages` - See the main list of supported languages.\n"
-            "`/help` - Show this help message.\n\n"
-            "**Our Monthly Plans:**\n"
-            f"🔹 **Basic (${basic_plan['price_usd']}/month):** A package of {basic_plan['limit_minutes']} minutes for transcription.\n"
-            f"💎 **Premium (${premium_plan['price_usd']}/month):** An extended package of {premium_plan['limit_minutes']} minutes with access to all features, including text translation.\n\n"
-            f"For more details, please see our [Terms of Service]({self.base_url}/terms) and [Privacy Policy]({self.base_url}/privacy).\n\n"
-        )
-        if self.support_contact:
-            help_text += f"If you have any questions, please contact our support: {self.support_contact}"
-
-        await self.send_message(chat_id, help_text)
+        message_chunks = self.ui.get_languages_message_chunks()
+        for chunk in message_chunks:
+            await self.send_message(chat_id, chunk)
+            await asyncio.sleep(0.5)  # Небольшая задержка, чтобы не спамить API
 
     async def _handle_status_command(self, user_id: str, chat_id: int):
         user = self.database.get_user(user_id)
         if not user:
             await self.send_message(chat_id, "Please use /start first.")
             return
-
-        plan = user.get('plan', 'free').capitalize()
-        minutes_used = user.get('minutes_used', 0)
-        minutes_limit = user.get('minutes_limit', 0)
-
-        if plan == 'Free':
-            minutes_left = minutes_limit - minutes_used
-            message = (f"📊 *Your Status*\n\n"
-                       f"Plan: {plan}\n"
-                       f"Minutes left: {minutes_left:.1f} / {minutes_limit} minutes")
-        else:
-            expires_at = user.get('subscription_expires_at')
-            expires_str = expires_at.strftime('%d %B %Y') if expires_at else 'N/A'
-            message = (f"📊 *Your Status*\n\n"
-                       f"Plan: {plan} 💎\n"
-                       f"Subscription valid until: {expires_str}\n"
-                       f"Minutes used this period: {minutes_used:.1f} / {minutes_limit} minutes")
+        message = self.ui.get_status_message(user)
         await self.send_message(chat_id, message)
 
     async def _handle_confirm_command(self, command_parts: List[str], chat_id: int):
         if len(command_parts) != 3:
-            await self.send_message(chat_id,
-                                    "❌ Incorrect format. Use: `/confirm <user_id> <plan_name>` (e.g., basic or premium)")
+            await self.send_message(chat_id, "❌ Incorrect format. Use: `/confirm <user_id> <plan_name>`")
             return
 
         user_to_activate, plan_name = command_parts[1], command_parts[2].lower()
-
         if plan_name not in ['basic', 'premium']:
-            await self.send_message(chat_id, f"❌ Unknown plan '{plan_name}'. Use 'basic' or 'premium'.")
+            await self.send_message(chat_id, f"❌ Unknown plan '{plan_name}'.")
             return
 
         target_user = self.database.get_user(user_to_activate)
@@ -205,21 +144,16 @@ class TelegramHandler:
             await self.send_message(chat_id, f"❌ User with ID `{user_to_activate}` not found.")
             return
 
-        if target_user.get('plan') == plan_name:
-            expires_at = target_user.get('subscription_expires_at')
-            if expires_at and expires_at > datetime.now(timezone.utc):
-                await self.send_message(chat_id,
-                                        f"⚠️ **Warning:** User `{user_to_activate}` is already on the `{plan_name}` plan. No action was taken to prevent duplicate activation.")
-                return
+        if target_user.get('plan') == plan_name and target_user.get('subscription_expires_at') > datetime.now(
+                timezone.utc):
+            await self.send_message(chat_id, f"⚠️ **Warning:** User `{user_to_activate}` is already on this plan.")
+            return
 
         self.database.update_user_subscription(user_to_activate, plan_name)
-
-        confirmation_message_admin = f"✅ User `{user_to_activate}` has been successfully upgraded to the *{plan_name.capitalize()}* plan."
-        await self.send_message(chat_id, confirmation_message_admin)
+        await self.send_message(chat_id, f"✅ User `{user_to_activate}` upgraded to *{plan_name.capitalize()}*.")
 
         try:
-            confirmation_message_user = f"🎉 Your *{plan_name.capitalize()}* plan is now active! Thank you for your subscription."
-            await self.send_message(int(user_to_activate), confirmation_message_user)
+            await self.send_message(int(user_to_activate), f"🎉 Your *{plan_name.capitalize()}* plan is now active!")
         except Exception as e:
             logger.error(f"Failed to send confirmation to user {user_to_activate}: {e}")
             await self.send_message(chat_id, f"⚠️ Could not notify user {user_to_activate} directly.")
@@ -235,19 +169,9 @@ class TelegramHandler:
             await self.send_message(chat_id, f"❌ User with ID `{user_to_check}` not found.")
             return
 
-        plan = user_data.get('plan', 'free').capitalize()
-        minutes_used = user_data.get('minutes_used', 0)
-        minutes_limit = user_data.get('minutes_limit', 0)
-        expires_at = user_data.get('subscription_expires_at')
-        expires_str = expires_at.strftime('%d %B %Y') if expires_at else 'N/A'
-
-        message = (
-            f"ℹ️ *Status for user `{user_to_check}`*\n\n"
-            f"Plan: {plan}\n"
-            f"Usage: {minutes_used:.1f} / {minutes_limit} min\n"
-            f"Expires: {expires_str}"
-        )
-        await self.send_message(chat_id, message)
+        # Используем UI сервис для форматирования статуса
+        message = self.ui.get_status_message(user_data)
+        await self.send_message(chat_id, f"ℹ️ *Status for user `{user_to_check}`*\n\n" + message)
 
     async def _handle_callback_query(self, query: Update.callback_query):
         await query.answer()
@@ -281,40 +205,12 @@ class TelegramHandler:
             self.database.update_user(user_id, {'state': 'awaiting_language_input_translation'})
             await self.send_message(chat_id, "Please type the target language for translation.")
 
-    def _build_smart_buttons(self, user: Dict[str, Any], context: str) -> List[List[InlineKeyboardButton]]:
-        if context == 'transcription':
-            defaults, stats, prefix, other_payload = DEFAULT_POPULAR_TRANSCRIPTION_LANGS, user.get(
-                'transcription_lang_usage', {}), "RETRY_AS_", "INPUT_OTHER_TRANSCRIPTION_LANG"
-        else:
-            defaults, stats, prefix, other_payload = DEFAULT_POPULAR_TRANSLATION_LANGS, user.get(
-                'translation_lang_usage', {}), "TRANSLATE_", "INPUT_OTHER_TRANSLATION_LANG"
-        sorted_user_langs = sorted(stats.keys(), key=stats.get, reverse=True)
-        buttons, added_codes = [], set()
-
-        def add_button(lang_code):
-            title_info = next((lang for lang in defaults if lang['code'] == lang_code), None)
-            if title_info:
-                flag = title_info.get('flag', '')
-                title_text = title_info.get('title', lang_code.upper())
-                title = f"{flag} {title_text}".strip()
-            else:
-                title = lang_code.upper()
-
-            buttons.append(InlineKeyboardButton(title, callback_data=f"{prefix}{lang_code}"))
-            added_codes.add(lang_code)
-
-        for lang_code in sorted_user_langs[:3]: add_button(lang_code)
-        for lang in defaults:
-            if len(buttons) >= 5: break
-            if lang['code'] not in added_codes: add_button(lang['code'])
-        return [buttons, [InlineKeyboardButton("✍️ Type other...", callback_data=other_payload)]]
-
     async def send_language_correction_options(self, chat_id: int, user: Dict[str, Any]):
-        reply_markup = InlineKeyboardMarkup(self._build_smart_buttons(user, 'transcription'))
+        reply_markup = self.ui.build_smart_buttons(user, 'transcription')
         await self.send_message(chat_id, "Got it. What was the language, actually?", reply_markup)
 
     async def send_translation_options(self, chat_id: int, user: Dict[str, Any]):
-        reply_markup = InlineKeyboardMarkup(self._build_smart_buttons(user, 'translation'))
+        reply_markup = self.ui.build_smart_buttons(user, 'translation')
         await self.send_message(chat_id, "What language would you like to translate to?", reply_markup)
 
     async def _handle_language_text_input(self, user_id: str, user: Dict[str, Any], text: str, context: str):
