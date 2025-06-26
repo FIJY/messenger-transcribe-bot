@@ -15,7 +15,10 @@ from .celery_client import get_celery_app_client
 from .translation_service import TranslationService
 from .payment_service import PaymentService
 from .telegram_ui import TelegramUI
-from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_MAP
+from config.transcrib_suggestion_config import (
+    DEFAULT_POPULAR_TRANSCRIPTION_LANGS,
+    SUPPORTED_LANGUAGES_MAP
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +27,6 @@ class TelegramHandler:
     def __init__(self, token: str, database: Database, s3_service: S3Service,
                  translation_service: TranslationService, payment_service: PaymentService):
         if not token: raise ValueError("Telegram token is required.")
-        # ===> ИСПРАВЛЕНИЕ 1: Возвращена недостающая строка <===
         self.token = token
         self.bot = Bot(token=token)
         self.database = database
@@ -279,16 +281,15 @@ class TelegramHandler:
         finally:
             if local_file_path and os.path.exists(local_file_path): os.remove(local_file_path)
 
-    # ===> ИСПРАВЛЕНИЕ 2: Метод переписан для использования self.bot <===
     async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None):
         """Отправляет сообщение, используя встроенный клиент."""
         try:
+            # ===> ИСПРАВЛЕНИЕ: Удален неверный аргумент timeout <===
             await self.bot.send_message(
                 chat_id=chat_id,
                 text=text,
                 parse_mode='Markdown',
-                reply_markup=reply_markup,
-                timeout=10
+                reply_markup=reply_markup
             )
         except Exception as e:
             logger.error(f"Failed to send message to Telegram chat {chat_id}: {e}")
