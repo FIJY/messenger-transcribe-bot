@@ -7,7 +7,7 @@ import redis
 from celery import Celery
 from celery.schedules import crontab
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, Dict, Any
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from datetime import datetime, timezone
 
@@ -36,9 +36,11 @@ celery_app.conf.beat_schedule = {
     },
 }
 
+
 class LimitExceededError(Exception):
     """Кастомное исключение для превышения лимитов."""
     pass
+
 
 @celery_app.task(name='celery_worker.ping_redis_task')
 def ping_redis_task():
@@ -50,6 +52,7 @@ def ping_redis_task():
             logger.warning("Redis PING failed.")
     except Exception as e:
         logger.error(f"Error while pinging Redis: {e}")
+
 
 try:
     database = Database()
@@ -83,6 +86,7 @@ except Exception as e:
     telegram_handler = None
     payment_service = None
 
+
 @celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
 def process_media_task(self, sender_id: str, object_key: str, user_preferences: dict, platform_payload: dict):
     if not all([media_handler_service, database, audio_processor, payment_service]):
@@ -101,7 +105,7 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         if user.get('plan') in ['basic', 'premium']:
             expires_at = user.get('subscription_expires_at')
             if expires_at and expires_at.tzinfo is None:
-                 expires_at = expires_at.replace(tzinfo=timezone.utc)
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
 
             if expires_at and expires_at < datetime.now(timezone.utc):
                 logger.info(f"Subscription for user {sender_id} has expired. Downgrading to free plan.")
@@ -120,7 +124,8 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         minutes_left = minutes_limit - minutes_used
 
         if file_duration_min > minutes_left:
-            raise LimitExceededError(f"User {sender_id} limit exceeded. Required: {file_duration_min:.2f}, Left: {minutes_left:.2f}")
+            raise LimitExceededError(
+                f"User {sender_id} limit exceeded. Required: {file_duration_min:.2f}, Left: {minutes_left:.2f}")
 
         result = media_handler_service.process_media(local_file_path, user_preferences)
 
@@ -156,15 +161,18 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         logger.info(f"[{self.request.id}] Task finished for object {object_key}.")
 
 
-def handle_telegram_success(chat_id, user, result, user_preferences):
+# ===> ИЗМЕНЕНИЕ: Вся асинхронная логика сгруппирована здесь <===
+async def _send_success_messages(chat_id: int, user: Dict[str, Any], result: Dict[str, Any],
+                                 user_preferences: Dict[str, Any]):
+    """Асинхронная функция для отправки всех сообщений об успехе в одном цикле."""
     if not telegram_handler: return
 
     is_retry = bool(user_preferences.get('preferred_language'))
     lang_info = result.get('language_info', {})
     lang_name = lang_info.get('name', 'N/A')
 
+    # Формируем основной текст
     response_text = f"📝 *Transcription ({lang_name}):*\n\n{result.get('transcription', '')}"
-
     confidence = result.get('confidence')
     if confidence:
         response_text += f"\n\n*Confidence:* {confidence:.0%}"
@@ -172,19 +180,31 @@ def handle_telegram_success(chat_id, user, result, user_preferences):
     alternatives = result.get('alternatives')
     if alternatives and len(alternatives) > 1:
         response_text += "\n\n*Other likely options:*"
-        for i, alt_text in enumerate(alternatives[1:3], 1): # Показываем до 2х альтернатив
-            response_text += f"\n{i+1}. `{alt_text}`"
+        for i, alt_text in enumerate(alternatives[1:3], 1):
+            response_text += f"\n{i + 1}. `{alt_text}`"
 
-    reply_markup = None
+    # Сначала отправляем сам результат
+    await telegram_handler.send_message(chat_id, response_text)
+
+    # Затем, если нужно, отправляем кнопки подтверждения
     if not is_retry:
         keyboard = [[
             InlineKeyboardButton("✅ Looks Good", callback_data="CONFIRM_TRANSCRIPTION_OK"),
             InlineKeyboardButton("🗣️ Other language", callback_data="CHOOSE_OTHER_LANGUAGE")
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        response_text += "\n\nIs the language and transcription correct?"
+        # Отправляем вторым сообщением, чтобы не перегружать первое
+        await telegram_handler.send_message(chat_id, "Is the language and transcription correct?",
+                                            reply_markup=reply_markup)
 
-    asyncio.run(telegram_handler.send_message(chat_id, response_text, reply_markup=reply_markup))
+
+def handle_telegram_success(chat_id, user, result, user_preferences):
+    """Синхронная обертка для вызова асинхронной отправки сообщений."""
+    try:
+        # Запускаем асинхронную функцию один раз
+        asyncio.run(_send_success_messages(chat_id, user, result, user_preferences))
+    except Exception as e:
+        logger.error(f"Failed to run asyncio tasks in handle_telegram_success: {e}", exc_info=True)
 
 
 def _download_file_from_r2(object_key: str) -> Optional[str]:
