@@ -23,7 +23,7 @@ class MediaHandler:
         try:
             self.google_stt_service = GoogleSTTService()
         except Exception as e:
-            logger.error(f"Could not initialize GoogleSTTService. Khmer transcription will fail. Error: {e}")
+            logger.error(f"Could not initialize GoogleSTTService. Khmer or Irish transcription will fail. Error: {e}")
             self.google_stt_service = None
 
     def process_media(self, file_path: str, user_preferences: Optional[Dict] = None) -> Dict[str, Any]:
@@ -48,19 +48,27 @@ class MediaHandler:
 
             confidence = None
             alternatives = None
+            text = ""
+            detected_language = language_to_process
 
-            if language_to_process == 'km' and self.google_stt_service:
-                logger.info("Khmer language detected. Forcing conversion to WAV for Google STT.")
+            # ===> ИЗМЕНЕНИЕ: Расширен "умный переключатель" <===
+            # Теперь он обрабатывает и кхмерский, и ирландский через Google
+            if language_to_process in ['km', 'ga'] and self.google_stt_service:
+                logger.info(f"Language '{language_to_process}' detected. Routing to Google STT.")
                 converted_wav_path = self.audio_processor.convert_to_wav(audio_path)
                 if not converted_wav_path:
-                    raise Exception("Failed to convert audio to WAV for Google STT")
+                    raise Exception(f"Failed to convert audio to WAV for {language_to_process}")
 
-                logger.info("Routing to Google STT with WAV file.")
-                google_result = self.google_stt_service.transcribe_audio(converted_wav_path, language_code='km-KH')
+                # Выбираем правильный код для Google API
+                google_lang_code = 'km-KH' if language_to_process == 'km' else 'ga-IE'
+
+                logger.info(f"Routing to Google STT with WAV file and language code {google_lang_code}.")
+                google_result = self.google_stt_service.transcribe_audio(converted_wav_path,
+                                                                         language_code=google_lang_code)
+
                 text = google_result.get('transcript')
                 confidence = google_result.get('confidence')
                 alternatives = google_result.get('alternatives')
-                detected_language = 'km'
             else:
                 logger.info(f"Routing to Whisper for language: {language_to_process} with original file.")
                 result_dict = self.transcription_service._transcribe_sync(audio_path, language_hint=language_to_process)
@@ -102,11 +110,13 @@ class MediaHandler:
 
     def _get_language_info_safe(self, detected_language: str) -> Dict[str, str]:
         language_names = {
-            'km': {'name': 'Khmer', 'native': 'ខ្មែរ'}, 'en': {'name': 'English', 'native': 'English'},
-            'ru': {'name': 'Russian', 'native': 'Русский'}, 'th': {'name': 'Thai', 'native': 'ไทย'},
-            'vi': {'name': 'Vietnamese', 'native': 'Tiếng Việt'}, 'tl': {'name': 'Tagalog', 'native': 'Tagalog'},
-            'zh': {'name': 'Chinese', 'native': '中文'}, 'de': {'name': 'German', 'native': 'Deutsch'},
-            'ga': {'name': 'Irish', 'native': 'Gaeilge'}
+            'km': {'name': 'Khmer', 'native': 'ខ្មែរ'},
+            'en': {'name': 'English', 'native': 'English'},
+            'ru': {'name': 'Russian', 'native': 'Русский'},
+            'de': {'name': 'German', 'native': 'Deutsch'},
+            'ga': {'name': 'Irish', 'native': 'Gaeilge'},
+            'es': {'name': 'Spanish', 'native': 'Español'},
+            'fr': {'name': 'French', 'native': 'Français'},
         }
         return language_names.get(detected_language, {'name': detected_language.upper(), 'native': ''})
 

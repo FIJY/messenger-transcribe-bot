@@ -45,7 +45,7 @@ SUPPORTED_LANGUAGES_MAP = {
     'french': 'fr', 'fr': 'fr',
     'galician': 'gl', 'gl': 'gl',
     'german': 'de', 'de': 'de',
-    'swiss german': 'de', # Добавляем текстовый ввод
+    'swiss german': 'de',
     'greek': 'el', 'el': 'el',
     'hebrew': 'he', 'iw': 'he',
     'hindi': 'hi', 'hi': 'hi',
