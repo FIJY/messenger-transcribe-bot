@@ -154,14 +154,29 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         logger.error(f"[{self.request.id}] Error in Celery task: {exc}", exc_info=True)
         error_message = "❌ Failed to process your file. Please try again later."
         if platform == 'telegram' and telegram_handler and chat_id:
-            asyncio.run(telegram_handler.send_message(chat_id, error_message))
+            run_async_task(telegram_handler.send_message(chat_id, error_message))
 
     finally:
         if local_file_path: audio_processor.cleanup_temp_file(local_file_path)
         logger.info(f"[{self.request.id}] Task finished for object {object_key}.")
 
 
-# ===> ИЗМЕНЕНИЕ: Вся асинхронная логика сгруппирована здесь <===
+# ===> ИСПРАВЛЕНИЕ: Новая, более надежная логика для асинхронных вызовов <===
+def run_async_task(coro):
+    """Надежно запускает асинхронную задачу из синхронного контекста."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # 'RuntimeError: There is no current event loop...'
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    if loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(coro)
+
+
 async def _send_success_messages(chat_id: int, user: Dict[str, Any], result: Dict[str, Any],
                                  user_preferences: Dict[str, Any]):
     """Асинхронная функция для отправки всех сообщений об успехе в одном цикле."""
@@ -188,12 +203,12 @@ async def _send_success_messages(chat_id: int, user: Dict[str, Any], result: Dic
 
     # Затем, если нужно, отправляем кнопки подтверждения
     if not is_retry:
+        await asyncio.sleep(0.1)  # Небольшая пауза для надежности
         keyboard = [[
             InlineKeyboardButton("✅ Looks Good", callback_data="CONFIRM_TRANSCRIPTION_OK"),
             InlineKeyboardButton("🗣️ Other language", callback_data="CHOOSE_OTHER_LANGUAGE")
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        # Отправляем вторым сообщением, чтобы не перегружать первое
         await telegram_handler.send_message(chat_id, "Is the language and transcription correct?",
                                             reply_markup=reply_markup)
 
@@ -201,8 +216,7 @@ async def _send_success_messages(chat_id: int, user: Dict[str, Any], result: Dic
 def handle_telegram_success(chat_id, user, result, user_preferences):
     """Синхронная обертка для вызова асинхронной отправки сообщений."""
     try:
-        # Запускаем асинхронную функцию один раз
-        asyncio.run(_send_success_messages(chat_id, user, result, user_preferences))
+        run_async_task(_send_success_messages(chat_id, user, result, user_preferences))
     except Exception as e:
         logger.error(f"Failed to run asyncio tasks in handle_telegram_success: {e}", exc_info=True)
 

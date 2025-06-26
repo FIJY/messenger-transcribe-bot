@@ -4,7 +4,6 @@ import logging
 from typing import Dict, Any, List
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-# Исправленные импорты
 from .database import PLANS
 from config.transcrib_suggestion_config import (
     DEFAULT_POPULAR_TRANSCRIPTION_LANGS,
@@ -81,7 +80,8 @@ class TelegramUI:
         messages = []
 
         for code, name in sorted_langs:
-            line = f"• *{name}:* `{code}`\n"
+            # ===> ИЗМЕНЕНИЕ: Убрано выделение жирным для стабильности отображения <===
+            line = f"• {name}: `{code}`\n"
             if len(message_chunk) + len(line) > 4096:
                 messages.append(message_chunk)
                 message_chunk = ""
