@@ -148,7 +148,7 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
     except LimitExceededError as e:
         logger.warning(str(e))
         if platform == 'telegram' and payment_service and chat_id:
-            asyncio.run(payment_service.send_payment_instructions(chat_id, sender_id))
+            run_async_task(payment_service.send_payment_instructions(chat_id, sender_id))
 
     except Exception as exc:
         logger.error(f"[{self.request.id}] Error in Celery task: {exc}", exc_info=True)
@@ -161,12 +161,11 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         logger.info(f"[{self.request.id}] Task finished for object {object_key}.")
 
 
-# ===> ИСПРАВЛЕНИЕ: Новая, более надежная логика для асинхронных вызовов <===
 def run_async_task(coro):
     """Надежно запускает асинхронную задачу из синхронного контекста."""
     try:
         loop = asyncio.get_running_loop()
-    except RuntimeError:  # 'RuntimeError: There is no current event loop...'
+    except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
@@ -200,10 +199,11 @@ async def _send_success_messages(chat_id: int, user: Dict[str, Any], result: Dic
 
     # Сначала отправляем сам результат
     await telegram_handler.send_message(chat_id, response_text)
+    await asyncio.sleep(0.1)
 
-    # Затем, если нужно, отправляем кнопки подтверждения
+    # ===> ИСПРАВЛЕНИЕ: Добавлена логика для повторной транскрипции <===
     if not is_retry:
-        await asyncio.sleep(0.1)  # Небольшая пауза для надежности
+        # Если это первая попытка, показываем кнопки подтверждения
         keyboard = [[
             InlineKeyboardButton("✅ Looks Good", callback_data="CONFIRM_TRANSCRIPTION_OK"),
             InlineKeyboardButton("🗣️ Other language", callback_data="CHOOSE_OTHER_LANGUAGE")
@@ -211,6 +211,10 @@ async def _send_success_messages(chat_id: int, user: Dict[str, Any], result: Dic
         reply_markup = InlineKeyboardMarkup(keyboard)
         await telegram_handler.send_message(chat_id, "Is the language and transcription correct?",
                                             reply_markup=reply_markup)
+    else:
+        # Если это повторная попытка, сразу предлагаем перевод
+        logger.info(f"Retry successful for user {user['user_id']}. Offering translation options.")
+        await telegram_handler.send_translation_options(chat_id, user)
 
 
 def handle_telegram_success(chat_id, user, result, user_preferences):
