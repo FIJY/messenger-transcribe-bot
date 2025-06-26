@@ -172,10 +172,9 @@ def handle_telegram_success(chat_id, user, result, user_preferences):
     alternatives = result.get('alternatives')
     if alternatives and len(alternatives) > 1:
         response_text += "\n\n*Other likely options:*"
-        for i, alt_text in enumerate(alternatives[1:3], 1):
+        for i, alt_text in enumerate(alternatives[1:3], 1): # Показываем до 2х альтернатив
             response_text += f"\n{i+1}. `{alt_text}`"
 
-    # ===> ИЗМЕНЕНИЕ: Отправка результата и кнопок одним сообщением <===
     reply_markup = None
     if not is_retry:
         keyboard = [[

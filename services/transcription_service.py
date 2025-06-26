@@ -2,7 +2,6 @@
 import openai
 import os
 import logging
-# ===> НОВЫЙ ИМПОРТ <===
 from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_MAP
 
 logger = logging.getLogger(__name__)
@@ -21,67 +20,71 @@ class TranscriptionService:
             self.logger.error(f"Ошибка инициализации OpenAI: {e}")
             raise
 
-    def transcribe_with_fallback(self, audio_file_path, language=None):
+    def detect_language(self, audio_file_path: str) -> tuple[str, str]:
+        """
+        Определяет язык аудиофайла, не выполняя полной транскрипции.
+        Возвращает кортеж (код_языка, полное_имя_языка).
+        """
         try:
-            self.logger.info(f"Запускаем транскрибацию для языка: {language or 'auto'}")
-            result = self._transcribe_sync(audio_file_path, language)
+            self.logger.info(f"Запускаем определение языка для файла: {audio_file_path}")
+            # Мы делаем короткую транскрипцию, чтобы просто получить язык
+            result = self._transcribe_sync(audio_file_path, language_hint=None, task='transcribe')
 
             if result['success']:
-                # Успешная транскрипция с первого раза
-                text = result.get('text', '').strip()
-                if text:
-                    detected_lang = result.get('detected_language')
-                    self.logger.info(f"Транскрипция успешна. Язык: {detected_lang}")
-                    return text, detected_lang
+                code = result.get('detected_language_code', 'unknown')
+                name = result.get('detected_language_name', 'unknown')
+                return code, name
 
-            # Если первая попытка не дала результата, пробуем еще раз в режиме автоопределения.
-            self.logger.warning("Первая попытка не дала результата или текст пустой, пробуем в режиме автоопределения.")
-            fallback_result = self._transcribe_sync(audio_file_path, None)
-
-            if fallback_result['success']:
-                fallback_text = fallback_result.get('text', '').strip()
-                if fallback_text:
-                    detected_lang = fallback_result.get('detected_language')
-                    return fallback_text, detected_lang
-
-            # Если обе попытки не удались
-            error_obj = fallback_result.get('error', result.get('error', Exception('Unknown transcription error')))
-            raise error_obj
+            raise result.get('error', Exception('Unknown language detection error'))
 
         except Exception as e:
-            self.logger.error(f"Критическая ошибка в transcribe_with_fallback: {e}", exc_info=True)
-            return f"Ошибка транскрипции: {str(e)}", 'unknown'
+            self.logger.error(f"Критическая ошибка в detect_language: {e}", exc_info=True)
+            return 'unknown', 'unknown'
 
-    def _transcribe_sync(self, audio_path: str, language_hint: str = None) -> dict:
+    def _transcribe_sync(self, audio_path: str, language_hint: str = None, task: str = 'transcribe') -> dict:
+        """
+        Синхронно транскрибирует аудиофайл.
+        task='transcribe' для получения текста, task='detect' только для языка.
+        """
         try:
             with open(audio_path, "rb") as audio_file:
                 prompt_text = None
                 if language_hint == 'km':
                     prompt_text = "សួស្តី, ជំរាបសួរ, អរគុណ, សូម, បាទ, ចាស, ខ្ញុំ"
-                    self.logger.info(f"Используем prompt для кхмерского языка.")
+
+                # Предохранитель: если language_hint не является двухбуквенным кодом, не используем его
+                if language_hint and len(language_hint) != 2:
+                    self.logger.warning(
+                        f"Получен некорректный language_hint: '{language_hint}'. Выполняем в режиме автоопределения.")
+                    language_hint = None
 
                 response = self.client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
                     language=language_hint,
                     prompt=prompt_text,
-                    response_format="verbose_json"
+                    response_format="verbose_json",
+                    # timestamp_granularities=["word"] # Можно включить для получения временных меток слов
                 )
 
                 detected_language_name = response.language.lower()
                 transcribed_text = response.text.strip() if response.text else ''
 
-                # ===> ГЛАВНОЕ ИСПРАВЛЕНИЕ: НОРМАЛИЗАЦИЯ ЛЮБОГО ЯЗЫКА <===
-                # Преобразуем "russian" -> "ru", "english" -> "en" и т.д.
-                # Если название не найдено, оставляем как есть (на случай новых языков от OpenAI)
-                final_lang_code = SUPPORTED_LANGUAGES_MAP.get(detected_language_name, detected_language_name)
+                # Предохранитель: Проверяем, вернул ли Whisper корректное имя языка
+                if len(detected_language_name) > 15 or ' ' in detected_language_name:
+                    logger.warning(
+                        f"Whisper вернул невалидное имя языка: '{detected_language_name}'. Считаем язык неопределенным.")
+                    final_lang_code = 'unknown'
+                else:
+                    final_lang_code = SUPPORTED_LANGUAGES_MAP.get(detected_language_name, detected_language_name)
 
                 self.logger.info(f"OpenAI определил язык: {detected_language_name} (нормализован в {final_lang_code}).")
 
                 return {
                     'success': True,
                     'text': transcribed_text,
-                    'detected_language': final_lang_code
+                    'detected_language_code': final_lang_code,
+                    'detected_language_name': detected_language_name
                 }
         except Exception as e:
             self.logger.error(f"Ошибка транскрипции в _transcribe_sync: {e}", exc_info=True)

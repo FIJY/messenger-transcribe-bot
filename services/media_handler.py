@@ -13,10 +13,6 @@ from .google_stt_service import GoogleSTTService
 logger = logging.getLogger(__name__)
 
 
-# Этот словарь больше не нужен здесь, так как нормализация происходит в transcription_service
-# LANGUAGE_NAME_TO_CODE_MAP = { ... }
-
-
 class MediaHandler:
     def __init__(self, transcription_service: TranscriptionService, translation_service: TranslationService):
         self.audio_processor = AudioProcessor()
@@ -43,12 +39,10 @@ class MediaHandler:
 
             language_to_process = expected_language
 
-            # ===> ИЗМЕНЕНИЕ: Упрощена и исправлена логика определения языка <===
             if not language_to_process:
-                # transcription_service уже возвращает нормализованный код языка
-                lang_code, lang_full_name = self.transcription_service.transcribe_with_fallback(audio_path)
+                lang_code, lang_full_name = self.transcription_service.detect_language(audio_path)
                 logger.info(f"Language auto-detected as '{lang_full_name}' (code: {lang_code}).")
-                language_to_process = lang_code
+                language_to_process = lang_code if lang_code != 'unknown' else None
 
             logger.info(f"Language pre-determined for processing: {language_to_process}")
 
@@ -73,8 +67,7 @@ class MediaHandler:
                 if not result_dict['success']:
                     raise result_dict['error']
                 text = result_dict.get('text', '')
-                # `detected_language` здесь уже будет кодом, т.к. _transcribe_sync его нормализует
-                detected_language = result_dict.get('detected_language')
+                detected_language = result_dict.get('detected_language_code')
 
             final_audio_path_for_duration = converted_wav_path if converted_wav_path else audio_path
             duration_seconds = self.audio_processor.get_media_duration(final_audio_path_for_duration)
