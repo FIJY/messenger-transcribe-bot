@@ -8,6 +8,7 @@ import asyncio
 from typing import Dict, Any, List, Optional
 from telegram import Update, InlineKeyboardMarkup, Bot, Message, BotCommand
 from datetime import datetime, timezone
+import re
 
 from .database import Database
 from .s3_service import S3Service
@@ -15,10 +16,8 @@ from .celery_client import get_celery_app_client
 from .translation_service import TranslationService
 from .payment_service import PaymentService
 from .telegram_ui import TelegramUI
-from config.transcrib_suggestion_config import (
-    DEFAULT_POPULAR_TRANSCRIPTION_LANGS,
-    SUPPORTED_LANGUAGES_MAP
-)
+from .youtube_service import YouTubeService
+from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +26,6 @@ class TelegramHandler:
     def __init__(self, token: str, database: Database, s3_service: S3Service,
                  translation_service: TranslationService, payment_service: PaymentService):
         if not token: raise ValueError("Telegram token is required.")
-        self.token = token
         self.bot = Bot(token=token)
         self.database = database
         self.s3_service = s3_service
@@ -36,20 +34,28 @@ class TelegramHandler:
         self.payment_service = payment_service
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
         self.ui = TelegramUI()
+        self.youtube_service = YouTubeService()
 
     async def set_bot_commands(self):
-        """Устанавливает список команд, видимых в меню Telegram."""
+        """Устанавливает список команд и кнопку меню."""
         commands = [
             BotCommand("start", "Start or restart the bot"),
             BotCommand("status", "Check your plan and minute balance"),
             BotCommand("languages", "See list of supported languages"),
             BotCommand("help", "Get help and information")
         ]
-        try:
-            await self.bot.set_my_commands(commands)
-            logger.info("Bot commands have been set successfully.")
-        except Exception as e:
-            logger.error(f"Failed to set bot commands: {e}")
+        await self.bot.set_my_commands(commands)
+
+        # Устанавливаем кнопку "Добавить в группу"
+        bot_user = await self.bot.get_me()
+        add_to_group_url = f"https://t.me/{bot_user.username}?startgroup=true"
+
+        # В API нет прямой установки URL для кнопки меню, но можно направить пользователя через /help
+        # или просто дать ссылку. Правильный способ - через настройки в BotFather.
+        # Для программной установки можно использовать set_chat_menu_button, но это для конкретного чата.
+        # Глобальное меню настраивается в BotFather. Мы оставим команды.
+
+        logger.info("Bot commands have been set successfully.")
 
     async def handle_update(self, update_data: dict):
         update = Update.de_json(update_data, bot=self.bot)
@@ -63,30 +69,37 @@ class TelegramHandler:
         chat_id = update.message.chat_id
         username = update.message.from_user.username
 
-        if update.message.text and update.message.text.startswith('/'):
-            command_parts = update.message.text.split()
-            command = command_parts[0]
-
-            if command == '/start':
-                await self._handle_start_command(user_id, chat_id, username)
-                return
-            if command == '/status':
-                await self._handle_status_command(user_id, chat_id)
-                return
-            if command == '/help':
-                await self.send_message(chat_id, self.ui.get_help_message())
-                return
-            if command == '/languages':
-                await self._handle_languages_command(chat_id)
+        if update.message.text:
+            # Сначала проверяем на YouTube ссылку
+            if self.youtube_service.is_youtube_link(update.message.text):
+                await self._handle_youtube_link(update.message)
                 return
 
-            if user_id == self.admin_telegram_id:
-                if command == '/confirm':
-                    await self._handle_confirm_command(command_parts, chat_id)
+            # Затем проверяем на команды
+            if update.message.text.startswith('/'):
+                command_parts = update.message.text.split()
+                command = command_parts[0]
+
+                if command == '/start':
+                    await self._handle_start_command(user_id, chat_id, username)
                     return
-                if command == '/check':
-                    await self._handle_check_command(command_parts, chat_id)
+                if command == '/status':
+                    await self._handle_status_command(user_id, chat_id)
                     return
+                if command == '/help':
+                    await self.send_message(chat_id, self.ui.get_help_message())
+                    return
+                if command == '/languages':
+                    await self._handle_languages_command(chat_id)
+                    return
+
+                if user_id == self.admin_telegram_id:
+                    if command == '/confirm':
+                        await self._handle_confirm_command(command_parts, chat_id)
+                        return
+                    if command == '/check':
+                        await self._handle_check_command(command_parts, chat_id)
+                        return
 
         user = self.database.get_user(user_id)
         if not user:
@@ -104,12 +117,77 @@ class TelegramHandler:
             elif state == 'awaiting_language_input_translation':
                 await self._handle_language_text_input(user_id, user, update.message.text, 'translation')
             else:
-                await self.send_message(chat_id, "ℹ️ To get started, please send me an audio or video file.")
+                await self.send_message(chat_id,
+                                        "ℹ️ To get started, please send me an audio or video file, or a YouTube link.")
             return
 
         file_to_process = update.message.document or update.message.audio or update.message.video or update.message.voice
         if file_to_process:
             await self._handle_file(file_to_process, user_id, chat_id)
+
+    async def _handle_youtube_link(self, message: Message):
+        url = message.text
+        chat_id = message.chat_id
+        user_id = str(message.from_user.id)
+
+        await self.send_message(chat_id, "✅ YouTube link received. Starting to download audio...")
+
+        # Запускаем в фоне, чтобы не блокировать основной поток
+        asyncio.create_task(self._process_youtube_download(url, user_id, chat_id))
+
+    async def _process_youtube_download(self, url: str, user_id: str, chat_id: int):
+        download_result = self.youtube_service.download_audio(url)
+
+        if download_result.get("error"):
+            await self.send_message(chat_id, f"❌ Error: {download_result['error']}")
+            return
+
+        local_file_path = download_result.get("local_path")
+        try:
+            if not self._queue_file_for_processing(local_file_path, user_id, chat_id):
+                await self.send_message(chat_id, "❌ A server error occurred while queuing the file.")
+        finally:
+            if local_file_path and os.path.exists(local_file_path):
+                os.remove(local_file_path)
+
+    async def _handle_file(self, file_obj, user_id: str, chat_id: int):
+        TELEGRAM_FILE_SIZE_LIMIT = 20 * 1024 * 1024
+        if file_obj.file_size and file_obj.file_size > TELEGRAM_FILE_SIZE_LIMIT:
+            await self.send_message(chat_id,
+                                    f"❌ File is too large ({file_obj.file_size / 1024 / 1024:.1f}MB). The maximum file size for bots is 20MB.")
+            return
+
+        await self.send_message(chat_id, "✅ File received. Processing...")
+        local_file_path = None
+        try:
+            tg_file = await file_obj.get_file()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(tg_file.file_path)[-1]) as temp_f:
+                local_file_path = temp_f.name
+                await tg_file.download_to_drive(custom_path=local_file_path)
+
+            if not self._queue_file_for_processing(local_file_path, user_id, chat_id):
+                await self.send_message(chat_id, "❌ A server error occurred while queuing the file.")
+        except Exception as e:
+            logger.error(f"Error handling Telegram file: {e}", exc_info=True)
+            await self.send_message(chat_id, "❌ An error occurred while processing your file.")
+        finally:
+            if local_file_path and os.path.exists(local_file_path): os.remove(local_file_path)
+
+    def _queue_file_for_processing(self, local_file_path: str, user_id: str, chat_id: int) -> bool:
+        try:
+            object_key = f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
+            if not self.s3_service.upload_file(local_file_path, object_key):
+                logger.error("Failed to upload file to S3.")
+                return False
+            if self.celery_app_client:
+                self.celery_app_client.send_task('tasks.process_media', args=[user_id, object_key, {},
+                                                                              {'platform': 'telegram',
+                                                                               'chat_id': chat_id}])
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error in _queue_file_for_processing: {e}", exc_info=True)
+            return False
 
     async def _handle_start_command(self, user_id: str, chat_id: int, username: Optional[str]):
         user = self.database.get_user(user_id)
@@ -147,7 +225,8 @@ class TelegramHandler:
             await self.send_message(chat_id, f"❌ User with ID `{user_to_activate}` not found.")
             return
 
-        if target_user.get('plan') == plan_name and target_user.get('subscription_expires_at') > datetime.now(
+        if target_user.get('plan') == plan_name and target_user.get('subscription_expires_at',
+                                                                    datetime.now(timezone.utc)) > datetime.now(
                 timezone.utc):
             await self.send_message(chat_id, f"⚠️ **Warning:** User `{user_to_activate}` is already on this plan.")
             return
@@ -255,36 +334,9 @@ class TelegramHandler:
         else:
             await self.send_message(chat_id, f"❌ Translation failed: {res.get('error')}")
 
-    async def _handle_file(self, file_obj, user_id: str, chat_id: int):
-        await self.send_message(chat_id, "✅ File received. Processing...")
-        local_file_path = None
-        try:
-            tg_file = await file_obj.get_file()
-            async with httpx.AsyncClient(timeout=60) as client:
-                response = await client.get(tg_file.file_path)
-                response.raise_for_status()
-                with tempfile.NamedTemporaryFile(delete=False,
-                                                 suffix=os.path.splitext(tg_file.file_path)[-1]) as temp_f:
-                    local_file_path = temp_f.name
-                    temp_f.write(response.content)
-            object_key = f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
-            if not self.s3_service.upload_file(local_file_path, object_key):
-                await self.send_message(chat_id, "❌ Server error: could not save file.");
-                return
-            if self.celery_app_client:
-                self.celery_app_client.send_task('tasks.process_media', args=[user_id, object_key, {},
-                                                                              {'platform': 'telegram',
-                                                                               'chat_id': chat_id}])
-        except Exception as e:
-            logger.error(f"Error handling Telegram file: {e}", exc_info=True)
-            await self.send_message(chat_id, "❌ An error occurred while processing your file.")
-        finally:
-            if local_file_path and os.path.exists(local_file_path): os.remove(local_file_path)
-
     async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None):
         """Отправляет сообщение, используя встроенный клиент."""
         try:
-            # ===> ИСПРАВЛЕНИЕ: Удален неверный аргумент timeout <===
             await self.bot.send_message(
                 chat_id=chat_id,
                 text=text,

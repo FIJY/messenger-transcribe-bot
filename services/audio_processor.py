@@ -2,7 +2,7 @@
 import os
 import subprocess
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 import tempfile
 
 logger = logging.getLogger(__name__)
@@ -41,12 +41,11 @@ class AudioProcessor:
             with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_audio:
                 audio_path = temp_audio.name
 
-            # ===> ИЗМЕНЕНИЕ: Команда ffmpeg сделана более надежной <===
             command = [
                 'ffmpeg', '-i', video_path,
-                '-vn',  # Отключить видео
-                '-q:a', '0',  # Максимальное качество аудио
-                '-map', 'a',  # Выбрать все аудиодорожки
+                '-vn',
+                '-q:a', '0',
+                '-map', '0:a:0?', # Select the first audio stream, if it exists
                 '-y', audio_path
             ]
             logger.info(f"Выполняем команду: {' '.join(command)}")
@@ -119,7 +118,7 @@ class AudioProcessor:
         file_ext = os.path.splitext(file_path)[1].lower()
         if file_ext == '.tmp' and '/tmp/' in file_path: file_ext = '.mp4'
         if file_ext not in (self.supported_audio_formats + self.supported_video_formats):
-            return False, f"Неподдерживаемый формат файла. Поддерживаются: {', '.join(self.supported_audio_formats + self.supported_video_formats)}"
+            return False, f"Неподдерживаемый формат файла."
         try:
             file_size = os.path.getsize(file_path)
             max_size_bytes = max_size_mb * 1024 * 1024
