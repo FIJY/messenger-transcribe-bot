@@ -4,7 +4,6 @@ import logging
 from typing import Dict, Any, List
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-# Правильные импорты, без ссылки на telegram_handler
 from .database import PLANS
 from config.transcrib_suggestion_config import (
     DEFAULT_POPULAR_TRANSCRIPTION_LANGS,

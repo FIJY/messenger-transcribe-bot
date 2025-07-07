@@ -185,7 +185,6 @@ async def _send_success_messages(chat_id: int, user: Dict[str, Any], result: Dic
     lang_info = result.get('language_info', {})
     lang_name = lang_info.get('name', 'N/A')
 
-    # Формируем основной текст
     response_text = f"📝 *Transcription ({lang_name}):*\n\n{result.get('transcription', '')}"
     confidence = result.get('confidence')
     if confidence:
@@ -197,13 +196,10 @@ async def _send_success_messages(chat_id: int, user: Dict[str, Any], result: Dic
         for i, alt_text in enumerate(alternatives[1:3], 1):
             response_text += f"\n{i + 1}. `{alt_text}`"
 
-    # Сначала отправляем сам результат
     await telegram_handler.send_message(chat_id, response_text)
     await asyncio.sleep(0.1)
 
-    # ===> ИСПРАВЛЕНИЕ: Добавлена логика для повторной транскрипции <===
     if not is_retry:
-        # Если это первая попытка, показываем кнопки подтверждения
         keyboard = [[
             InlineKeyboardButton("✅ Looks Good", callback_data="CONFIRM_TRANSCRIPTION_OK"),
             InlineKeyboardButton("🗣️ Other language", callback_data="CHOOSE_OTHER_LANGUAGE")
@@ -212,7 +208,6 @@ async def _send_success_messages(chat_id: int, user: Dict[str, Any], result: Dic
         await telegram_handler.send_message(chat_id, "Is the language and transcription correct?",
                                             reply_markup=reply_markup)
     else:
-        # Если это повторная попытка, сразу предлагаем перевод
         logger.info(f"Retry successful for user {user['user_id']}. Offering translation options.")
         await telegram_handler.send_translation_options(chat_id, user)
 

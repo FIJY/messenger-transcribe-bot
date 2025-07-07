@@ -3,6 +3,7 @@ import logging
 import tempfile
 import yt_dlp
 from typing import Optional, Dict, Any
+import re
 
 logger = logging.getLogger(__name__)
 
