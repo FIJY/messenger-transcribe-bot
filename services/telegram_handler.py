@@ -6,7 +6,7 @@ import httpx
 import uuid
 import asyncio
 from typing import Dict, Any, List, Optional
-from telegram import Update, InlineKeyboardMarkup, Bot, Message, BotCommand
+from telegram import Update, InlineKeyboardMarkup, Bot, Message, BotCommand, MenuButtonWebApp, WebAppInfo
 from datetime import datetime, timezone
 import re
 
@@ -46,16 +46,15 @@ class TelegramHandler:
         ]
         await self.bot.set_my_commands(commands)
 
-        # Устанавливаем кнопку "Добавить в группу"
-        bot_user = await self.bot.get_me()
-        add_to_group_url = f"https://t.me/{bot_user.username}?startgroup=true"
-
-        # В API нет прямой установки URL для кнопки меню, но можно направить пользователя через /help
-        # или просто дать ссылку. Правильный способ - через настройки в BotFather.
-        # Для программной установки можно использовать set_chat_menu_button, но это для конкретного чата.
-        # Глобальное меню настраивается в BotFather. Мы оставим команды.
-
-        logger.info("Bot commands have been set successfully.")
+        try:
+            bot_user = await self.bot.get_me()
+            add_to_group_url = f"https://t.me/{bot_user.username}?startgroup=true"
+            # Для кнопки "Добавить в группу" лучше всего дать прямую ссылку в /help
+            # так как MenuButtonWebApp предназначена для открытия веб-приложений.
+            # Мы добавим эту ссылку в get_help_message в telegram_ui.py
+            logger.info("Bot commands have been set successfully.")
+        except Exception as e:
+            logger.error(f"Failed to set menu button: {e}")
 
     async def handle_update(self, update_data: dict):
         update = Update.de_json(update_data, bot=self.bot)
@@ -70,12 +69,10 @@ class TelegramHandler:
         username = update.message.from_user.username
 
         if update.message.text:
-            # Сначала проверяем на YouTube ссылку
             if self.youtube_service.is_youtube_link(update.message.text):
                 await self._handle_youtube_link(update.message)
                 return
 
-            # Затем проверяем на команды
             if update.message.text.startswith('/'):
                 command_parts = update.message.text.split()
                 command = command_parts[0]
@@ -132,13 +129,12 @@ class TelegramHandler:
 
         await self.send_message(chat_id, "✅ YouTube link received. Starting to download audio...")
 
-        # Запускаем в фоне, чтобы не блокировать основной поток
         asyncio.create_task(self._process_youtube_download(url, user_id, chat_id))
 
     async def _process_youtube_download(self, url: str, user_id: str, chat_id: int):
         download_result = self.youtube_service.download_audio(url)
 
-        if download_result.get("error"):
+        if "error" in download_result:
             await self.send_message(chat_id, f"❌ Error: {download_result['error']}")
             return
 
@@ -169,7 +165,10 @@ class TelegramHandler:
                 await self.send_message(chat_id, "❌ A server error occurred while queuing the file.")
         except Exception as e:
             logger.error(f"Error handling Telegram file: {e}", exc_info=True)
-            await self.send_message(chat_id, "❌ An error occurred while processing your file.")
+            if "File is too big" in str(e):
+                await self.send_message(chat_id, "❌ Error: The file is too large to download (over 20MB).")
+            else:
+                await self.send_message(chat_id, "❌ An error occurred while processing your file.")
         finally:
             if local_file_path and os.path.exists(local_file_path): os.remove(local_file_path)
 

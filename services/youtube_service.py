@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 class YouTubeService:
     def __init__(self):
-        # Configuration for yt-dlp
         self.ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': f'{tempfile.gettempdir()}/%(id)s.%(ext)s',
@@ -21,37 +20,34 @@ class YouTubeService:
             }],
             'logger': logger,
             'progress_hooks': [self._on_download_progress],
-            'max_filesize': 20 * 1024 * 1024,  # Set a 20MB limit
+            'max_filesize': 20 * 1024 * 1024,
             'noplaylist': True,
             'quiet': True,
         }
         logger.info("YouTubeService initialized.")
 
     def _on_download_progress(self, d):
-        # This hook can interrupt the download if the file is too large
         if d['status'] == 'downloading':
             total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
             if total_bytes and total_bytes > self.ydl_opts['max_filesize']:
                 raise yt_dlp.utils.DownloadError("File size exceeds the 20MB limit.")
 
     def is_youtube_link(self, text: str) -> bool:
-        """Checks if a string is a YouTube link."""
-        # This will match standard youtube.com and youtu.be links
+        """Проверяет, является ли текст ссылкой на YouTube."""
         youtube_regex = (
             r'(https?://)?(www\.)?'
-            '(youtube|youtu|youtube-nocookie)\.(com|be)/'
-            '(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})')
-        return bool(re.match(youtube_regex, text))
+            r'(youtube\.com/watch\?v=|youtu\.be/|googleusercontent\.com/youtube\.com/)'
+        )
+        return bool(re.search(youtube_regex, text))
 
     def download_audio(self, url: str) -> Dict[str, Any]:
         """
-        Downloads audio from a YouTube URL and returns a dictionary with the result.
+        Скачивает аудио с YouTube, конвертирует в mp3 и возвращает путь и метаданные.
         """
         try:
             with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                 logger.info(f"Starting to download audio from YouTube URL: {url}")
                 info = ydl.extract_info(url, download=True)
-                # The output path is now mp3 due to the postprocessor
                 downloaded_path = ydl.prepare_filename(info).rsplit('.', 1)[0] + '.mp3'
 
                 result = {
