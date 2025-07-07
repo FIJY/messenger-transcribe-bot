@@ -11,12 +11,9 @@ logger = logging.getLogger(__name__)
 class AudioProcessor:
     def __init__(self):
         self.supported_audio_formats = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.oga']
-        self.supported_video_formats = ['.mp4', '.avi', '.mov', '.mkv', '.webm']
+        self.supported_video_formats = ['.mp4', '.avi', 'mov', '.mkv', '.webm']
 
     def process_file(self, file_path: str) -> Optional[str]:
-        """
-        Обрабатывает медиа файл и возвращает путь к аудио файлу
-        """
         if not os.path.exists(file_path):
             logger.error(f"Файл не найден: {file_path}")
             return None
@@ -40,16 +37,17 @@ class AudioProcessor:
 
     @staticmethod
     def _extract_audio_from_video(video_path: str) -> Optional[str]:
-        """
-        Извлекает аудио из видео файла используя ffmpeg
-        """
         try:
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_audio:
                 audio_path = temp_audio.name
 
+            # ===> ИЗМЕНЕНИЕ: Команда ffmpeg сделана более надежной <===
             command = [
-                'ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
-                '-ar', '16000', '-ac', '1', '-y', audio_path
+                'ffmpeg', '-i', video_path,
+                '-vn',  # Отключить видео
+                '-q:a', '0',  # Максимальное качество аудио
+                '-map', 'a',  # Выбрать все аудиодорожки
+                '-y', audio_path
             ]
             logger.info(f"Выполняем команду: {' '.join(command)}")
 
@@ -69,9 +67,6 @@ class AudioProcessor:
 
     @staticmethod
     def cleanup_temp_file(file_path: str):
-        """
-        Удаляет временный файл
-        """
         try:
             if file_path and os.path.exists(file_path):
                 os.remove(file_path)
@@ -79,12 +74,7 @@ class AudioProcessor:
         except Exception as e:
             logger.warning(f"Не удалось удалить временный файл {file_path}: {e}")
 
-    # ===> ИСПРАВЛЕНИЕ: Добавлен недостающий метод <===
     def convert_to_wav(self, input_path: str) -> Optional[str]:
-        """
-        Принудительно конвертирует аудиофайл в формат WAV (pcm_s16le, 16kHz, моно).
-        Это требуется для Google STT.
-        """
         try:
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
                 output_path = temp_audio.name
@@ -124,7 +114,7 @@ class AudioProcessor:
             logger.error(f"Ошибка при определении длительности: {e}")
             return None
 
-    def validate_audio_file(self, file_path: str) -> tuple[bool, str]:
+    def validate_audio_file(self, file_path: str, max_size_mb: int = 20) -> tuple[bool, str]:
         if not os.path.exists(file_path): return False, "Файл не найден"
         file_ext = os.path.splitext(file_path)[1].lower()
         if file_ext == '.tmp' and '/tmp/' in file_path: file_ext = '.mp4'
@@ -132,13 +122,9 @@ class AudioProcessor:
             return False, f"Неподдерживаемый формат файла. Поддерживаются: {', '.join(self.supported_audio_formats + self.supported_video_formats)}"
         try:
             file_size = os.path.getsize(file_path)
-            max_size = 50 * 1024 * 1024
-            if file_size > max_size: return False, f"Файл слишком большой ({file_size / (1024 * 1024):.1f}MB). Максимум: {max_size / (1024 * 1024)}MB"
+            max_size_bytes = max_size_mb * 1024 * 1024
+            if file_size > max_size_bytes: return False, f"Файл слишком большой ({file_size / (1024 * 1024):.1f}MB). Максимум: {max_size_mb}MB"
             if file_size == 0: return False, "Файл пустой"
         except Exception as e:
             return False, f"Ошибка при проверке размера файла: {e}"
-        duration = self.get_media_duration(file_path)
-        if duration:
-            max_duration = 3600
-            if duration > max_duration: return False, f"Файл слишком длинный ({duration / 60:.1f} мин). Максимум: {max_duration / 60} минут"
         return True, "Файл валиден"
