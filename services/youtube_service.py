@@ -20,7 +20,7 @@ class YouTubeService:
             }],
             'logger': logger,
             'progress_hooks': [self._on_download_progress],
-            'max_filesize': 20 * 1024 * 1024,
+            'max_filesize': 20 * 1024 * 1024,  # Ограничение 20MB
             'noplaylist': True,
             'quiet': True,
         }

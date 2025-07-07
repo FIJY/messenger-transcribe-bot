@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class AudioProcessor:
     def __init__(self):
         self.supported_audio_formats = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.oga']
-        self.supported_video_formats = ['.mp4', '.avi', 'mov', '.mkv', '.webm']
+        self.supported_video_formats = ['.mp4', 'avi', 'mov', '.mkv', '.webm']
 
     def process_file(self, file_path: str) -> Optional[str]:
         if not os.path.exists(file_path):
@@ -45,7 +45,7 @@ class AudioProcessor:
                 'ffmpeg', '-i', video_path,
                 '-vn',
                 '-q:a', '0',
-                '-map', '0:a:0?', # Select the first audio stream, if it exists
+                '-map', '0:a:0?', # Выбирает первую аудиодорожку, не вызывая ошибки, если она всего одна
                 '-y', audio_path
             ]
             logger.info(f"Выполняем команду: {' '.join(command)}")

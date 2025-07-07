@@ -6,7 +6,7 @@ import httpx
 import uuid
 import asyncio
 from typing import Dict, Any, List, Optional
-from telegram import Update, InlineKeyboardMarkup, Bot, Message, BotCommand, MenuButtonWebApp, WebAppInfo
+from telegram import Update, InlineKeyboardMarkup, Bot, Message, BotCommand
 from datetime import datetime, timezone
 import re
 
@@ -37,24 +37,18 @@ class TelegramHandler:
         self.youtube_service = YouTubeService()
 
     async def set_bot_commands(self):
-        """Устанавливает список команд и кнопку меню."""
+        """Устанавливает список команд, видимых в меню Telegram."""
         commands = [
             BotCommand("start", "Start or restart the bot"),
             BotCommand("status", "Check your plan and minute balance"),
             BotCommand("languages", "See list of supported languages"),
             BotCommand("help", "Get help and information")
         ]
-        await self.bot.set_my_commands(commands)
-
         try:
-            bot_user = await self.bot.get_me()
-            add_to_group_url = f"https://t.me/{bot_user.username}?startgroup=true"
-            # Для кнопки "Добавить в группу" лучше всего дать прямую ссылку в /help
-            # так как MenuButtonWebApp предназначена для открытия веб-приложений.
-            # Мы добавим эту ссылку в get_help_message в telegram_ui.py
+            await self.bot.set_my_commands(commands)
             logger.info("Bot commands have been set successfully.")
         except Exception as e:
-            logger.error(f"Failed to set menu button: {e}")
+            logger.error(f"Failed to set bot commands: {e}")
 
     async def handle_update(self, update_data: dict):
         update = Update.de_json(update_data, bot=self.bot)
@@ -69,6 +63,7 @@ class TelegramHandler:
         username = update.message.from_user.username
 
         if update.message.text:
+            # Сначала проверяем на YouTube ссылку
             if self.youtube_service.is_youtube_link(update.message.text):
                 await self._handle_youtube_link(update.message)
                 return
@@ -84,7 +79,9 @@ class TelegramHandler:
                     await self._handle_status_command(user_id, chat_id)
                     return
                 if command == '/help':
-                    await self.send_message(chat_id, self.ui.get_help_message())
+                    bot_user = await self.bot.get_me()
+                    add_to_group_url = f"https://t.me/{bot_user.username}?startgroup=true"
+                    await self.send_message(chat_id, self.ui.get_help_message(add_to_group_url))
                     return
                 if command == '/languages':
                     await self._handle_languages_command(chat_id)
@@ -179,6 +176,7 @@ class TelegramHandler:
                 logger.error("Failed to upload file to S3.")
                 return False
             if self.celery_app_client:
+                # Отправляем задачу в Celery
                 self.celery_app_client.send_task('tasks.process_media', args=[user_id, object_key, {},
                                                                               {'platform': 'telegram',
                                                                                'chat_id': chat_id}])
@@ -187,6 +185,8 @@ class TelegramHandler:
         except Exception as e:
             logger.error(f"Error in _queue_file_for_processing: {e}", exc_info=True)
             return False
+
+    # ... (остальные методы без изменений)
 
     async def _handle_start_command(self, user_id: str, chat_id: int, username: Optional[str]):
         user = self.database.get_user(user_id)
