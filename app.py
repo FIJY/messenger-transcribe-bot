@@ -13,8 +13,6 @@ logger = logging.getLogger(__name__)
 # Импорты всех наших сервисов
 from services.telegram_handler import TelegramHandler
 from services.database import Database
-# TranslationService больше не нужен в app.py напрямую
-# from services.translation_service import TranslationService
 from services.s3_service import S3Service
 from services.payment_service import PaymentService
 
