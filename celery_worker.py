@@ -8,12 +8,12 @@ from celery import Celery
 from celery.schedules import crontab
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardMarkup
 from datetime import datetime, timezone
+from bson import ObjectId
 
 from services.media_handler import MediaHandler
 from services.transcription_service import TranscriptionService
-from services.translation_service import TranslationService
 from services.database import Database
 from services.audio_processor import AudioProcessor
 from services.s3_service import S3Service
@@ -59,7 +59,8 @@ try:
     s3_service = S3Service()
     audio_processor = AudioProcessor()
     transcription_service = TranscriptionService()
-    translation_service = TranslationService()
+    # TranslationService больше не нужен здесь напрямую
+    # translation_service = TranslationService()
 
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     if telegram_token:
@@ -69,7 +70,7 @@ try:
             token=telegram_token,
             database=database,
             s3_service=s3_service,
-            translation_service=translation_service,
+            # translation_service=translation_service, # Передавать не нужно
             payment_service=payment_service
         )
     else:
@@ -78,7 +79,7 @@ try:
         bot_instance = None
         logger.warning("Telegram Bot is disabled due to missing token.")
 
-    media_handler_service = MediaHandler(transcription_service, translation_service)
+    media_handler_service = MediaHandler(transcription_service, None)  # TranslationService больше не передается
     logger.info("Celery worker: All services initialized successfully.")
 except Exception as e:
     logger.error(f"Celery worker: CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
@@ -106,9 +107,7 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
             expires_at = user.get('subscription_expires_at')
             if expires_at and expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
-
             if expires_at and expires_at < datetime.now(timezone.utc):
-                logger.info(f"Subscription for user {sender_id} has expired. Downgrading to free plan.")
                 database.downgrade_user_to_free(sender_id)
                 user = database.get_user(sender_id)
 
@@ -124,24 +123,24 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         minutes_left = minutes_limit - minutes_used
 
         if file_duration_min > minutes_left:
-            raise LimitExceededError(
-                f"User {sender_id} limit exceeded. Required: {file_duration_min:.2f}, Left: {minutes_left:.2f}")
+            raise LimitExceededError(f"User {sender_id} limit exceeded.")
 
         result = media_handler_service.process_media(local_file_path, user_preferences)
 
         if result.get('success'):
             if platform == 'telegram' and telegram_handler and chat_id:
-                handle_telegram_success(chat_id, user, result, user_preferences)
-            duration_to_charge = result.get('duration_minutes', file_duration_min)
+                note_id = database.save_note(
+                    user_id=sender_id,
+                    content=result.get('transcription'),
+                    s3_object_key=object_key,
+                    detected_language=result.get('detected_language'),
+                    duration_minutes=result.get('duration_minutes', 0)
+                )
+                run_async_task(
+                    handle_telegram_success(chat_id, result.get('transcription'), note_id)
+                )
+            duration_to_charge = result.get('duration_minutes', 0)
             database.update_minutes_used(sender_id, duration_to_charge)
-            database.save_transcription(
-                user_id=sender_id, object_key=object_key,
-                transcription=result.get('transcription'),
-                detected_language=result.get('detected_language'),
-                confidence=result.get('confidence'),
-                alternatives=result.get('alternatives'),
-                duration_minutes=duration_to_charge
-            )
         else:
             raise result.get('error', Exception('Unknown error during media processing'))
 
@@ -149,13 +148,11 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         logger.warning(str(e))
         if platform == 'telegram' and payment_service and chat_id:
             run_async_task(payment_service.send_payment_instructions(chat_id, sender_id))
-
     except Exception as exc:
         logger.error(f"[{self.request.id}] Error in Celery task: {exc}", exc_info=True)
         error_message = "❌ Failed to process your file. Please try again later."
         if platform == 'telegram' and telegram_handler and chat_id:
             run_async_task(telegram_handler.send_message(chat_id, error_message))
-
     finally:
         if local_file_path: audio_processor.cleanup_temp_file(local_file_path)
         logger.info(f"[{self.request.id}] Task finished for object {object_key}.")
@@ -176,48 +173,10 @@ def run_async_task(coro):
     return loop.run_until_complete(coro)
 
 
-async def _send_success_messages(chat_id: int, user: Dict[str, Any], result: Dict[str, Any],
-                                 user_preferences: Dict[str, Any]):
-    """Асинхронная функция для отправки всех сообщений об успехе в одном цикле."""
+async def handle_telegram_success(chat_id: int, note_text: str, note_id: ObjectId):
     if not telegram_handler: return
-
-    is_retry = bool(user_preferences.get('preferred_language'))
-    lang_info = result.get('language_info', {})
-    lang_name = lang_info.get('name', 'N/A')
-
-    response_text = f"📝 *Transcription ({lang_name}):*\n\n{result.get('transcription', '')}"
-    confidence = result.get('confidence')
-    if confidence:
-        response_text += f"\n\n*Confidence:* {confidence:.0%}"
-
-    alternatives = result.get('alternatives')
-    if alternatives and len(alternatives) > 1:
-        response_text += "\n\n*Other likely options:*"
-        for i, alt_text in enumerate(alternatives[1:3], 1):
-            response_text += f"\n{i + 1}. `{alt_text}`"
-
-    await telegram_handler.send_message(chat_id, response_text)
-    await asyncio.sleep(0.1)
-
-    if not is_retry:
-        keyboard = [[
-            InlineKeyboardButton("✅ Looks Good", callback_data="CONFIRM_TRANSCRIPTION_OK"),
-            InlineKeyboardButton("🗣️ Other language", callback_data="CHOOSE_OTHER_LANGUAGE")
-        ]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await telegram_handler.send_message(chat_id, "Is the language and transcription correct?",
-                                            reply_markup=reply_markup)
-    else:
-        logger.info(f"Retry successful for user {user['user_id']}. Offering translation options.")
-        await telegram_handler.send_translation_options(chat_id, user)
-
-
-def handle_telegram_success(chat_id, user, result, user_preferences):
-    """Синхронная обертка для вызова асинхронной отправки сообщений."""
-    try:
-        run_async_task(_send_success_messages(chat_id, user, result, user_preferences))
-    except Exception as e:
-        logger.error(f"Failed to run asyncio tasks in handle_telegram_success: {e}", exc_info=True)
+    message, reply_markup = telegram_handler.ui.get_note_created_message(note_text, note_id)
+    await telegram_handler.send_message(chat_id, message, reply_markup)
 
 
 def _download_file_from_r2(object_key: str) -> Optional[str]:
