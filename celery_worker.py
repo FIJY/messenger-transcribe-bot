@@ -19,8 +19,6 @@ from services.audio_processor import AudioProcessor
 from services.s3_service import S3Service
 from services.telegram_handler import TelegramHandler
 from services.payment_service import PaymentService
-from services.translation_service import TranslationService
-from services.insight_service import InsightService
 from telegram import Bot
 
 load_dotenv()
@@ -60,20 +58,17 @@ try:
     s3_service = S3Service()
     audio_processor = AudioProcessor()
     transcription_service = TranscriptionService()
-    translation_service = TranslationService()
-    insight_service = InsightService()
 
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     if telegram_token:
         bot_instance = Bot(token=telegram_token)
         payment_service = PaymentService(bot=bot_instance, database=database)
+        # ===> ИСПРАВЛЕНИЕ: Убран лишний аргумент <===
         telegram_handler = TelegramHandler(
             token=telegram_token,
             database=database,
             s3_service=s3_service,
-            payment_service=payment_service,
-            insight_service=insight_service,
-            translation_service=translation_service
+            payment_service=payment_service
         )
     else:
         telegram_handler = None
@@ -81,6 +76,7 @@ try:
         bot_instance = None
         logger.warning("Telegram Bot is disabled due to missing token.")
 
+    # ===> ИСПРАВЛЕНИЕ: Убран лишний аргумент <===
     media_handler_service = MediaHandler(transcription_service)
     logger.info("Celery worker: All services initialized successfully.")
 except Exception as e:
@@ -131,8 +127,15 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
         if result.get('success'):
             if platform == 'telegram' and chat_id:
+                note_id = database.save_note(
+                    user_id=sender_id,
+                    content=result.get('transcription'),
+                    s3_object_key=object_key,
+                    detected_language=result.get('detected_language'),
+                    duration_minutes=result.get('duration_minutes', 0)
+                )
                 run_async_task(
-                    handle_telegram_success(chat_id, user, result, object_key)
+                    handle_telegram_success(chat_id, result.get('transcription'), note_id)
                 )
             duration_to_charge = result.get('duration_minutes', 0)
             database.update_minutes_used(sender_id, duration_to_charge)
@@ -154,7 +157,6 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
 
 def run_async_task(coro):
-    """Надежно запускает асинхронную задачу из синхронного контекста."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -168,18 +170,10 @@ def run_async_task(coro):
     return loop.run_until_complete(coro)
 
 
-async def handle_telegram_success(chat_id: int, user: Dict[str, Any], result: Dict[str, Any], s3_key: str):
+async def handle_telegram_success(chat_id: int, note_text: str, note_id: ObjectId):
     if not telegram_handler: return
-
-    lang_info = result.get('language_info', {})
-    lang_name = lang_info.get('name', 'N/A')
-
-    message, reply_markup = telegram_handler.ui.get_transcription_confirmation_message(
-        text=result['transcription'],
-        lang_name=lang_name,
-        s3_key=s3_key
-    )
-    await telegram_handler.send_message(chat_id, message, reply_markup=reply_markup)
+    message, reply_markup = telegram_handler.ui.get_note_created_message(note_text, note_id)
+    await telegram_handler.send_message(chat_id, message, reply_markup)
 
 
 def _download_file_from_r2(object_key: str) -> Optional[str]:
