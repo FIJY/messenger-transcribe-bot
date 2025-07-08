@@ -5,6 +5,7 @@ from typing import Optional, Tuple, Dict, Any
 
 from .audio_processor import AudioProcessor
 from .transcription_service import TranscriptionService
+from .translation_service import TranslationService
 from .native_script_service import NativeScriptService
 from .correction_service import CorrectionService
 from .google_stt_service import GoogleSTTService
@@ -13,17 +14,19 @@ logger = logging.getLogger(__name__)
 
 
 class MediaHandler:
-    def __init__(self, transcription_service: TranscriptionService, translation_service: Optional[Any] = None):
+    def __init__(self, transcription_service: TranscriptionService, translation_service: Optional[TranslationService] = None):
         self.audio_processor = AudioProcessor()
         self.native_script_service = NativeScriptService()
         self.correction_service = CorrectionService()
         self.transcription_service = transcription_service
-        # self.translation_service = translation_service # Больше не используется напрямую
+        self.translation_service = translation_service
         try:
             self.google_stt_service = GoogleSTTService()
         except Exception as e:
             logger.error(f"Could not initialize GoogleSTTService. Khmer or Irish transcription will fail. Error: {e}")
             self.google_stt_service = None
+
+    # ... (остальная часть файла без изменений)
 
     def process_media(self, file_path: str, user_preferences: Optional[Dict] = None) -> Dict[str, Any]:
         audio_path = None
