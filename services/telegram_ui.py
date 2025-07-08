@@ -1,6 +1,6 @@
 # services/telegram_ui.py
 import os
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from bson import ObjectId
 
@@ -37,16 +37,14 @@ class TelegramUI:
             f"Click here to add me to your group chat: [Add to Group]({add_to_group_url})\n\n"
             "**Our Monthly Plans:**\n"
             f"🔹 **Basic (${basic_plan['price_usd']}/month):** {basic_plan['limit_minutes']} minutes.\n"
-            f"💎 **Premium (${premium_plan['price_usd']}/month):** {premium_plan['limit_minutes']} minutes with all features.\n\n"
-            f"For more details, please see our [Terms of Service]({self.base_url}/terms) and [Privacy Policy]({self.base_url}/privacy).\n\n"
+            f"💎 **Premium (${premium_plan['price_usd']}/month):** {premium_plan['limit_minutes']} minutes with all features.\n"
         )
         if self.support_contact:
-            help_text += f"If you have any questions, please contact our support: {self.support_contact}"
+            help_text += f"\nFor any questions, please contact our support: {self.support_contact}"
         return help_text
 
     def get_transcription_confirmation_message(self, text: str, lang_name: str, s3_key: str) -> tuple[
         str, InlineKeyboardMarkup]:
-        """Формирует сообщение с транскрипцией и кнопками подтверждения."""
         message_text = f"📝 *Transcription ({lang_name}):*\n\n```{text}```\n\nIs the language and transcription correct?"
         keyboard = [
             [
@@ -57,7 +55,6 @@ class TelegramUI:
         return message_text, InlineKeyboardMarkup(keyboard)
 
     def get_note_actions_message(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
-        """Формирует сообщение и кнопки действий для уже созданной заметки."""
         message_text = "What would you like to do with this note?"
         keyboard = [
             [
@@ -80,8 +77,6 @@ class TelegramUI:
                 InlineKeyboardButton("❌ Cancel", callback_data=f"NOTE_DELETE_CANCEL_{note_id}")
             ]])
         )
-
-    # ... (остальные UI методы без изменений)
 
     def get_translation_language_options(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
         buttons = []
@@ -108,7 +103,6 @@ class TelegramUI:
             message += f"🗓️ _{note['created_at'].strftime('%Y-%m-%d')}_:\n`{content_preview}`\n\n"
         return message
 
-
     def get_status_message(self, user: Dict[str, Any]) -> str:
         plan = user.get('plan', 'free').capitalize()
         minutes_used = user.get('minutes_used', 0)
@@ -126,28 +120,3 @@ class TelegramUI:
                     f"Plan: {plan} 💎\n"
                     f"Subscription valid until: {expires_str}\n"
                     f"Minutes used this period: {minutes_used:.1f} / {minutes_limit} minutes")
-
-    def get_languages_message_chunks(self) -> List[str]:
-        """Возвращает полный список языков, разбитый на части для отправки."""
-        processed_langs = {}
-        for key, value in SUPPORTED_LANGUAGES_MAP.items():
-            if len(key) > 2:
-                processed_langs[value] = key.capitalize()
-
-        sorted_langs = sorted(processed_langs.items(), key=lambda item: item[1])
-
-        header = "🌐 *Full List of Supported Languages for Transcription*\n\n"
-        message_chunk = header
-        messages = []
-
-        for code, name in sorted_langs:
-            line = f"• {name}: `{code}`\n"
-            if len(message_chunk) + len(line) > 4096:
-                messages.append(message_chunk)
-                message_chunk = ""
-            message_chunk += line
-
-        if message_chunk and message_chunk != header:
-            messages.append(message_chunk)
-
-        return messages
