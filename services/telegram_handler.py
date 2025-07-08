@@ -15,15 +15,19 @@ from .s3_service import S3Service
 from .celery_client import get_celery_app_client
 from .payment_service import PaymentService
 from .telegram_ui import TelegramUI
-from .youtube_service import YouTubeService  # Оставлен на случай возвращения к этой идее
+from .insight_service import InsightService
+from .translation_service import TranslationService
+from .youtube_service import YouTubeService
 from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_MAP
 
 logger = logging.getLogger(__name__)
 
 
 class TelegramHandler:
+    # ===> ИСПРАВЛЕНИЕ: Добавлены недостающие сервисы в конструктор <===
     def __init__(self, token: str, database: Database, s3_service: S3Service,
-                 payment_service: PaymentService):
+                 payment_service: PaymentService, insight_service: InsightService,
+                 translation_service: TranslationService):
         if not token: raise ValueError("Telegram token is required.")
         self.bot = Bot(token=token)
         self.database = database
@@ -32,7 +36,9 @@ class TelegramHandler:
         self.payment_service = payment_service
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
         self.ui = TelegramUI()
-        # self.youtube_service = YouTubeService() # Пока не используется
+        self.youtube_service = YouTubeService()
+        self.insight_service = insight_service
+        self.translation_service = translation_service
 
     async def set_bot_commands(self):
         """Устанавливает список команд, видимых в меню Telegram."""
@@ -61,9 +67,14 @@ class TelegramHandler:
         chat_id = update.message.chat_id
         username = update.message.from_user.username
 
-        if update.message.text and update.message.text.startswith('/'):
-            await self._handle_command(user_id, chat_id, username, update.message.text)
-            return
+        if update.message.text:
+            if self.youtube_service.is_youtube_link(update.message.text):
+                await self._handle_youtube_link(update.message)
+                return
+
+            if update.message.text.startswith('/'):
+                await self._handle_command(user_id, chat_id, username, update.message.text)
+                return
 
         user = self.database.get_user(user_id)
         if not user:
@@ -78,7 +89,6 @@ class TelegramHandler:
         if file_to_process:
             await self._handle_file(file_to_process, user_id, chat_id)
         elif update.message.text:
-            # Если это просто текст, а не команда, создаем текстовую заметку
             await self._handle_text_note(update.message.text, user_id, chat_id)
 
     async def _handle_command(self, user_id: str, chat_id: int, username: Optional[str], text: str):
@@ -103,7 +113,6 @@ class TelegramHandler:
                 await self._handle_check_command(command_parts, chat_id)
 
     async def _handle_text_note(self, text: str, user_id: str, chat_id: int):
-        """Создает текстовую заметку из сообщения."""
         try:
             note_id = self.database.save_note(user_id=user_id, content=text)
             message, reply_markup = self.ui.get_note_created_message(text, note_id)
@@ -203,15 +212,35 @@ class TelegramHandler:
             parts = payload.split('_')
             action = parts[1]
             note_id_str = parts[2]
+            note_id = ObjectId(note_id_str)
+
+            note = self.database.get_note_by_id(note_id)
+            if not note:
+                await query.edit_message_text("This note has been deleted.")
+                return
 
             if action == 'TODO':
-                await self.send_message(chat_id, f"✅ Marked as TODO. (This feature is coming soon!)")
+                self.database.update_note(note_id, {"type": "todo"})
+                await self.send_message(chat_id, "✅ Note marked as a TODO.")
             elif action == 'FIND':
                 await self.send_message(chat_id, "🔍 Finding related notes... (This feature is coming soon!)")
             elif action == 'SHARE':
                 await self.send_message(chat_id, "Sharing options... (This feature is coming soon!)")
             elif action == 'DELETE':
-                await self.send_message(chat_id, "🗑️ Note deleted. (This feature is coming soon!)")
+                text, reply_markup = self.ui.get_delete_confirmation(note_id)
+                await query.edit_message_text(text, reply_markup=reply_markup)
+
+            elif action == 'DELETE' and len(parts) > 3 and parts[2] == 'CONFIRM':
+                note_id_to_delete = ObjectId(parts[3])
+                if self.database.delete_note(note_id_to_delete):
+                    await query.edit_message_text("🗑️ Note successfully deleted.")
+                else:
+                    await query.edit_message_text("Could not delete the note.")
+
+            elif action == 'DELETE' and len(parts) > 3 and parts[2] == 'CANCEL':
+                message, reply_markup = self.ui.get_note_created_message(note['content'], note_id)
+                await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+
         elif payload == 'SHOW_PAYMENT_QR':
             payment_qr_file_id = os.getenv('PAYMENT_QR_CODE_FILE_ID')
             if payment_qr_file_id:
