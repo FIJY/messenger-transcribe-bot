@@ -15,6 +15,8 @@ from services.telegram_handler import TelegramHandler
 from services.database import Database
 from services.s3_service import S3Service
 from services.payment_service import PaymentService
+from services.insight_service import InsightService
+from services.translation_service import TranslationService
 
 # Инициализируем Quart приложение
 app = Quart(__name__)
@@ -34,18 +36,22 @@ async def startup():
     try:
         database = Database()
         s3_service = S3Service()
+        insight_service = InsightService()
+        translation_service = TranslationService() # Он все еще нужен для telegram_handler
 
         telegram_token = os.getenv('TELEGRAM_TOKEN')
         if telegram_token:
             bot_instance = Bot(token=telegram_token)
             payment_service = PaymentService(bot=bot_instance, database=database)
 
-            # ===> ИСПРАВЛЕНИЕ: Убран лишний аргумент translation_service <===
+            # ===> ИСПРАВЛЕНИЕ: Убран лишний аргумент <===
             telegram_handler = TelegramHandler(
                 token=telegram_token,
                 database=database,
                 s3_service=s3_service,
-                payment_service=payment_service
+                payment_service=payment_service,
+                insight_service=insight_service,
+                translation_service=translation_service # Возвращаем, так как он используется в callback'ах
             )
             logger.info("✅ Telegram Handler and services initialized successfully.")
             await telegram_handler.set_bot_commands()
