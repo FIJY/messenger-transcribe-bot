@@ -55,7 +55,6 @@ class TelegramUI:
             f"✅ *Note created successfully!*\n\n"
             f"```\n{short_text}\n```"
         )
-
         keyboard = [
             [
                 InlineKeyboardButton("📝 Create TODO", callback_data=f"NOTE_TODO_{note_id}"),
@@ -89,6 +88,7 @@ class TelegramUI:
                     f"Minutes used this period: {minutes_used:.1f} / {minutes_limit} minutes")
 
     def get_languages_message_chunks(self) -> List[str]:
+        """Возвращает полный список языков, разбитый на части для отправки."""
         processed_langs = {}
         for key, value in SUPPORTED_LANGUAGES_MAP.items():
             if len(key) > 2:

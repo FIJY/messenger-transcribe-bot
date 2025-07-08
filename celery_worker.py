@@ -38,6 +38,7 @@ celery_app.conf.beat_schedule = {
 
 
 class LimitExceededError(Exception):
+    """Кастомное исключение для превышения лимитов."""
     pass
 
 
@@ -58,6 +59,8 @@ try:
     s3_service = S3Service()
     audio_processor = AudioProcessor()
     transcription_service = TranscriptionService()
+    # TranslationService больше не нужен здесь напрямую, т.к. концепция изменилась
+    # translation_service = TranslationService()
 
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     if telegram_token:
@@ -124,3 +127,63 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         result = media_handler_service.process_media(local_file_path, user_preferences)
 
         if result.get('success'):
+            if platform == 'telegram' and telegram_handler and chat_id:
+                note_id = database.save_note(
+                    user_id=sender_id,
+                    content=result.get('transcription'),
+                    s3_object_key=object_key,
+                    detected_language=result.get('detected_language'),
+                    duration_minutes=result.get('duration_minutes', 0)
+                )
+                run_async_task(
+                    handle_telegram_success(chat_id, result.get('transcription'), note_id)
+                )
+            duration_to_charge = result.get('duration_minutes', 0)
+            database.update_minutes_used(sender_id, duration_to_charge)
+        else:
+            raise result.get('error', Exception('Unknown error during media processing'))
+
+    except LimitExceededError as e:
+        logger.warning(str(e))
+        if platform == 'telegram' and payment_service and chat_id:
+            run_async_task(payment_service.send_payment_instructions(chat_id, sender_id))
+    except Exception as exc:
+        logger.error(f"[{self.request.id}] Error in Celery task: {exc}", exc_info=True)
+        error_message = "❌ Failed to process your file. Please try again later."
+        if platform == 'telegram' and telegram_handler and chat_id:
+            run_async_task(telegram_handler.send_message(chat_id, error_message))
+    finally:
+        if local_file_path: audio_processor.cleanup_temp_file(local_file_path)
+        logger.info(f"[{self.request.id}] Task finished for object {object_key}.")
+
+
+def run_async_task(coro):
+    """Надежно запускает асинхронную задачу из синхронного контекста."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    if loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(coro)
+
+
+async def handle_telegram_success(chat_id: int, note_text: str, note_id: ObjectId):
+    if not telegram_handler: return
+    message, reply_markup = telegram_handler.ui.get_note_created_message(note_text, note_id)
+    await telegram_handler.send_message(chat_id, message, reply_markup)
+
+
+def _download_file_from_r2(object_key: str) -> Optional[str]:
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{object_key.split('.')[-1]}") as f:
+            if s3_service.download_file(object_key, f.name): return f.name
+            os.remove(f.name)
+            return None
+    except Exception as e:
+        logger.error(f"Error downloading file from R2 in worker: {e}", exc_info=True)
+        return None
