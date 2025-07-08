@@ -59,13 +59,12 @@ try:
     s3_service = S3Service()
     audio_processor = AudioProcessor()
     transcription_service = TranscriptionService()
-    # TranslationService больше не нужен здесь напрямую, т.к. концепция изменилась
-    # translation_service = TranslationService()
 
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     if telegram_token:
         bot_instance = Bot(token=telegram_token)
         payment_service = PaymentService(bot=bot_instance, database=database)
+        # ===> ИСПРАВЛЕНИЕ: Убран лишний аргумент <===
         telegram_handler = TelegramHandler(
             token=telegram_token,
             database=database,
@@ -78,7 +77,8 @@ try:
         bot_instance = None
         logger.warning("Telegram Bot is disabled due to missing token.")
 
-    media_handler_service = MediaHandler(transcription_service, None)
+    # ===> ИСПРАВЛЕНИЕ: Убран лишний аргумент <===
+    media_handler_service = MediaHandler(transcription_service)
     logger.info("Celery worker: All services initialized successfully.")
 except Exception as e:
     logger.error(f"Celery worker: CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)

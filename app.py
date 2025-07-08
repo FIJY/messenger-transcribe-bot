@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 # Импорты всех наших сервисов
 from services.telegram_handler import TelegramHandler
 from services.database import Database
-from services.translation_service import TranslationService
+# TranslationService больше не нужен в app.py напрямую
+# from services.translation_service import TranslationService
 from services.s3_service import S3Service
 from services.payment_service import PaymentService
 
@@ -35,19 +36,17 @@ async def startup():
     try:
         database = Database()
         s3_service = S3Service()
-        translation_service = TranslationService()
 
         telegram_token = os.getenv('TELEGRAM_TOKEN')
         if telegram_token:
             bot_instance = Bot(token=telegram_token)
-            # ===> ИЗМЕНЕНИЕ: Передаем database в PaymentService <===
             payment_service = PaymentService(bot=bot_instance, database=database)
 
+            # ===> ИСПРАВЛЕНИЕ: Убран лишний аргумент translation_service <===
             telegram_handler = TelegramHandler(
                 token=telegram_token,
                 database=database,
                 s3_service=s3_service,
-                translation_service=translation_service,
                 payment_service=payment_service
             )
             logger.info("✅ Telegram Handler and services initialized successfully.")
