@@ -20,7 +20,7 @@ class YouTubeService:
             }],
             'logger': logger,
             'progress_hooks': [self._on_download_progress],
-            'max_filesize': 20 * 1024 * 1024,  # Ограничение 20MB
+            'max_filesize': 20 * 1024 * 1024,
             'noplaylist': True,
             'quiet': True,
         }
@@ -59,8 +59,13 @@ class YouTubeService:
                 return result
         except yt_dlp.utils.DownloadError as de:
             logger.error(f"YouTube download error for URL {url}: {de}")
-            if "File size exceeds" in str(de):
+            error_str = str(de)
+            if "File size exceeds" in error_str:
                 return {"error": "The video is too large (over 20MB). Please try a shorter video."}
+            # ===> ИЗМЕНЕНИЕ: Улучшенная обработка ошибки блокировки <===
+            if "Sign in to confirm" in error_str or "HTTP Error 429" in error_str:
+                return {
+                    "error": "YouTube is temporarily blocking downloads from our server. This is a standard protection measure. Please try again later or use a different video."}
             return {
                 "error": "Failed to download this video. It might be private, age-restricted, or otherwise unavailable."}
         except Exception as e:
