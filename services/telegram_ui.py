@@ -5,7 +5,11 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from bson import ObjectId
 
 from .database import PLANS
-from config.transcrib_suggestion_config import DEFAULT_POPULAR_TRANSLATION_LANGS
+from config.transcrib_suggestion_config import (
+    DEFAULT_POPULAR_TRANSLATION_LANGS,
+    SUPPORTED_LANGUAGES_MAP,
+    DEFAULT_POPULAR_TRANSCRIPTION_LANGS
+)
 
 
 class TelegramUI:
@@ -37,10 +41,11 @@ class TelegramUI:
             f"Click here to add me to your group chat: [Add to Group]({add_to_group_url})\n\n"
             "**Our Monthly Plans:**\n"
             f"🔹 **Basic (${basic_plan['price_usd']}/month):** {basic_plan['limit_minutes']} minutes.\n"
-            f"💎 **Premium (${premium_plan['price_usd']}/month):** {premium_plan['limit_minutes']} minutes with all features.\n"
+            f"💎 **Premium (${premium_plan['price_usd']}/month):** {premium_plan['limit_minutes']} minutes with all features.\n\n"
+            f"For more details, please see our [Terms of Service]({self.base_url}/terms) and [Privacy Policy]({self.base_url}/privacy).\n\n"
         )
         if self.support_contact:
-            help_text += f"\nFor any questions, please contact our support: {self.support_contact}"
+            help_text += f"If you have any questions, please contact our support: {self.support_contact}"
         return help_text
 
     def get_transcription_confirmation_message(self, text: str, lang_name: str, s3_key: str) -> tuple[
@@ -110,13 +115,66 @@ class TelegramUI:
 
         if plan == 'Free':
             minutes_left = minutes_limit - minutes_used
-            return (f"📊 *Your Status*\n\n"
-                    f"Plan: {plan}\n"
-                    f"Minutes left: {minutes_left:.1f} / {minutes_limit} minutes")
+            return (f"📊 *Your Status*\n\nPlan: {plan}\nMinutes left: {minutes_left:.1f} / {minutes_limit} minutes")
         else:
             expires_at = user.get('subscription_expires_at')
             expires_str = expires_at.strftime('%d %B %Y') if expires_at else 'N/A'
-            return (f"📊 *Your Status*\n\n"
-                    f"Plan: {plan} 💎\n"
-                    f"Subscription valid until: {expires_str}\n"
-                    f"Minutes used this period: {minutes_used:.1f} / {minutes_limit} minutes")
+            return (
+                f"📊 *Your Status*\n\nPlan: {plan} 💎\nSubscription valid until: {expires_str}\nMinutes used this period: {minutes_used:.1f} / {minutes_limit} minutes")
+
+    def get_languages_message_chunks(self) -> List[str]:
+        processed_langs = {}
+        for key, value in SUPPORTED_LANGUAGES_MAP.items():
+            if len(key) > 2:
+                processed_langs[value] = key.capitalize()
+
+        sorted_langs = sorted(processed_langs.items(), key=lambda item: item[1])
+
+        header = "🌐 *Full List of Supported Languages for Transcription*\n\n"
+        message_chunk = header
+        messages = []
+
+        for code, name in sorted_langs:
+            line = f"• {name}: `{code}`\n"
+            if len(message_chunk) + len(line) > 4096:
+                messages.append(message_chunk)
+                message_chunk = ""
+            message_chunk += line
+
+        if message_chunk and message_chunk != header:
+            messages.append(message_chunk)
+
+        return messages
+
+    def build_smart_buttons(self, user: Dict[str, Any], context: str) -> InlineKeyboardMarkup:
+        # Эта функция используется для выбора языка при повторной попытке
+        if context == 'transcription':
+            defaults = DEFAULT_POPULAR_TRANSCRIPTION_LANGS
+            usage_stats = user.get('transcription_lang_usage', {})
+            prefix = "RETRY_AS_"
+            # s3_key нужен для контекста, его нужно передавать
+            other_payload = "INPUT_OTHER_TRANSCRIPTION_LANG_"
+        else:
+            return InlineKeyboardMarkup([[]])  # Для перевода своя логика
+
+        sorted_user_langs = sorted(usage_stats.keys(), key=stats.get, reverse=True)
+        buttons, added_codes = [], set()
+
+        def add_button(lang_code):
+            title_info = next((lang for lang in defaults if lang['code'] == lang_code), None)
+            title = lang_code.upper()
+            if title_info:
+                flag = title_info.get('flag', '')
+                title_text = title_info.get('title', title)
+                title = f"{flag} {title_text}".strip()
+
+            buttons.append(InlineKeyboardButton(title, callback_data=f"{prefix}{lang_code}"))
+            added_codes.add(lang_code)
+
+        for lang_code in sorted_user_langs[:3]: add_button(lang_code)
+        for lang in defaults:
+            if len(buttons) >= 5: break
+            if lang['code'] not in added_codes: add_button(lang['code'])
+
+        keyboard = [buttons, [InlineKeyboardButton("✍️ Type other...", callback_data=other_payload)]]
+        return InlineKeyboardMarkup(keyboard)
