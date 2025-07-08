@@ -5,7 +5,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from bson import ObjectId
 
 from .database import PLANS
-from config.transcrib_suggestion_config import DEFAULT_POPULAR_TRANSLATION_LANGS, SUPPORTED_LANGUAGES_MAP
+from config.transcrib_suggestion_config import DEFAULT_POPULAR_TRANSLATION_LANGS
 
 
 class TelegramUI:
@@ -21,7 +21,9 @@ class TelegramUI:
         )
 
     def get_help_message(self, add_to_group_url: str) -> str:
-        return (
+        basic_plan = PLANS['basic']
+        premium_plan = PLANS['premium']
+        help_text = (
             "🤖 *Bot Help & Information*\n\n"
             "**How to Use Me:**\n"
             "Send me a voice message, audio/video file, or just text, and I will turn it into a structured note.\n\n"
@@ -33,12 +35,30 @@ class TelegramUI:
             "`/help` - Show this help message.\n\n"
             f"👥 *Add to a Group*\n"
             f"Click here to add me to your group chat: [Add to Group]({add_to_group_url})\n\n"
-            # ... (остальной текст без изменений)
+            "**Our Monthly Plans:**\n"
+            f"🔹 **Basic (${basic_plan['price_usd']}/month):** {basic_plan['limit_minutes']} minutes.\n"
+            f"💎 **Premium (${premium_plan['price_usd']}/month):** {premium_plan['limit_minutes']} minutes with all features.\n\n"
+            f"For more details, please see our [Terms of Service]({self.base_url}/terms) and [Privacy Policy]({self.base_url}/privacy).\n\n"
         )
+        if self.support_contact:
+            help_text += f"If you have any questions, please contact our support: {self.support_contact}"
+        return help_text
 
-    def get_note_created_message(self, note_text: str, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
-        short_text = (note_text[:250] + '...') if len(note_text) > 250 else note_text
-        message_text = f"✅ *Note created:*\n\n```{short_text}```"
+    def get_transcription_confirmation_message(self, text: str, lang_name: str, s3_key: str) -> tuple[
+        str, InlineKeyboardMarkup]:
+        """Формирует сообщение с транскрипцией и кнопками подтверждения."""
+        message_text = f"📝 *Transcription ({lang_name}):*\n\n```{text}```\n\nIs the language and transcription correct?"
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Looks Good", callback_data=f"CONFIRM_OK_{s3_key}"),
+                InlineKeyboardButton("🗣️ Other language", callback_data=f"RETRY_LANG_{s3_key}")
+            ]
+        ]
+        return message_text, InlineKeyboardMarkup(keyboard)
+
+    def get_note_actions_message(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
+        """Формирует сообщение и кнопки действий для уже созданной заметки."""
+        message_text = "What would you like to do with this note?"
         keyboard = [
             [
                 InlineKeyboardButton("📝 Summarize", callback_data=f"NOTE_SUMMARIZE_{note_id}"),
@@ -60,6 +80,8 @@ class TelegramUI:
                 InlineKeyboardButton("❌ Cancel", callback_data=f"NOTE_DELETE_CANCEL_{note_id}")
             ]])
         )
+
+    # ... (остальные UI методы без изменений)
 
     def get_translation_language_options(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
         buttons = []

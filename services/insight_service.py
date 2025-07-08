@@ -6,10 +6,9 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Промпты для разных задач
 PROMPTS = {
-    "summarize": "You are a helpful assistant. Summarize the key points of the following text concisely:\n\n---\n\n{text}",
-    "find_keywords": "You are a helpful assistant. Extract the 3-5 most important keywords or key phrases from the following text. Return them as a comma-separated list:\n\n---\n\n{text}"
+    "summarize": "You are a helpful assistant. Summarize the key points of the following text concisely, in the same language as the original text:\n\n---\n\n{text}",
+    "find_keywords": "You are a helpful assistant. Extract the 3-5 most important keywords or key phrases from the following text. The keywords should be in the original language of the text. Return them as a comma-separated list:\n\n---\n\n{text}"
 }
 
 class InsightService:
@@ -27,7 +26,7 @@ class InsightService:
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
-                max_tokens=500
+                max_tokens=1000
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -36,11 +35,13 @@ class InsightService:
 
     def get_summary(self, text: str) -> Optional[str]:
         """Генерирует саммари для текста."""
+        if not text or not text.strip(): return None
         prompt = PROMPTS["summarize"].format(text=text)
         return self._get_completion(prompt)
 
     def get_keywords(self, text: str) -> List[str]:
         """Извлекает ключевые слова из текста."""
+        if not text or not text.strip(): return []
         prompt = PROMPTS["find_keywords"].format(text=text)
         keywords_str = self._get_completion(prompt)
         if keywords_str:

@@ -146,22 +146,17 @@ class Database:
 
     def downgrade_user_to_free(self, user_id: str):
         try:
-            update_fields = {
-                "plan": "free", "minutes_limit": 5, "minutes_used": 0.0, "subscription_expires_at": None
-            }
+            update_fields = { "plan": "free", "minutes_limit": 5, "minutes_used": 0.0, "subscription_expires_at": None }
             self.db.users.update_one({"user_id": str(user_id)}, {"$set": update_fields})
-        except PyMongoError:
-            pass
+        except PyMongoError: pass
 
     def update_minutes_used(self, user_id: str, minutes_to_add: float):
         try:
             self.db.users.update_one({"user_id": str(user_id)}, {"$inc": {"minutes_used": minutes_to_add}})
-        except PyMongoError:
-            pass
+        except PyMongoError: pass
 
     def update_user(self, user_id: str, update_data: Dict[str, Any]) -> bool:
         try:
             result = self.db.users.update_one({"user_id": str(user_id)}, {"$set": update_data})
             return result.modified_count > 0
-        except PyMongoError:
-            return False
+        except PyMongoError: return False

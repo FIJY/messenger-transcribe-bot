@@ -63,7 +63,6 @@ try:
     if telegram_token:
         bot_instance = Bot(token=telegram_token)
         payment_service = PaymentService(bot=bot_instance, database=database)
-        # ===> ИСПРАВЛЕНИЕ: Убран лишний аргумент <===
         telegram_handler = TelegramHandler(
             token=telegram_token,
             database=database,
@@ -76,7 +75,6 @@ try:
         bot_instance = None
         logger.warning("Telegram Bot is disabled due to missing token.")
 
-    # ===> ИСПРАВЛЕНИЕ: Убран лишний аргумент <===
     media_handler_service = MediaHandler(transcription_service)
     logger.info("Celery worker: All services initialized successfully.")
 except Exception as e:

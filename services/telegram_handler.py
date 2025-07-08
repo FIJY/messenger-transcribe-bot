@@ -15,7 +15,7 @@ from .s3_service import S3Service
 from .celery_client import get_celery_app_client
 from .payment_service import PaymentService
 from .telegram_ui import TelegramUI
-from .youtube_service import YouTubeService
+from .youtube_service import YouTubeService  # Оставлен на случай возвращения к этой идее
 from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_MAP
 
 logger = logging.getLogger(__name__)
@@ -32,9 +32,10 @@ class TelegramHandler:
         self.payment_service = payment_service
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
         self.ui = TelegramUI()
-        self.youtube_service = YouTubeService()
+        # self.youtube_service = YouTubeService() # Пока не используется
 
     async def set_bot_commands(self):
+        """Устанавливает список команд, видимых в меню Telegram."""
         commands = [
             BotCommand("start", "Start or restart the bot"),
             BotCommand("status", "Check your plan and minute balance"),
@@ -77,6 +78,7 @@ class TelegramHandler:
         if file_to_process:
             await self._handle_file(file_to_process, user_id, chat_id)
         elif update.message.text:
+            # Если это просто текст, а не команда, создаем текстовую заметку
             await self._handle_text_note(update.message.text, user_id, chat_id)
 
     async def _handle_command(self, user_id: str, chat_id: int, username: Optional[str], text: str):
@@ -101,6 +103,7 @@ class TelegramHandler:
                 await self._handle_check_command(command_parts, chat_id)
 
     async def _handle_text_note(self, text: str, user_id: str, chat_id: int):
+        """Создает текстовую заметку из сообщения."""
         try:
             note_id = self.database.save_note(user_id=user_id, content=text)
             message, reply_markup = self.ui.get_note_created_message(text, note_id)
