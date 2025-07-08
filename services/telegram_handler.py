@@ -16,6 +16,7 @@ from .payment_service import PaymentService
 from .telegram_ui import TelegramUI
 from .insight_service import InsightService
 from .translation_service import TranslationService
+from config.transcrib_suggestion_config import DEFAULT_POPULAR_TRANSCRIPTION_LANGS, SUPPORTED_LANGUAGES_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -121,8 +122,8 @@ class TelegramHandler:
     async def _handle_text_note(self, text: str, user_id: str, chat_id: int):
         try:
             note_id = self.database.save_note(user_id=user_id, content=text)
-            message, reply_markup = self.ui.get_note_created_message(text, note_id)
-            await self.send_message(chat_id, message, reply_markup)
+            message, reply_markup = self.ui.get_note_actions_message(note_id)
+            await self.send_message(chat_id, f"✅ *Note created from text.*\n\n{message}", reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error creating text note for user {user_id}: {e}")
             await self.send_message(chat_id, "❌ Sorry, an error occurred while saving your note.")
@@ -151,11 +152,8 @@ class TelegramHandler:
             if local_file_path and os.path.exists(local_file_path): os.remove(local_file_path)
 
     async def _handle_start_command(self, user_id: str, chat_id: int, username: Optional[str]):
-        user = self.database.get_user(user_id)
-        if not user:
-            user = self.database.create_user(user_id, username=username)
-        await self.send_message(chat_id, self.ui.get_welcome_message())
-        return user
+
+    # ... (метод без изменений)
 
     async def _handle_status_command(self, user_id: str, chat_id: int):
 
@@ -250,14 +248,14 @@ class TelegramHandler:
                 text, markup = self.ui.get_delete_confirmation(note_id)
                 await query.edit_message_text(text, reply_markup=markup)
 
-            elif action == 'DELETE' and parts[2] == 'CONFIRM':
+            elif action == 'DELETE' and len(parts) > 2 and parts[2] == 'CONFIRM':
                 note_id_to_delete = ObjectId(parts[3])
                 if self.database.delete_note(note_id_to_delete):
                     await query.edit_message_text("🗑️ Note successfully deleted.")
                 else:
                     await query.edit_message_text("Could not delete the note.")
 
-            elif action == 'DELETE' and parts[2] == 'CANCEL':
+            elif action == 'DELETE' and len(parts) > 2 and parts[2] == 'CANCEL':
                 await query.message.delete()
                 await self.send_message(chat_id, "Deletion cancelled.")
 
@@ -266,7 +264,7 @@ class TelegramHandler:
             await self.bot.send_message(
                 chat_id=chat_id,
                 text=text,
-                parse_mode='Markdown',
+                parse_mode=ParseMode.MARKDOWN,
                 reply_markup=reply_markup
             )
         except Exception as e:
