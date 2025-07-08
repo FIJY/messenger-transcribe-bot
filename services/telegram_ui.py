@@ -1,8 +1,8 @@
 # services/telegram_ui.py
 import os
-import logging
 from typing import Dict, Any, List
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from bson import ObjectId
 
 from .database import PLANS
 from config.transcrib_suggestion_config import (
@@ -10,8 +10,6 @@ from config.transcrib_suggestion_config import (
     DEFAULT_POPULAR_TRANSLATION_LANGS,
     SUPPORTED_LANGUAGES_MAP
 )
-
-logger = logging.getLogger(__name__)
 
 
 class TelegramUI:
@@ -39,9 +37,8 @@ class TelegramUI:
             "`/search` - Find text in your notes (e.g., `/search meeting about budget`).\n"
             "`/summary` - Get a summary of recent notes.\n"
             "`/help` - Show this help message.\n\n"
-            # ===> ИЗМЕНЕНИЕ: Добавлена ссылка для добавления в группу <===
             f"👥 *Add to a Group*\n"
-            f"Click here to add me to your group chat to transcribe voice messages on the fly: [Add to Group]({add_to_group_url})\n\n"
+            f"Click here to add me to your group chat: [Add to Group]({add_to_group_url})\n\n"
             "**Our Monthly Plans:**\n"
             f"🔹 **Basic (${basic_plan['price_usd']}/month):** A package of {basic_plan['limit_minutes']} minutes.\n"
             f"💎 **Premium (${premium_plan['price_usd']}/month):** An extended package of {premium_plan['limit_minutes']} minutes with all features.\n\n"
@@ -50,6 +47,28 @@ class TelegramUI:
         if self.support_contact:
             help_text += f"If you have any questions, please contact our support: {self.support_contact}"
         return help_text
+
+    def get_note_created_message(self, note_text: str, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
+        short_text = (note_text[:250] + '...') if len(note_text) > 250 else note_text
+
+        message_text = (
+            f"✅ *Note created successfully!*\n\n"
+            f"```\n{short_text}\n```"
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 Create TODO", callback_data=f"NOTE_TODO_{note_id}"),
+                InlineKeyboardButton("🔗 Find Related", callback_data=f"NOTE_FIND_{note_id}"),
+            ],
+            [
+                InlineKeyboardButton("📤 Share", callback_data=f"NOTE_SHARE_{note_id}"),
+                InlineKeyboardButton("🗑️ Delete", callback_data=f"NOTE_DELETE_{note_id}"),
+            ]
+        ]
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        return message_text, reply_markup
 
     def get_status_message(self, user: Dict[str, Any]) -> str:
         plan = user.get('plan', 'free').capitalize()
@@ -92,28 +111,3 @@ class TelegramUI:
             messages.append(message_chunk)
 
         return messages
-
-    def get_note_created_message(self, note_text: str, note_id: any) -> tuple[str, InlineKeyboardMarkup]:
-        short_text = (note_text[:250] + '...') if len(note_text) > 250 else note_text
-
-        message_text = (
-            f"✅ *Note created successfully!*\n\n"
-            f"```\n{short_text}\n```"
-        )
-        keyboard = [
-            [
-                InlineKeyboardButton("📝 Create TODO", callback_data=f"NOTE_TODO_{note_id}"),
-                InlineKeyboardButton("🔗 Find Related", callback_data=f"NOTE_FIND_{note_id}"),
-            ],
-            [
-                InlineKeyboardButton("📤 Share", callback_data=f"NOTE_SHARE_{note_id}"),
-                InlineKeyboardButton("🗑️ Delete", callback_data=f"NOTE_DELETE_{note_id}"),
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        return message_text, reply_markup
-
-    def build_smart_buttons(self, user: Dict[str, Any], context: str) -> InlineKeyboardMarkup:
-        # This function is not used in the new "AI Notes" concept, but kept for legacy
-        # or future use. In the new flow, we present note actions, not language buttons.
-        return InlineKeyboardMarkup([[]])

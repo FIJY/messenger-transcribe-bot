@@ -5,7 +5,6 @@ from typing import Optional, Tuple, Dict, Any
 
 from .audio_processor import AudioProcessor
 from .transcription_service import TranscriptionService
-from .translation_service import TranslationService
 from .native_script_service import NativeScriptService
 from .correction_service import CorrectionService
 from .google_stt_service import GoogleSTTService
@@ -14,12 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 class MediaHandler:
-    def __init__(self, transcription_service: TranscriptionService, translation_service: TranslationService):
+    def __init__(self, transcription_service: TranscriptionService, translation_service: Optional[Any] = None):
         self.audio_processor = AudioProcessor()
         self.native_script_service = NativeScriptService()
         self.correction_service = CorrectionService()
         self.transcription_service = transcription_service
-        self.translation_service = translation_service
+        # self.translation_service = translation_service # Больше не используется напрямую
         try:
             self.google_stt_service = GoogleSTTService()
         except Exception as e:
@@ -51,15 +50,12 @@ class MediaHandler:
             text = ""
             detected_language = language_to_process
 
-            # ===> ИЗМЕНЕНИЕ: Расширен "умный переключатель" <===
-            # Теперь он обрабатывает и кхмерский, и ирландский через Google
             if language_to_process in ['km', 'ga'] and self.google_stt_service:
                 logger.info(f"Language '{language_to_process}' detected. Routing to Google STT.")
                 converted_wav_path = self.audio_processor.convert_to_wav(audio_path)
                 if not converted_wav_path:
                     raise Exception(f"Failed to convert audio to WAV for {language_to_process}")
 
-                # Выбираем правильный код для Google API
                 google_lang_code = 'km-KH' if language_to_process == 'km' else 'ga-IE'
 
                 logger.info(f"Routing to Google STT with WAV file and language code {google_lang_code}.")
@@ -110,12 +106,9 @@ class MediaHandler:
 
     def _get_language_info_safe(self, detected_language: str) -> Dict[str, str]:
         language_names = {
-            'km': {'name': 'Khmer', 'native': 'ខ្មែរ'},
-            'en': {'name': 'English', 'native': 'English'},
-            'ru': {'name': 'Russian', 'native': 'Русский'},
-            'de': {'name': 'German', 'native': 'Deutsch'},
-            'ga': {'name': 'Irish', 'native': 'Gaeilge'},
-            'es': {'name': 'Spanish', 'native': 'Español'},
+            'km': {'name': 'Khmer', 'native': 'ខ្មែរ'}, 'en': {'name': 'English', 'native': 'English'},
+            'ru': {'name': 'Russian', 'native': 'Русский'}, 'de': {'name': 'German', 'native': 'Deutsch'},
+            'ga': {'name': 'Irish', 'native': 'Gaeilge'}, 'es': {'name': 'Spanish', 'native': 'Español'},
             'fr': {'name': 'French', 'native': 'Français'},
         }
         return language_names.get(detected_language, {'name': detected_language.upper(), 'native': ''})

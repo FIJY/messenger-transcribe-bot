@@ -62,38 +62,32 @@ class TelegramHandler:
         chat_id = update.message.chat_id
         username = update.message.from_user.username
 
-        if update.message.text:
-            if self.youtube_service.is_youtube_link(update.message.text):
-                await self._handle_youtube_link(update.message)
+        if update.message.text and update.message.text.startswith('/'):
+            command_parts = update.message.text.split()
+            command = command_parts[0]
+
+            if command == '/start':
+                await self._handle_start_command(user_id, chat_id, username)
+                return
+            if command == '/status':
+                await self._handle_status_command(user_id, chat_id)
+                return
+            if command == '/help':
+                bot_user = await self.bot.get_me()
+                add_to_group_url = f"https://t.me/{bot_user.username}?startgroup=true"
+                await self.send_message(chat_id, self.ui.get_help_message(add_to_group_url))
+                return
+            if command == '/search' or command == '/summary':
+                await self.send_message(chat_id, "This feature is under development and will be available soon!")
                 return
 
-            if update.message.text.startswith('/'):
-                command_parts = update.message.text.split()
-                command = command_parts[0]
-
-                if command == '/start':
-                    await self._handle_start_command(user_id, chat_id, username)
+            if user_id == self.admin_telegram_id:
+                if command == '/confirm':
+                    await self._handle_confirm_command(command_parts, chat_id)
                     return
-                if command == '/status':
-                    await self._handle_status_command(user_id, chat_id)
+                if command == '/check':
+                    await self._handle_check_command(command_parts, chat_id)
                     return
-                if command == '/help':
-                    # ===> ИЗМЕНЕНИЕ: Формируем и передаем URL для добавления в группу <===
-                    bot_user = await self.bot.get_me()
-                    add_to_group_url = f"https://t.me/{bot_user.username}?startgroup=true"
-                    await self.send_message(chat_id, self.ui.get_help_message(add_to_group_url))
-                    return
-                if command == '/search' or command == '/summary':
-                    await self.send_message(chat_id, "This feature is under development and will be available soon!")
-                    return
-
-                if user_id == self.admin_telegram_id:
-                    if command == '/confirm':
-                        await self._handle_confirm_command(command_parts, chat_id)
-                        return
-                    if command == '/check':
-                        await self._handle_check_command(command_parts, chat_id)
-                        return
 
         user = self.database.get_user(user_id)
         if not user:
@@ -110,29 +104,6 @@ class TelegramHandler:
         elif update.message.text:
             await self._handle_text_note(update.message.text, user_id, chat_id)
 
-    async def _handle_youtube_link(self, message: Message):
-        url = message.text
-        chat_id = message.chat_id
-        user_id = str(message.from_user.id)
-
-        await self.send_message(chat_id, "✅ YouTube link received. Starting to download audio...")
-
-        asyncio.create_task(self._process_youtube_download(url, user_id, chat_id))
-
-    async def _process_youtube_download(self, url: str, user_id: str, chat_id: int):
-        download_result = self.youtube_service.download_audio(url)
-
-        if "error" in download_result:
-            await self.send_message(chat_id, f"❌ Error: {download_result['error']}")
-            return
-
-        local_file_path = download_result.get("local_path")
-        try:
-            self._queue_file_for_processing(local_file_path, user_id, chat_id)
-        finally:
-            if local_file_path and os.path.exists(local_file_path):
-                os.remove(local_file_path)
-
     async def _handle_text_note(self, text: str, user_id: str, chat_id: int):
         try:
             note_id = self.database.save_note(user_id=user_id, content=text)
@@ -143,12 +114,6 @@ class TelegramHandler:
             await self.send_message(chat_id, "❌ Sorry, an error occurred while saving your note.")
 
     async def _handle_file(self, file_obj, user_id: str, chat_id: int):
-        TELEGRAM_FILE_SIZE_LIMIT = 20 * 1024 * 1024
-        if hasattr(file_obj, 'file_size') and file_obj.file_size and file_obj.file_size > TELEGRAM_FILE_SIZE_LIMIT:
-            await self.send_message(chat_id,
-                                    f"❌ File is too large ({file_obj.file_size / 1024 / 1024:.1f}MB). The maximum file size for bots is 20MB.")
-            return
-
         await self.send_message(chat_id, "✅ File received. Processing...")
         local_file_path = None
         try:
@@ -157,32 +122,19 @@ class TelegramHandler:
                 local_file_path = temp_f.name
                 await tg_file.download_to_drive(custom_path=local_file_path)
 
-            self._queue_file_for_processing(local_file_path, user_id, chat_id)
-        except Exception as e:
-            logger.error(f"Error handling Telegram file: {e}", exc_info=True)
-            if "File is too big" in str(e):
-                await self.send_message(chat_id, "❌ Error: The file is too large to download (over 20MB).")
-            else:
-                await self.send_message(chat_id, "❌ An error occurred while processing your file.")
-        finally:
-            if local_file_path and os.path.exists(local_file_path): os.remove(local_file_path)
-
-    def _queue_file_for_processing(self, local_file_path: str, user_id: str, chat_id: int):
-        try:
             object_key = f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
             if not self.s3_service.upload_file(local_file_path, object_key):
-                logger.error("Failed to upload file to S3.")
-                asyncio.run(self.send_message(chat_id, "❌ Server error: could not save file."))
+                await self.send_message(chat_id, "❌ Server error: could not save file.");
                 return
-
             if self.celery_app_client:
                 self.celery_app_client.send_task('tasks.process_media', args=[user_id, object_key, {},
                                                                               {'platform': 'telegram',
                                                                                'chat_id': chat_id}])
-            else:
-                logger.error("Celery client not available.")
         except Exception as e:
-            logger.error(f"Error in _queue_file_for_processing: {e}", exc_info=True)
+            logger.error(f"Error handling Telegram file: {e}", exc_info=True)
+            await self.send_message(chat_id, "❌ An error occurred while processing your file.")
+        finally:
+            if local_file_path and os.path.exists(local_file_path): os.remove(local_file_path)
 
     async def _handle_start_command(self, user_id: str, chat_id: int, username: Optional[str]):
         user = self.database.get_user(user_id)
@@ -200,12 +152,48 @@ class TelegramHandler:
         await self.send_message(chat_id, message)
 
     async def _handle_confirm_command(self, command_parts: List[str], chat_id: int):
+        if len(command_parts) != 3:
+            await self.send_message(chat_id, "❌ Incorrect format. Use: `/confirm <user_id> <plan_name>`")
+            return
 
-    # ... (метод без изменений)
+        user_to_activate, plan_name = command_parts[1], command_parts[2].lower()
+        if plan_name not in ['basic', 'premium']:
+            await self.send_message(chat_id, f"❌ Unknown plan '{plan_name}'.")
+            return
+
+        target_user = self.database.get_user(user_to_activate)
+        if not target_user:
+            await self.send_message(chat_id, f"❌ User with ID `{user_to_activate}` not found.")
+            return
+
+        if target_user.get('plan') == plan_name and target_user.get('subscription_expires_at',
+                                                                    datetime.now(timezone.utc)) > datetime.now(
+                timezone.utc):
+            await self.send_message(chat_id, f"⚠️ **Warning:** User `{user_to_activate}` is already on this plan.")
+            return
+
+        self.database.update_user_subscription(user_to_activate, plan_name)
+        await self.send_message(chat_id, f"✅ User `{user_to_activate}` upgraded to *{plan_name.capitalize()}*.")
+
+        try:
+            await self.send_message(int(user_to_activate), f"🎉 Your *{plan_name.capitalize()}* plan is now active!")
+        except Exception as e:
+            logger.error(f"Failed to send confirmation to user {user_to_activate}: {e}")
+            await self.send_message(chat_id, f"⚠️ Could not notify user {user_to_activate} directly.")
 
     async def _handle_check_command(self, command_parts: List[str], chat_id: int):
+        if len(command_parts) != 2:
+            await self.send_message(chat_id, "❌ Incorrect format. Use: `/check <user_id>`")
+            return
 
-    # ... (метод без изменений)
+        user_to_check = command_parts[1]
+        user_data = self.database.get_user(user_to_check)
+        if not user_data:
+            await self.send_message(chat_id, f"❌ User with ID `{user_to_check}` not found.")
+            return
+
+        message = self.ui.get_status_message(user_data)
+        await self.send_message(chat_id, f"ℹ️ *Status for user `{user_to_check}`*\n\n" + message)
 
     async def _handle_callback_query(self, query: Update.callback_query):
         await query.answer()
@@ -226,7 +214,12 @@ class TelegramHandler:
             elif action == 'DELETE':
                 await self.send_message(chat_id, "🗑️ Note deleted. (This feature is coming soon!)")
         elif payload == 'SHOW_PAYMENT_QR':
-        # ... (метод без изменений)
+            payment_qr_file_id = os.getenv('PAYMENT_QR_CODE_FILE_ID')
+            if payment_qr_file_id:
+                await self.bot.send_photo(chat_id, photo=payment_qr_file_id,
+                                          caption="Scan this QR code in your ABA app.")
+            else:
+                await self.send_message(chat_id, "Sorry, the QR code is temporarily unavailable.")
         else:
             await self.send_message(chat_id, "Sorry, this action is no longer supported.")
 
