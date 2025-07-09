@@ -45,29 +45,33 @@ class TelegramUI:
             help_text += f"If you have any questions, please contact our support: {self.support_contact}"
         return help_text
 
-    def get_transcription_confirmation_message(self, text: str, lang_name: str, s3_key: str) -> tuple[
+    # НОВОЕ, УПРОЩЕННОЕ МЕНЮ ПОСЛЕ ТРАНСКРИПЦИИ
+    def get_transcription_result_message(self, text: str, lang_name: str, s3_key: str) -> tuple[
         str, InlineKeyboardMarkup]:
-        message_text = f"📝 *Transcription ({lang_name}):*\n\n```{text}```\n\nIs the language and transcription correct?"
+        message_text = f"📝 *Transcription ({lang_name}):*\n\n```{text}```"
         keyboard = [
             [
-                InlineKeyboardButton("✅ Looks Good", callback_data=f"CONFIRM_OK_{s3_key}"),
-                InlineKeyboardButton("🗣️ Other language", callback_data=f"RETRY_LANG_{s3_key}")
+                InlineKeyboardButton("✅ Save Note", callback_data=f"SAVE_NOTE_{s3_key}"),
+                InlineKeyboardButton("📊 Create Smart Report", callback_data=f"SELECT_TEMPLATE_{s3_key}")
+            ],
+            [
+                InlineKeyboardButton("🗣️ Wrong Language?", callback_data=f"RETRY_LANG_{s3_key}")
             ]
         ]
         return message_text, InlineKeyboardMarkup(keyboard)
 
-    # НОВАЯ ФУНКЦИЯ для выбора шаблона
     def get_template_selection_message(self, s3_key: str) -> tuple[str, InlineKeyboardMarkup]:
-        message_text = "✅ Transcription confirmed! Now, choose a report template to structure the information:"
+        message_text = "Please choose a report template to structure the information:"
         keyboard = [
-            [InlineKeyboardButton("📝 Протокол встречи", callback_data=f"TEMPLATE_MEETING_{s3_key}")],
-            [InlineKeyboardButton("🎙️ Шоу-ноуты для подкаста", callback_data=f"TEMPLATE_PODCAST_{s3_key}")],
-            [InlineKeyboardButton("🎯 Отчет по коуч-сессии", callback_data=f"TEMPLATE_COACHING_{s3_key}")],
-            [InlineKeyboardButton("💡 Бриф с клиентом", callback_data=f"TEMPLATE_BRIEFING_{s3_key}")],
-            [InlineKeyboardButton("❌ Just save the text", callback_data=f"TEMPLATE_SKIP_{s3_key}")],
+            [InlineKeyboardButton("📝 Meeting Minutes", callback_data=f"TEMPLATE_MEETING_{s3_key}")],
+            [InlineKeyboardButton("🎙️ Podcast Show Notes", callback_data=f"TEMPLATE_PODCAST_{s3_key}")],
+            [InlineKeyboardButton("🎯 Coaching Session Report", callback_data=f"TEMPLATE_COACHING_{s3_key}")],
+            [InlineKeyboardButton("💡 Client Briefing Summary", callback_data=f"TEMPLATE_BRIEFING_{s3_key}")],
+            [InlineKeyboardButton("⬅️ Back", callback_data=f"TEMPLATE_BACK_{s3_key}")],
         ]
         return message_text, InlineKeyboardMarkup(keyboard)
 
+    # ... (остальные функции без изменений)
     def get_note_actions_message(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
         message_text = "What would you like to do with this note?"
         keyboard = [

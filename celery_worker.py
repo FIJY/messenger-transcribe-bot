@@ -54,8 +54,6 @@ def ping_redis_task():
     except Exception as e:
         logger.error(f"Error while pinging Redis: {e}")
 
-# ИСПРАВЛЕНИЕ: Объявляем все переменные как None до блока try
-# Это гарантирует их существование в глобальной области видимости, даже если инициализация не удастся.
 database = None
 s3_service = None
 audio_processor = None
@@ -180,7 +178,8 @@ async def handle_telegram_success(chat_id: int, user: Dict[str, Any], result: Di
     lang_info = result.get('language_info', {})
     lang_name = lang_info.get('name', 'N/A')
 
-    message, reply_markup = telegram_handler.ui.get_transcription_confirmation_message(
+    # ИЗМЕНЕНИЕ: Вызываем новую функцию для отображения результата и основного меню
+    message, reply_markup = telegram_handler.ui.get_transcription_result_message(
         text=result['transcription'],
         lang_name=lang_name,
         s3_key=s3_key
