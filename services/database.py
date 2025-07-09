@@ -4,7 +4,6 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 from bson import ObjectId
-import re
 
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
@@ -30,7 +29,8 @@ class Database:
     def _create_indexes(self):
         self.db.users.create_index("user_id", unique=True)
         self.db.notes.create_index([("user_id", 1), ("created_at", -1)])
-        self.db.notes.create_index([("content", "text")])
+        # Используем текстовый индекс для эффективного поиска. `default_language='none'` хорошо подходит для многоязычного контента.
+        self.db.notes.create_index([("content", "text")], default_language="none")
         self.db.raw_transcriptions.create_index("s3_object_key", unique=True)
         self.db.app_counters.create_index("name", unique=True)
 
@@ -70,14 +70,39 @@ class Database:
     def get_note_by_id(self, note_id: ObjectId) -> Optional[Dict[str, Any]]:
         return self.db.notes.find_one({"_id": note_id})
 
-    def find_notes_by_keywords(self, user_id: str, keywords: List[str], limit: int = 5) -> List[Dict[str, Any]]:
-        query = {"user_id": user_id, "$or": [{"content": re.compile(keyword, re.IGNORECASE)} for keyword in keywords]}
-        return list(self.db.notes.find(query).sort("created_at", -1).limit(limit))
+    def find_notes_by_keywords(self, user_id: str, keywords: List[str], current_note_id: ObjectId, limit: int = 5) -> \
+    List[Dict[str, Any]]:
+        """ Находит связанные заметки, используя ключевые слова и текстовый индекс. """
+        search_string = " ".join(keywords)
+        query = {
+            "_id": {"$ne": current_note_id},
+            "user_id": user_id,
+            "$text": {"$search": search_string}
+        }
+        projection = {'score': {'$meta': 'textScore'}}
+        return list(
+            self.db.notes.find(query, projection)
+            .sort([('score', {'$meta': 'textScore'})])
+            .limit(limit)
+        )
 
     def get_notes_for_period(self, user_id: str, days: int) -> List[Dict[str, Any]]:
         start_date = datetime.now(timezone.utc) - timedelta(days=days)
         query = {"user_id": user_id, "created_at": {"$gte": start_date}}
         return list(self.db.notes.find(query).sort("created_at", 1))
+
+    def search_notes_by_query(self, user_id: str, search_query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """ Выполняет общий текстовый поиск для команды /search. """
+        query = {
+            "user_id": user_id,
+            "$text": {"$search": search_query}
+        }
+        projection = {'score': {'$meta': 'textScore'}}
+        return list(
+            self.db.notes.find(query, projection)
+            .sort([('score', {'$meta': 'textScore'})])
+            .limit(limit)
+        )
 
     def update_note(self, note_id: ObjectId, updates: Dict[str, Any]) -> bool:
         result = self.db.notes.update_one({"_id": note_id}, {"$set": updates})

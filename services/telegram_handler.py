@@ -99,7 +99,8 @@ class TelegramHandler:
                 await self.send_message(chat_id, "Please provide a search term. Usage: `/search <your query>`")
                 return
             await self.send_message(chat_id, f"🔍 Searching for notes matching: `{query}`...")
-            notes = self.database.find_notes_by_keywords(user_id, [query])
+            # ИСПРАВЛЕНИЕ: Используем новую, эффективную функцию поиска
+            notes = self.database.search_notes_by_query(user_id, query)
             response_text = self.ui.format_search_results(notes, query)
             await self.send_message(chat_id, response_text)
         elif command == '/summary':
@@ -123,7 +124,7 @@ class TelegramHandler:
         try:
             note_id = self.database.save_note(user_id=user_id, content=text)
             message, reply_markup = self.ui.get_note_actions_message(note_id)
-            await self.send_message(chat_id, f"✅ *Note created from text.*\n\n```{text[:250]}...```",
+            await self.send_message(chat_id, f"✅ *Note saved.*\n\n{message}",
                                     reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error creating text note for user {user_id}: {e}")
@@ -184,7 +185,7 @@ class TelegramHandler:
 
         if target_user.get('plan') == plan_name and target_user.get('subscription_expires_at',
                                                                     datetime.now(timezone.utc)) > datetime.now(
-                timezone.utc):
+            timezone.utc):
             await self.send_message(chat_id, f"⚠️ **Warning:** User `{user_to_activate}` is already on this plan.")
             return
 
@@ -235,14 +236,35 @@ class TelegramHandler:
                 duration_minutes=raw_transcription.get('duration_minutes', 0)
             )
             message, reply_markup = self.ui.get_note_actions_message(note_id)
-            await query.edit_message_text(f"✅ Note created!\n\n{message}", reply_markup=reply_markup)
+            await query.edit_message_text(f"✅ Note saved! {message}", reply_markup=reply_markup)
             return
 
         if action_type == 'RETRY' and parts[1] == 'LANG':
             s3_key = "_".join(parts[2:])
             user = self.database.get_user(user_id)
-            reply_markup = self.ui.build_smart_buttons(user, 'transcription', s3_key)
+            # ИСПРАВЛЕНИЕ: Вызываем правильный метод build_language_retry_buttons
+            reply_markup = self.ui.build_language_retry_buttons(user, s3_key)
             await query.edit_message_text("Got it. What was the language, actually?", reply_markup=reply_markup)
+            return
+
+        # НОВОЕ: Обработка нажатия на кнопку с конкретным языком
+        if action_type == 'RETRY' and parts[1] == 'AS':
+            # Формат: RETRY_AS_{s3_key}_{language_code}
+            s3_key = parts[2]
+            language_code = parts[3]
+
+            await query.edit_message_text(f"✅ Understood. Retrying transcription in `{language_code.upper()}`...")
+
+            # Повторно ставим задачу в очередь с указанием языка от пользователя
+            self.celery_app_client.send_task(
+                'tasks.process_media',
+                args=[
+                    user_id,
+                    s3_key,
+                    {'preferred_language': language_code},
+                    {'platform': 'telegram', 'chat_id': chat_id}
+                ]
+            )
             return
 
         if action_type == 'NOTE':
@@ -296,8 +318,9 @@ class TelegramHandler:
                     else:
                         await query.edit_message_text("Could not delete the note.")
                 elif confirm_action == 'CANCEL':
+                    # ИСПРАВЛЕНИЕ: Более подходящее сообщение вместо "Note created!"
                     message, reply_markup = self.ui.get_note_actions_message(note_id)
-                    await query.edit_message_text(f"✅ Note created!\n\n{message}", reply_markup=reply_markup)
+                    await query.edit_message_text(f"Deletion cancelled. {message}", reply_markup=reply_markup)
                 else:
                     text, markup = self.ui.get_delete_confirmation(note_id)
                     await query.edit_message_text(text, reply_markup=markup)
