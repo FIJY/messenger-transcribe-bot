@@ -1,18 +1,11 @@
 # services/telegram_ui.py
 import os
-import logging
 from typing import Dict, Any, List
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from bson import ObjectId
 
 from .database import PLANS
-from config.transcrib_suggestion_config import (
-    DEFAULT_POPULAR_TRANSLATION_LANGS,
-    SUPPORTED_LANGUAGES_MAP,
-    DEFAULT_POPULAR_TRANSCRIPTION_LANGS
-)
-
-logger = logging.getLogger(__name__)
+from config.transcrib_suggestion_config import DEFAULT_POPULAR_TRANSLATION_LANGS, DEFAULT_POPULAR_TRANSCRIPTION_LANGS
 
 
 class TelegramUI:
@@ -125,40 +118,10 @@ class TelegramUI:
             return (
                 f"📊 *Your Status*\n\nPlan: {plan} 💎\nSubscription valid until: {expires_str}\nMinutes used this period: {minutes_used:.1f} / {minutes_limit} minutes")
 
-    def get_languages_message_chunks(self) -> List[str]:
-        processed_langs = {}
-        for key, value in SUPPORTED_LANGUAGES_MAP.items():
-            if len(key) > 2:
-                processed_langs[value] = key.capitalize()
-
-        sorted_langs = sorted(processed_langs.items(), key=lambda item: item[1])
-
-        header = "🌐 *Full List of Supported Languages for Transcription*\n\n"
-        message_chunk = header
-        messages = []
-
-        for code, name in sorted_langs:
-            line = f"• {name}: `{code}`\n"
-            if len(message_chunk) + len(line) > 4096:
-                messages.append(message_chunk)
-                message_chunk = ""
-            message_chunk += line
-
-        if message_chunk and message_chunk != header:
-            messages.append(message_chunk)
-
-        return messages
-
-    def build_smart_buttons(self, user: Dict[str, Any], context: str, s3_key: str) -> InlineKeyboardMarkup:
-        if context != 'transcription':
-            return InlineKeyboardMarkup([[]])
-
+    def build_language_retry_buttons(self, user: Dict[str, Any], s3_key: str) -> InlineKeyboardMarkup:
         defaults = DEFAULT_POPULAR_TRANSCRIPTION_LANGS
-        usage_stats = user.get('transcription_lang_usage', {})
         prefix = f"RETRY_AS_{s3_key}_"
-        other_payload = f"INPUT_OTHER_TRANSCRIPTION_LANG_{s3_key}"
 
-        sorted_user_langs = sorted(usage_stats.keys(), key=usage_stats.get, reverse=True)
         buttons, added_codes = [], set()
 
         def add_button(lang_code):
@@ -172,11 +135,10 @@ class TelegramUI:
             buttons.append(InlineKeyboardButton(title, callback_data=f"{prefix}{lang_code}"))
             added_codes.add(lang_code)
 
-        for lang_code in sorted_user_langs[:3]: add_button(lang_code)
+        # Мы не используем статистику здесь, просто показываем популярные
         for lang in defaults:
-            if len(buttons) >= 5: break
+            if len(buttons) >= 6: break
             if lang['code'] not in added_codes: add_button(lang['code'])
 
         keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
-        keyboard.append([InlineKeyboardButton("✍️ Type other...", callback_data=other_payload)])
         return InlineKeyboardMarkup(keyboard)
