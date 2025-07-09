@@ -8,7 +8,6 @@ import re
 from typing import Dict, Any, List, Optional
 from telegram import Update, InlineKeyboardMarkup, Bot, Message, BotCommand
 from telegram.constants import ParseMode
-from datetime import datetime, timezone
 from bson import ObjectId
 
 from .database import Database
@@ -40,12 +39,10 @@ class TelegramHandler:
         self.translation_service = translation_service
 
     async def set_bot_commands(self):
-        # ... (код без изменений)
         commands = [
             BotCommand("start", "Restart the bot"),
             BotCommand("status", "Check your current plan"),
             BotCommand("search", "Search through your notes"),
-            BotCommand("summary", "Get a summary of recent notes"),
             BotCommand("help", "Get help and information")
         ]
         try:
@@ -79,7 +76,7 @@ class TelegramHandler:
                 await self.payment_service.handle_payment_proof(update.message)
                 return
 
-        # ИЗМЕНЕНИЕ: Добавлена поддержка видео-кружочков (video_note)
+        # Добавлена поддержка видео-кружочков (video_note)
         file_to_process = update.message.document or update.message.audio or update.message.video or update.message.voice or update.message.video_note
         url_match = re.search(r'https?://\S+', update.message.text or "")
 
@@ -90,169 +87,6 @@ class TelegramHandler:
         elif update.message.text:
             await self._handle_text_note(update.message.text, user_id, chat_id)
 
-    async def _handle_url(self, url: str, user_id: str, chat_id: int):
-        await self.send_message(chat_id, "🔗 Link received. Starting download, this may take a while...")
-
-        local_file_path = None
-        try:
-            local_file_path = self.downloader_service.download_audio(url)
-            if not local_file_path:
-                await self.send_message(chat_id,
-                                        "❌ Failed to download audio from the link. The link might be broken or private.")
-                return
-
-            await self._process_local_file(local_file_path, user_id, chat_id, from_url=True)
-
-        except Exception as e:
-            logger.error(f"Error handling URL {url}: {e}", exc_info=True)
-            await self.send_message(chat_id, "❌ An error occurred while processing your link.")
-        finally:
-            if local_file_path and os.path.exists(local_file_path):
-                os.remove(local_file_path)
-
-    async def _process_local_file(self, local_file_path: str, user_id: str, chat_id: int, from_url: bool = False):
-        try:
-            object_key = f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
-            if not self.s3_service.upload_file(local_file_path, object_key):
-                await self.send_message(chat_id, "❌ Server error: could not upload file to storage.")
-                return
-
-            if self.celery_app_client:
-                logger.info(f"Sending task to Celery for object {object_key}")
-                self.celery_app_client.send_task('tasks.process_media', args=[user_id, object_key, {},
-                                                                              {'platform': 'telegram',
-                                                                               'chat_id': chat_id}])
-                if from_url:
-                    await self.send_message(chat_id, "✅ Download complete. Your file is now being processed...")
-
-        except Exception as e:
-            logger.error(f"Error in _process_local_file: {e}", exc_info=True)
-            await self.send_message(chat_id, "❌ An error occurred during file processing.")
-
-    async def _handle_file_upload(self, file_obj, user_id: str, chat_id: int):
-        await self.send_message(chat_id, "✅ File received. Processing...")
-        local_file_path = None
-        try:
-            tg_file = await file_obj.get_file()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(tg_file.file_path)[-1]) as temp_f:
-                local_file_path = temp_f.name
-                await tg_file.download_to_drive(custom_path=local_file_path)
-
-            await self._process_local_file(local_file_path, user_id, chat_id)
-        except Exception as e:
-            logger.error(f"Error handling Telegram file upload: {e}", exc_info=True)
-            await self.send_message(chat_id, "❌ An error occurred while processing your file.")
-        finally:
-            if local_file_path and os.path.exists(local_file_path):
-                os.remove(local_file_path)
-
-    # ... (команды /start, /status, /help и т.д. без изменений) ...
-
-    async def _handle_callback_query(self, query: Update.callback_query):
-        await query.answer()
-        payload = query.data
-        chat_id = query.message.chat_id
-        user_id = str(query.from_user.id)
-
-        if payload == 'SHOW_PAYMENT_QR':
-            # ... (код без изменений)
-            return
-
-        parts = payload.split('_')
-        action_type = parts[0]
-        s3_key = "_".join(parts[2:])
-
-        # НОВАЯ ЛОГИКА МЕНЮ
-
-        # 1. Пользователь нажал "Сохранить как заметку"
-        if action_type == 'SAVE' and parts[1] == 'NOTE':
-            raw_transcription = self.database.get_raw_transcription(s3_key)
-            if not raw_transcription:
-                await query.edit_message_text("❌ Error: Could not find the original transcription.")
-                return
-
-            self.database.save_note(
-                user_id=user_id,
-                content=raw_transcription.get('transcription', ''),
-                s3_object_key=s3_key,
-                tags=['plain_text']
-            )
-            await query.edit_message_text("✅ Transcription saved as a plain note.")
-            return
-
-        # 2. Пользователь нажал "Создать умный отчет"
-        elif action_type == 'SELECT' and parts[1] == 'TEMPLATE':
-            message, reply_markup = self.ui.get_template_selection_message(s3_key)
-            await query.edit_message_text(message, reply_markup=reply_markup)
-            return
-
-        # 3. Пользователь выбрал конкретный шаблон
-        elif action_type == 'TEMPLATE':
-            template_key = parts[1]
-
-            # Обработка кнопки "Назад"
-            if template_key == 'BACK':
-                raw_transcription = self.database.get_raw_transcription(s3_key)
-                if not raw_transcription:
-                    await query.edit_message_text("❌ Error: Could not find the original transcription.")
-                    return
-                lang_name = raw_transcription.get('language_info', {}).get('name', 'N/A')
-                message, reply_markup = self.ui.get_transcription_result_message(
-                    text=raw_transcription.get('transcription', ''),
-                    lang_name=lang_name,
-                    s3_key=s3_key
-                )
-                await query.edit_message_text(message, reply_markup=reply_markup)
-                return
-
-            await query.edit_message_text(f"🤖 Generating your '{template_key}' report. This might take a minute...")
-
-            raw_transcription = self.database.get_raw_transcription(s3_key)
-            if not raw_transcription or not raw_transcription.get('transcription'):
-                await query.edit_message_text("❌ Error: Could not find the original transcription.")
-                return
-
-            text_content = raw_transcription.get('transcription')
-            report_text = self.insight_service.create_report(text_content, template_key)
-
-            if not report_text:
-                await query.edit_message_text(
-                    "❌ Sorry, failed to generate the report. The note has been saved as plain text.")
-                self.database.save_note(user_id=user_id, content=text_content, s3_object_key=s3_key)
-                return
-
-            report_name = self.insight_service.REPORT_PROMPTS.get(template_key, {}).get('name', 'Report')
-            final_content = f"# {report_name}\n\n{report_text}\n\n---\n\n## Original Transcription\n\n{text_content}"
-            note_id = self.database.save_note(
-                user_id=user_id,
-                content=final_content,
-                s3_object_key=s3_key,
-                tags=[template_key.lower()]
-            )
-
-            # Отправляем длинный отчет новым сообщением, а в старом оставляем подтверждение и кнопки действий
-            await query.edit_message_text(f"✅ Your '{report_name}' report has been generated and saved!")
-            _, reply_markup = self.ui.get_note_actions_message(note_id)
-            await self.send_message(chat_id, final_content, reply_markup=reply_markup)
-            return
-
-        # 4. Пользователь нажал "Другой язык"
-        elif action_type == 'RETRY' and parts[1] == 'LANG':
-            user = self.database.get_user(user_id)
-            reply_markup = self.ui.build_language_retry_buttons(user, s3_key)
-            await query.edit_message_text("Got it. What was the language, actually?", reply_markup=reply_markup)
-            return
-
-        elif action_type == 'RETRY' and parts[1] == 'AS':
-            # ... (код без изменений)
-            return
-
-        # 5. Обработка кнопок уже сохраненной заметки
-        elif action_type == 'NOTE':
-            # ... (старый код обработки кнопок NOTE_*, который мы пока оставим)
-            return
-
-    # ... (все остальные методы без изменений)
     async def _handle_command(self, user_id: str, chat_id: int, username: Optional[str], text: str):
         command_parts = text.split()
         command = command_parts[0]
@@ -275,15 +109,8 @@ class TelegramHandler:
             response_text = self.ui.format_search_results(notes, query)
             await self.send_message(chat_id, response_text)
         elif command == '/summary':
-            await self.send_message(chat_id, "⏳ Generating summary for the last 7 days...")
-            notes = self.database.get_notes_for_period(user_id, days=7)
-            if not notes:
-                await self.send_message(chat_id, "No notes found for the last 7 days.")
-                return
-            full_text = "\n\n---\n\n".join([note['content'] for note in notes])
-            summary = self.insight_service.get_summary(full_text)
             await self.send_message(chat_id,
-                                    f"📝 *Summary for the last 7 days:*\n\n{summary or 'Could not generate summary.'}")
+                                    "This command is deprecated. Please use the 'Create Smart Report' button on a specific note.")
 
         if user_id == self.admin_telegram_id:
             if command == '/confirm':
@@ -293,13 +120,67 @@ class TelegramHandler:
 
     async def _handle_text_note(self, text: str, user_id: str, chat_id: int):
         try:
-            note_id = self.database.save_note(user_id=user_id, content=text)
-            message, reply_markup = self.ui.get_note_actions_message(note_id)
-            await self.send_message(chat_id, f"✅ *Note created from text.*\n\n```{text[:250]}...```",
-                                    reply_markup=reply_markup)
+            note_id = self.database.save_note(user_id=user_id, content=text, tags=['plain_text'])
+            await self.send_message(chat_id, f"✅ *Note saved:* ```{text[:250]}...```")
+            message, reply_markup = self.ui.get_main_actions_menu(note_id)
+            await self.send_message(chat_id, message, reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error creating text note for user {user_id}: {e}")
             await self.send_message(chat_id, "❌ Sorry, an error occurred while saving your note.")
+
+    async def _handle_url(self, url: str, user_id: str, chat_id: int):
+        await self.send_message(chat_id, "🔗 Link received. Starting download...")
+
+        local_file_path = None
+        try:
+            local_file_path = self.downloader_service.download_audio(url)
+            if not local_file_path:
+                await self.send_message(chat_id,
+                                        "❌ Failed to download audio from the link. The link might be broken, private, or protected.")
+                return
+
+            await self._process_local_file(local_file_path, user_id, chat_id, from_url=True)
+        except Exception as e:
+            logger.error(f"Error handling URL {url}: {e}", exc_info=True)
+            await self.send_message(chat_id, "❌ An error occurred while processing your link.")
+        finally:
+            if local_file_path and os.path.exists(local_file_path):
+                os.remove(local_file_path)
+
+    async def _process_local_file(self, local_file_path: str, user_id: str, chat_id: int, from_url: bool = False):
+        try:
+            object_key = f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
+            if not self.s3_service.upload_file(local_file_path, object_key):
+                await self.send_message(chat_id, "❌ Server error: could not upload file to storage.")
+                return
+
+            if self.celery_app_client:
+                logger.info(f"Sending task to Celery for object {object_key}")
+                self.celery_app_client.send_task('tasks.process_media', args=[user_id, object_key, {},
+                                                                              {'platform': 'telegram',
+                                                                               'chat_id': chat_id}])
+                if from_url:
+                    await self.send_message(chat_id, "✅ Download complete. Your file is now being processed...")
+        except Exception as e:
+            logger.error(f"Error in _process_local_file: {e}", exc_info=True)
+            await self.send_message(chat_id, "❌ An error occurred during file processing.")
+
+    async def _handle_file_upload(self, file_obj, user_id: str, chat_id: int):
+        await self.send_message(chat_id, "✅ File received. Processing...")
+        local_file_path = None
+        try:
+            tg_file = await file_obj.get_file()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(tg_file.file_path)[-1]) as temp_f:
+                local_file_path = temp_f.name
+                await tg_file.download_to_drive(custom_path=local_file_path)
+
+            await self._process_local_file(local_file_path, user_id, chat_id)
+        except Exception as e:
+            logger.error(f"Error handling Telegram file upload: {e}", exc_info=True)
+            await self.send_message(chat_id, "❌ An error occurred while processing your file.")
+        finally:
+            if local_file_path and os.path.exists(local_file_path):
+                os.remove(local_file_path)
 
     async def _handle_start_command(self, user_id: str, chat_id: int, username: Optional[str]):
         user = self.database.get_user(user_id)
@@ -331,12 +212,6 @@ class TelegramHandler:
             await self.send_message(chat_id, f"❌ User with ID `{user_to_activate}` not found.")
             return
 
-        if target_user.get('plan') == plan_name and target_user.get('subscription_expires_at',
-                                                                    datetime.now(timezone.utc)) > datetime.now(
-            timezone.utc):
-            await self.send_message(chat_id, f"⚠️ **Warning:** User `{user_to_activate}` is already on this plan.")
-            return
-
         self.database.update_user_subscription(user_to_activate, plan_name)
         await self.send_message(chat_id, f"✅ User `{user_to_activate}` upgraded to *{plan_name.capitalize()}*.")
 
@@ -359,6 +234,84 @@ class TelegramHandler:
 
         message = self.ui.get_status_message(user_data)
         await self.send_message(chat_id, f"ℹ️ *Status for user `{user_to_check}`*\n\n" + message)
+
+    async def _handle_callback_query(self, query: Update.callback_query):
+        await query.answer()
+        payload = query.data
+        chat_id = query.message.chat_id
+
+        parts = payload.split('_')
+        action_type = parts[0]
+        action_name = parts[1]
+
+        try:
+            note_id_str = parts[2] if len(parts) > 2 else None
+            note_id = ObjectId(note_id_str) if note_id_str else None
+        except Exception:
+            await self.send_message(chat_id, "Error processing action: Invalid Note ID.")
+            return
+
+        if not note_id:
+            await self.send_message(chat_id, "Error processing action: Note ID not found.")
+            return
+
+        note = self.database.get_note_by_id(note_id)
+        if not note:
+            await query.edit_message_text("This menu is no longer active as the note was deleted.", reply_markup=None)
+            return
+
+        if action_type == 'ACTION':
+            if action_name == 'REPORT':
+                text, markup = self.ui.get_template_selection_message(note_id)
+                await query.edit_message_text(text, reply_markup=markup)
+
+            elif action_name == 'SUMMARIZE':
+                await self.send_message(chat_id, "🤖 Generating summary...")
+                summary = self.insight_service.get_summary(note['content'])
+                await self.send_message(chat_id, f"*Summary:*\n{summary or 'Could not generate summary.'}")
+
+            elif action_name == 'TRANSLATE':
+                if len(parts) > 3:
+                    target_lang = parts[3]
+                    await self.send_message(chat_id, f"🌐 Translating to {target_lang.upper()}...")
+                    result = self.translation_service.translate_text(note['content'], target_lang,
+                                                                     note.get('source_language'))
+                    response_text = f"*{target_lang.upper()} Translation:*\n{result['translated_text']}" if result[
+                        'success'] else f"❌ Translation failed: {result['error']}"
+                    await self.send_message(chat_id, response_text)
+                else:
+                    text, markup = self.ui.get_translation_language_options(note_id)
+                    await query.edit_message_text(text, reply_markup=markup)
+
+            elif action_name == 'DELETE':
+                if len(parts) > 2 and parts[2] == 'CONFIRM':
+                    if self.database.delete_note(note_id):
+                        await query.edit_message_text("🗑️ Note successfully deleted.", reply_markup=None)
+                    else:
+                        await query.edit_message_text("Could not delete the note.")
+                elif len(parts) > 2 and parts[2] == 'CANCEL':
+                    text, markup = self.ui.get_main_actions_menu(note_id)
+                    await query.edit_message_text(text, reply_markup=markup)
+                else:
+                    text, markup = self.ui.get_delete_confirmation(note_id)
+                    await query.edit_message_text(text, reply_markup=markup)
+
+        elif action_type == 'TEMPLATE':
+            template_key = action_name
+            await self.send_message(chat_id, f"🤖 Generating report with template '{template_key}'...")
+
+            report_text = self.insight_service.create_report(note['content'], template_key)
+            if not report_text:
+                await self.send_message(chat_id, "❌ Sorry, failed to generate the report.")
+                return
+
+            report_name = self.insight_service.REPORT_PROMPTS.get(template_key, {}).get('name', 'Report')
+            final_report_header = f"📊 *Report: {report_name}*"
+            await self.send_message(chat_id, f"{final_report_header}\n\n{report_text}")
+
+            # Возвращаем исходное меню действий, чтобы пользователь мог продолжить
+            text, markup = self.ui.get_main_actions_menu(note_id)
+            await query.edit_message_text(text, reply_markup=markup)
 
     async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None):
         try:

@@ -9,8 +9,6 @@ from celery.schedules import crontab
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
-from bson import ObjectId
-
 
 from services.media_handler import MediaHandler
 from services.transcription_service import TranscriptionService
@@ -53,6 +51,7 @@ def ping_redis_task():
             logger.warning("Redis PING failed.")
     except Exception as e:
         logger.error(f"Error while pinging Redis: {e}")
+
 
 database = None
 s3_service = None
@@ -137,7 +136,7 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
             if platform == 'telegram' and chat_id:
                 database.save_raw_transcription(s3_key=object_key, user_id=sender_id, **result)
                 run_async_task(
-                    handle_telegram_success(chat_id, user, result, object_key)
+                    handle_telegram_success(chat_id, sender_id, result, object_key)
                 )
             duration_to_charge = result.get('duration_minutes', 0)
             database.update_minutes_used(sender_id, duration_to_charge)
@@ -172,19 +171,36 @@ def run_async_task(coro):
     return loop.run_until_complete(coro)
 
 
-async def handle_telegram_success(chat_id: int, user: Dict[str, Any], result: Dict[str, Any], s3_key: str):
-    if not telegram_handler: return
+async def handle_telegram_success(chat_id: int, user_id: str, result: Dict[str, Any], s3_key: str):
+    if not telegram_handler or not database: return
 
-    lang_info = result.get('language_info', {})
-    lang_name = lang_info.get('name', 'N/A')
+    transcribed_text = result.get('transcription', '')
+    if not transcribed_text:
+        await telegram_handler.send_message(chat_id, "Could not extract any text from the file.")
+        return
 
-    # ИЗМЕНЕНИЕ: Вызываем новую функцию для отображения результата и основного меню
-    message, reply_markup = telegram_handler.ui.get_transcription_result_message(
-        text=result['transcription'],
-        lang_name=lang_name,
-        s3_key=s3_key
+    lang_name = result.get('language_info', {}).get('name', 'N/A')
+
+    # Шаг 1: Сразу сохраняем заметку с простым текстом, чтобы получить note_id
+    note_id = database.save_note(
+        user_id=user_id,
+        content=transcribed_text,
+        s3_object_key=s3_key,
+        detected_language=result.get('detected_language'),
+        duration_minutes=result.get('duration_minutes', 0),
+        tags=['plain_text']
     )
-    await telegram_handler.send_message(chat_id, message, reply_markup=reply_markup)
+
+    # Шаг 2: Отправляем пользователю сообщение с полным текстом транскрипции
+    header = f"📝 *Transcription ({lang_name})*:"
+    # Отправляем только часть текста, чтобы не засорять чат, если он очень длинный
+    text_preview = (transcribed_text[:3500] + '...') if len(transcribed_text) > 3500 else transcribed_text
+    full_message = f"{header}\n\n```{text_preview}```"
+    await telegram_handler.send_message(chat_id, full_message)
+
+    # Шаг 3: Сразу следом отправляем второе сообщение с меню действий
+    menu_text, reply_markup = telegram_handler.ui.get_main_actions_menu(note_id)
+    await telegram_handler.send_message(chat_id, menu_text, reply_markup=reply_markup)
 
 
 def _download_file_from_r2(object_key: str) -> Optional[str]:

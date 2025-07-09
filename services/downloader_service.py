@@ -15,12 +15,10 @@ class DownloaderService:
         """
         temp_audio_file = None
         try:
-            # Создаем временный файл, в который будем скачивать аудио
             temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
             temp_audio_path = temp_audio_file.name
             temp_audio_file.close()
 
-            # Настройки для yt-dlp: скачиваем лучшее аудио и конвертируем в mp3
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': temp_audio_path,
@@ -32,6 +30,7 @@ class DownloaderService:
                 'quiet': True,
                 'no_warnings': True,
                 'noplaylist': True,
+                'nocheckcertificate': True,  # Добавляем для обхода некоторых проверок
             }
 
             logger.info(f"Начинаем скачивание аудио по ссылке: {url}")
@@ -41,9 +40,14 @@ class DownloaderService:
             logger.info(f"Аудио успешно скачано и сохранено в: {temp_audio_path}")
             return temp_audio_path
 
+        except yt_dlp.utils.DownloadError as e:
+            # Обрабатываем специфичную ошибку yt-dlp более изящно
+            logger.error(f"yt-dlp download error for {url}: {e}")
+            if temp_audio_file and os.path.exists(temp_audio_file.name):
+                os.remove(temp_audio_file.name)
+            return None
         except Exception as e:
             logger.error(f"Ошибка при скачивании аудио из {url}: {e}", exc_info=True)
-            # Если произошла ошибка, удаляем временный файл, если он был создан
             if temp_audio_file and os.path.exists(temp_audio_file.name):
                 os.remove(temp_audio_file.name)
             return None
