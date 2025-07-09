@@ -21,21 +21,29 @@ class TranscriptionService:
             raise
 
     def detect_language(self, audio_file_path: str) -> tuple[str, str]:
-        """Определяет язык аудиофайла."""
+        """
+        Определяет язык аудиофайла, не выполняя полной транскрипции.
+        Возвращает кортеж (код_языка, полное_имя_языка).
+        """
         try:
             self.logger.info(f"Запускаем определение языка для файла: {audio_file_path}")
             result = self._transcribe_sync(audio_file_path, language_hint=None)
+
             if result['success']:
                 code = result.get('detected_language_code', 'unknown')
                 name = result.get('detected_language_name', 'unknown')
                 return code, name
+
             raise result.get('error', Exception('Unknown language detection error'))
+
         except Exception as e:
             self.logger.error(f"Критическая ошибка в detect_language: {e}", exc_info=True)
             return 'unknown', 'unknown'
 
     def _transcribe_sync(self, audio_path: str, language_hint: str = None) -> dict:
-        """Синхронно транскрибирует аудиофайл."""
+        """
+        Синхронно транскрибирует аудиофайл.
+        """
         try:
             with open(audio_path, "rb") as audio_file:
                 prompt_text = None
@@ -59,7 +67,8 @@ class TranscriptionService:
                 transcribed_text = response.text.strip() if response.text else ''
 
                 if len(detected_language_name) > 15 or ' ' in detected_language_name:
-                    logger.warning(f"Whisper вернул невалидное имя языка: '{detected_language_name}'.")
+                    logger.warning(
+                        f"Whisper вернул невалидное имя языка: '{detected_language_name}'. Считаем язык неопределенным.")
                     final_lang_code = 'unknown'
                 else:
                     final_lang_code = SUPPORTED_LANGUAGES_MAP.get(detected_language_name, detected_language_name)
