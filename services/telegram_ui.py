@@ -7,6 +7,7 @@ from bson import ObjectId
 from .database import PLANS
 from config.transcrib_suggestion_config import DEFAULT_POPULAR_TRANSLATION_LANGS
 
+
 class TelegramUI:
     def __init__(self):
         self.base_url = os.getenv('RENDER_EXTERNAL_URL', 'https://your-app-name.onrender.com')
@@ -64,6 +65,7 @@ class TelegramUI:
             [InlineKeyboardButton("🎙️ Podcast Show Notes", callback_data=f"TEMPLATE_PODCAST_{note_id}")],
             [InlineKeyboardButton("🎯 Coaching Session", callback_data=f"TEMPLATE_COACHING_{note_id}")],
             [InlineKeyboardButton("💡 Client Briefing", callback_data=f"TEMPLATE_BRIEFING_{note_id}")],
+            [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_{note_id}")]
         ]
         return message_text, InlineKeyboardMarkup(keyboard)
 
@@ -82,7 +84,11 @@ class TelegramUI:
             buttons.append(InlineKeyboardButton(f"{lang['flag']} {lang['title']}",
                                                 callback_data=f"ACTION_TRANSLATE_{note_id}_{lang['code']}"))
 
+        # Разделяем кнопки на ряды по 3
         keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+        # Добавляем кнопку "Назад"
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_{note_id}")])
+
         return "Please select the target language:", InlineKeyboardMarkup(keyboard)
 
     def format_search_results(self, notes: List[Dict[str, Any]], query: str) -> str:
