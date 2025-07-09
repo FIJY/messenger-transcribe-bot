@@ -241,7 +241,7 @@ class TelegramHandler:
             return
 
         if action_type == 'RETRY' and parts[1] == 'LANG':
-            # ... (логика для выбора другого языка)
+            # ... (логика для выбора другого языка, которую нужно будет реализовать)
             return
 
         if action_type == 'NOTE':
