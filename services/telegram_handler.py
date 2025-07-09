@@ -217,7 +217,6 @@ class TelegramHandler:
         chat_id = query.message.chat_id
         user_id = str(query.from_user.id)
 
-        # ОБРАБОТЧИК ДЛЯ КНОПКИ QR-КОДА
         if payload == 'SHOW_PAYMENT_QR':
             qr_file_id = self.payment_service.payment_qr_file_id
             if qr_file_id:
@@ -282,3 +281,65 @@ class TelegramHandler:
             if not note:
                 await query.edit_message_text("This note has been deleted.")
                 return
+
+            action = parts[1]
+
+            if action == 'SUMMARIZE':
+                await query.edit_message_text("📝 Generating summary...")
+                summary = self.insight_service.get_summary(note['content'])
+                await self.send_message(chat_id, f"*Summary:*\n{summary or 'Could not generate summary.'}")
+
+            elif action == 'TODO':
+                self.database.update_note(note_id, {"type": "todo"})
+                await self.send_message(chat_id, "✅ Note marked as a TODO.")
+
+            elif action == 'TRANSLATE':
+                target_lang = parts[2] if len(parts) > 2 else None
+                if not target_lang:
+                    text, markup = self.ui.get_translation_language_options(note_id)
+                    await query.edit_message_text(text, reply_markup=markup)
+                else:
+                    await query.edit_message_text(f"Translating to {target_lang.upper()}...")
+                    result = self.translation_service.translate_text(note['content'], target_lang,
+                                                                     note.get('source_language'))
+                    if result['success']:
+                        await self.send_message(chat_id,
+                                                f"*{target_lang.upper()} Translation:*\n{result['translated_text']}")
+                    else:
+                        await self.send_message(chat_id, f"❌ Translation failed: {result['error']}")
+
+            elif action == 'FIND':
+                keywords = self.insight_service.get_keywords(note['content'])
+                if not keywords:
+                    await self.send_message(chat_id, "Could not identify keywords to find related notes.")
+                    return
+                await self.send_message(chat_id, f"🔍 Searching for notes related to: `{', '.join(keywords)}`")
+                related_notes = self.database.find_notes_by_keywords(user_id, keywords, current_note_id=note_id)
+                response = self.ui.format_related_notes(related_notes)
+                await self.send_message(chat_id, response)
+
+            elif action == 'DELETE':
+                confirm_action = parts[2] if len(parts) > 2 else None
+                if confirm_action == 'CONFIRM':
+                    if self.database.delete_note(note_id):
+                        await query.edit_message_text("🗑️ Note successfully deleted.")
+                    else:
+                        await query.edit_message_text("Could not delete the note.")
+                elif confirm_action == 'CANCEL':
+                    message, reply_markup = self.ui.get_note_actions_message(note_id)
+                    await query.edit_message_text(f"Deletion cancelled.\n\n{message}", reply_markup=reply_markup)
+                else:
+                    text, markup = self.ui.get_delete_confirmation(note_id)
+                    await query.edit_message_text(text, reply_markup=markup)
+
+    # ДОБАВЛЕН НЕДОСТАЮЩИЙ МЕТОД
+    async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None):
+        try:
+            await self.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Failed to send message to Telegram chat {chat_id}: {e}")
