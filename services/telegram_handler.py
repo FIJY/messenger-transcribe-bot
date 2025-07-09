@@ -248,7 +248,7 @@ class TelegramHandler:
                 duration_minutes=raw_transcription.get('duration_minutes', 0)
             )
             message, reply_markup = self.ui.get_note_actions_message(note_id)
-            await query.edit_message_text(f"✅ Note created!\n\n{message}", reply_markup=reply_markup)
+            await query.edit_message_text(f"✅ Note saved! {message}", reply_markup=reply_markup)
             return
 
         if action_type == 'RETRY' and parts[1] == 'LANG':
@@ -276,25 +276,44 @@ class TelegramHandler:
             return
 
         if action_type == 'NOTE':
-            note_id = ObjectId(parts[-1])
+            # ИСПРАВЛЕНИЕ: Более надежный парсинг callback'ов
+            action = parts[1]
+
+            try:
+                # Для действий с переводом, где ID и язык идут вместе
+                if action == 'TRANSLATE' and len(parts) > 3:
+                    note_id_str = parts[2]
+                    target_lang = parts[3]
+                # Для всех остальных действий с заметкой
+                else:
+                    note_id_str = parts[2]
+                    target_lang = None
+
+                note_id = ObjectId(note_id_str)
+            except Exception:
+                logger.error(f"Could not parse note_id from callback data: {payload}")
+                await query.edit_message_text("Sorry, there was an error processing this action.")
+                return
+
             note = self.database.get_note_by_id(note_id)
             if not note:
                 await query.edit_message_text("This note has been deleted.")
                 return
 
-            action = parts[1]
+            original_message, original_markup = self.ui.get_note_actions_message(note_id)
 
             if action == 'SUMMARIZE':
                 await query.edit_message_text("📝 Generating summary...")
                 summary = self.insight_service.get_summary(note['content'])
-                await self.send_message(chat_id, f"*Summary:*\n{summary or 'Could not generate summary.'}")
+                await query.edit_message_text(f"*Summary:*\n{summary or 'Could not generate summary.'}",
+                                              reply_markup=original_markup)
 
             elif action == 'TODO':
                 self.database.update_note(note_id, {"type": "todo"})
-                await self.send_message(chat_id, "✅ Note marked as a TODO.")
+                await query.edit_message_text(f"✅ Note marked as a TODO.\n\n{original_message}",
+                                              reply_markup=original_markup)
 
             elif action == 'TRANSLATE':
-                target_lang = parts[2] if len(parts) > 2 else None
                 if not target_lang:
                     text, markup = self.ui.get_translation_language_options(note_id)
                     await query.edit_message_text(text, reply_markup=markup)
@@ -303,31 +322,33 @@ class TelegramHandler:
                     result = self.translation_service.translate_text(note['content'], target_lang,
                                                                      note.get('source_language'))
                     if result['success']:
-                        await self.send_message(chat_id,
-                                                f"*{target_lang.upper()} Translation:*\n{result['translated_text']}")
+                        response_text = f"*{target_lang.upper()} Translation:*\n{result['translated_text']}"
                     else:
-                        await self.send_message(chat_id, f"❌ Translation failed: {result['error']}")
+                        response_text = f"❌ Translation failed: {result['error']}"
+                    await query.edit_message_text(response_text, reply_markup=original_markup)
 
             elif action == 'FIND':
+                await query.edit_message_text("🔍 Searching for related notes...")
                 keywords = self.insight_service.get_keywords(note['content'])
                 if not keywords:
-                    await self.send_message(chat_id, "Could not identify keywords to find related notes.")
+                    await query.edit_message_text("Could not identify keywords to find related notes.",
+                                                  reply_markup=original_markup)
                     return
-                await self.send_message(chat_id, f"🔍 Searching for notes related to: `{', '.join(keywords)}`")
+
                 related_notes = self.database.find_notes_by_keywords(user_id, keywords, current_note_id=note_id)
                 response = self.ui.format_related_notes(related_notes)
-                await self.send_message(chat_id, response)
+                await query.edit_message_text(response, reply_markup=original_markup)
 
             elif action == 'DELETE':
-                confirm_action = parts[2] if len(parts) > 2 else None
+                confirm_action = parts[3] if len(parts) > 3 else None
                 if confirm_action == 'CONFIRM':
                     if self.database.delete_note(note_id):
                         await query.edit_message_text("🗑️ Note successfully deleted.")
                     else:
                         await query.edit_message_text("Could not delete the note.")
                 elif confirm_action == 'CANCEL':
-                    message, reply_markup = self.ui.get_note_actions_message(note_id)
-                    await query.edit_message_text(f"Deletion cancelled.\n\n{message}", reply_markup=reply_markup)
+                    await query.edit_message_text(f"Deletion cancelled.\n\n{original_message}",
+                                                  reply_markup=original_markup)
                 else:
                     text, markup = self.ui.get_delete_confirmation(note_id)
                     await query.edit_message_text(text, reply_markup=markup)
