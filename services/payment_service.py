@@ -4,7 +4,8 @@ import logging
 from telegram import Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
 from typing import Optional
 
-from .database import Database
+# ИМПОРТИРУЕМ ЕДИНЫЙ ИСТОЧНИК ДАННЫХ О ТАРИФАХ
+from .database import Database, PLANS
 
 logger = logging.getLogger(__name__)
 
@@ -19,17 +20,22 @@ class PaymentService:
             logger.warning("ADMIN_TELEGRAM_ID is not set. Admin notifications for payments will be disabled.")
 
     async def send_payment_instructions(self, chat_id: int, user_id: str):
-        """Отправляет сообщение об исчерпании лимита с инструкциями по оплате."""
+        """Отправляет сообщение об исчерпании лимита с инструкциями по оплате, используя актуальные данные о тарифах."""
+
+        # Динамически получаем данные о тарифах из единого источника
+        basic_plan = PLANS.get('basic', {})
+        premium_plan = PLANS.get('premium', {})
+
         payment_link = "https://pay.ababank.com/qLuyZbAyLDpyq9VSA"
+
+        # Формируем сообщение, используя актуальные данные из PLANS
         message = (
             f"⏳ *You have used all your available minutes.*\n\n"
             f"To continue, please choose a monthly package:\n\n"
-            f"🔹 **Basic: $2/month**\n"
-            f"• 100 minutes of transcription\n"
-            f"• Files up to 20 minutes\n\n"
-            f"💎 **Premium: $5/month**\n"
-            f"• 200 minutes for all features\n"
-            f"• Files up to 60 minutes\n\n"
+            f"🔹 **Basic: ${basic_plan.get('price_usd', 'N/A')}/month**\n"
+            f"• {basic_plan.get('limit_minutes', 'N/A')} minutes of transcription\n\n"
+            f"💎 **Premium: ${premium_plan.get('price_usd', 'N/A')}/month**\n"
+            f"• {premium_plan.get('limit_minutes', 'N/A')} minutes for all features\n\n"
             f"💳 **Payment Options:**\n\n"
             f"**1. ABA Bank Transfer**\n"
             f"   Account Name: `SHMYKOVA OLGA`\n"
@@ -38,8 +44,12 @@ class PaymentService:
             f"   [Tap here to pay with ABA Pay]({payment_link})\n\n"
             f"❗️**Important:** After payment, please **send a screenshot of the receipt** to this chat for verification."
         )
-        keyboard = [[InlineKeyboardButton("📱 Show QR Code for Payment", callback_data="SHOW_PAYMENT_QR")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        keyboard_buttons = []
+        if self.payment_qr_file_id:
+            keyboard_buttons.append([InlineKeyboardButton("📱 Show QR Code for Payment", callback_data="SHOW_PAYMENT_QR")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard_buttons) if keyboard_buttons else None
 
         await self.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown', reply_markup=reply_markup)
         # Устанавливаем пользователю состояние ожидания скриншота

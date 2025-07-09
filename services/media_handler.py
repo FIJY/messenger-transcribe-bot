@@ -26,16 +26,19 @@ class MediaHandler:
             logger.error(f"Could not initialize GoogleSTTService. Khmer or Irish transcription will fail. Error: {e}")
             self.google_stt_service = None
 
-    # ... (остальная часть файла без изменений)
-
     def process_media(self, file_path: str, user_preferences: Optional[Dict] = None) -> Dict[str, Any]:
         audio_path = None
         converted_wav_path = None
+        is_temp_audio_from_video = False  # Флаг для временного аудио из видео
         user_prefs = user_preferences or {}
         try:
             expected_language = user_prefs.get('preferred_language')
 
+            # process_file может вернуть новый путь, если было извлечение из видео
             audio_path = self.audio_processor.process_file(file_path)
+            if audio_path != file_path:
+                is_temp_audio_from_video = True # Помечаем, что был создан временный файл
+
             if not audio_path:
                 return {'success': False, 'error': Exception('Failed to process media file')}
 
@@ -104,8 +107,12 @@ class MediaHandler:
             logger.error(f"Critical error in media processing: {e}", exc_info=True)
             return {'success': False, 'error': e}
         finally:
+            # Очищаем WAV-файл, если он был создан
             if converted_wav_path:
                 self.audio_processor.cleanup_temp_file(converted_wav_path)
+            # Очищаем MP3-файл, если он был извлечен из видео
+            if is_temp_audio_from_video and audio_path:
+                self.audio_processor.cleanup_temp_file(audio_path)
 
     def _get_language_info_safe(self, detected_language: str) -> Dict[str, str]:
         language_names = {

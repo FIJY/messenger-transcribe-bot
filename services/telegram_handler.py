@@ -99,7 +99,6 @@ class TelegramHandler:
                 await self.send_message(chat_id, "Please provide a search term. Usage: `/search <your query>`")
                 return
             await self.send_message(chat_id, f"🔍 Searching for notes matching: `{query}`...")
-            # ИСПРАВЛЕНИЕ: Используем новую, эффективную функцию поиска
             notes = self.database.search_notes_by_query(user_id, query)
             response_text = self.ui.format_search_results(notes, query)
             await self.send_message(chat_id, response_text)
@@ -124,7 +123,7 @@ class TelegramHandler:
         try:
             note_id = self.database.save_note(user_id=user_id, content=text)
             message, reply_markup = self.ui.get_note_actions_message(note_id)
-            await self.send_message(chat_id, f"✅ *Note saved.*\n\n{message}",
+            await self.send_message(chat_id, f"✅ *Note created from text.*\n\n```{text[:250]}...```",
                                     reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error creating text note for user {user_id}: {e}")
@@ -218,6 +217,20 @@ class TelegramHandler:
         chat_id = query.message.chat_id
         user_id = str(query.from_user.id)
 
+        # ОБРАБОТЧИК ДЛЯ КНОПКИ QR-КОДА
+        if payload == 'SHOW_PAYMENT_QR':
+            qr_file_id = self.payment_service.payment_qr_file_id
+            if qr_file_id:
+                try:
+                    await self.bot.send_photo(chat_id, photo=qr_file_id,
+                                              caption="Please use this QR code for your payment.")
+                except Exception as e:
+                    logger.error(f"Failed to send QR code photo: {e}")
+                    await self.send_message(chat_id, "Sorry, could not display the QR code at the moment.")
+            else:
+                await self.send_message(chat_id, "Sorry, the payment QR code is not configured.")
+            return
+
         parts = payload.split('_')
         action_type = parts[0]
 
@@ -236,26 +249,22 @@ class TelegramHandler:
                 duration_minutes=raw_transcription.get('duration_minutes', 0)
             )
             message, reply_markup = self.ui.get_note_actions_message(note_id)
-            await query.edit_message_text(f"✅ Note saved! {message}", reply_markup=reply_markup)
+            await query.edit_message_text(f"✅ Note created!\n\n{message}", reply_markup=reply_markup)
             return
 
         if action_type == 'RETRY' and parts[1] == 'LANG':
             s3_key = "_".join(parts[2:])
             user = self.database.get_user(user_id)
-            # ИСПРАВЛЕНИЕ: Вызываем правильный метод build_language_retry_buttons
             reply_markup = self.ui.build_language_retry_buttons(user, s3_key)
             await query.edit_message_text("Got it. What was the language, actually?", reply_markup=reply_markup)
             return
 
-        # НОВОЕ: Обработка нажатия на кнопку с конкретным языком
         if action_type == 'RETRY' and parts[1] == 'AS':
-            # Формат: RETRY_AS_{s3_key}_{language_code}
             s3_key = parts[2]
             language_code = parts[3]
 
-            await query.edit_message_text(f"✅ Understood. Retrying transcription in `{language_code.upper()}`...")
+            await query.edit_message_text(f"✅ Got it. Retrying transcription in `{language_code.upper()}`...")
 
-            # Повторно ставим задачу в очередь с указанием языка от пользователя
             self.celery_app_client.send_task(
                 'tasks.process_media',
                 args=[
@@ -273,65 +282,3 @@ class TelegramHandler:
             if not note:
                 await query.edit_message_text("This note has been deleted.")
                 return
-
-            action = parts[1]
-
-            if action == 'SUMMARIZE':
-                await query.edit_message_text("📝 Generating summary...")
-                summary = self.insight_service.get_summary(note['content'])
-                await self.send_message(chat_id, f"*Summary:*\n{summary or 'Could not generate summary.'}")
-
-            elif action == 'TODO':
-                self.database.update_note(note_id, {"type": "todo"})
-                await self.send_message(chat_id, "✅ Note marked as a TODO.")
-
-            elif action == 'TRANSLATE':
-                target_lang = parts[2] if len(parts) > 2 else None
-                if not target_lang:
-                    text, markup = self.ui.get_translation_language_options(note_id)
-                    await query.edit_message_text(text, reply_markup=markup)
-                else:
-                    await query.edit_message_text(f"Translating to {target_lang.upper()}...")
-                    result = self.translation_service.translate_text(note['content'], target_lang,
-                                                                     note.get('source_language'))
-                    if result['success']:
-                        await self.send_message(chat_id,
-                                                f"*{target_lang.upper()} Translation:*\n{result['translated_text']}")
-                    else:
-                        await self.send_message(chat_id, f"❌ Translation failed: {result['error']}")
-
-            elif action == 'FIND':
-                keywords = self.insight_service.get_keywords(note['content'])
-                if not keywords:
-                    await self.send_message(chat_id, "Could not identify keywords to find related notes.")
-                    return
-                await self.send_message(chat_id, f"🔍 Searching for notes related to: `{', '.join(keywords)}`")
-                related_notes = self.database.find_notes_by_keywords(user_id, keywords, current_note_id=note_id)
-                response = self.ui.format_related_notes(related_notes)
-                await self.send_message(chat_id, response)
-
-            elif action == 'DELETE':
-                confirm_action = parts[2] if len(parts) > 2 else None
-                if confirm_action == 'CONFIRM':
-                    if self.database.delete_note(note_id):
-                        await query.edit_message_text("🗑️ Note successfully deleted.")
-                    else:
-                        await query.edit_message_text("Could not delete the note.")
-                elif confirm_action == 'CANCEL':
-                    # ИСПРАВЛЕНИЕ: Более подходящее сообщение вместо "Note created!"
-                    message, reply_markup = self.ui.get_note_actions_message(note_id)
-                    await query.edit_message_text(f"Deletion cancelled. {message}", reply_markup=reply_markup)
-                else:
-                    text, markup = self.ui.get_delete_confirmation(note_id)
-                    await query.edit_message_text(text, reply_markup=markup)
-
-    async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None):
-        try:
-            await self.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup
-            )
-        except Exception as e:
-            logger.error(f"Failed to send message to Telegram chat {chat_id}: {e}")
