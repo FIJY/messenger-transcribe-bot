@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 from bson import ObjectId
 
+
 from services.media_handler import MediaHandler
 from services.transcription_service import TranscriptionService
 from services.database import Database
@@ -53,6 +54,18 @@ def ping_redis_task():
     except Exception as e:
         logger.error(f"Error while pinging Redis: {e}")
 
+# ИСПРАВЛЕНИЕ: Объявляем все переменные как None до блока try
+# Это гарантирует их существование в глобальной области видимости, даже если инициализация не удастся.
+database = None
+s3_service = None
+audio_processor = None
+transcription_service = None
+translation_service = None
+insight_service = None
+telegram_handler = None
+payment_service = None
+bot_instance = None
+media_handler_service = None
 
 try:
     database = Database()
@@ -75,24 +88,18 @@ try:
             translation_service=translation_service
         )
     else:
-        telegram_handler = None
-        payment_service = None
-        bot_instance = None
         logger.warning("Telegram Bot is disabled due to missing token.")
 
     media_handler_service = MediaHandler(transcription_service)
     logger.info("Celery worker: All services initialized successfully.")
 except Exception as e:
     logger.error(f"Celery worker: CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
-    media_handler_service = None
-    telegram_handler = None
-    payment_service = None
 
 
 @celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
 def process_media_task(self, sender_id: str, object_key: str, user_preferences: dict, platform_payload: dict):
     if not all([media_handler_service, database, audio_processor, payment_service, telegram_handler]):
-        logger.error("Worker handlers not initialized.");
+        logger.error("Worker handlers not initialized. A service probably failed during startup. Check logs above.")
         return
 
     local_file_path = None
