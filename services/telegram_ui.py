@@ -16,7 +16,7 @@ class TelegramUI:
     def get_welcome_message(self) -> str:
         return (
             "🎉 *Welcome to your AI Notes Assistant!*\n\n"
-            "To get started, just send me a voice message, an audio/video file, or a text message.\n\n"
+            "To get started, just send me a voice message, an audio/video file, a text message, or a link to a YouTube video.\n\n"
             "Type /help to see all available commands."
         )
 
@@ -26,7 +26,8 @@ class TelegramUI:
         help_text = (
             "🤖 *Bot Help & Information*\n\n"
             "**How to Use Me:**\n"
-            "Send me a voice message, audio/video file, or just text, and I will turn it into a structured note.\n\n"
+            "Send me a voice message, audio/video file, text message, or a link to a YouTube video, and I will turn it into a structured note.\n\n"
+            "💡 **Совет:** Чтобы отправить файл размером больше 20 МБ, прикрепите его как **'Файл'**, а не как 'Аудио' или 'Видео'.\n\n"
             "**Available Commands:**\n"
             "`/start` - Restart the bot.\n"
             "`/status` - Check your current plan.\n"
@@ -52,6 +53,18 @@ class TelegramUI:
                 InlineKeyboardButton("✅ Looks Good", callback_data=f"CONFIRM_OK_{s3_key}"),
                 InlineKeyboardButton("🗣️ Other language", callback_data=f"RETRY_LANG_{s3_key}")
             ]
+        ]
+        return message_text, InlineKeyboardMarkup(keyboard)
+
+    # НОВАЯ ФУНКЦИЯ для выбора шаблона
+    def get_template_selection_message(self, s3_key: str) -> tuple[str, InlineKeyboardMarkup]:
+        message_text = "✅ Transcription confirmed! Now, choose a report template to structure the information:"
+        keyboard = [
+            [InlineKeyboardButton("📝 Протокол встречи", callback_data=f"TEMPLATE_MEETING_{s3_key}")],
+            [InlineKeyboardButton("🎙️ Шоу-ноуты для подкаста", callback_data=f"TEMPLATE_PODCAST_{s3_key}")],
+            [InlineKeyboardButton("🎯 Отчет по коуч-сессии", callback_data=f"TEMPLATE_COACHING_{s3_key}")],
+            [InlineKeyboardButton("💡 Бриф с клиентом", callback_data=f"TEMPLATE_BRIEFING_{s3_key}")],
+            [InlineKeyboardButton("❌ Just save the text", callback_data=f"TEMPLATE_SKIP_{s3_key}")],
         ]
         return message_text, InlineKeyboardMarkup(keyboard)
 
@@ -135,7 +148,6 @@ class TelegramUI:
             buttons.append(InlineKeyboardButton(title, callback_data=f"{prefix}{lang_code}"))
             added_codes.add(lang_code)
 
-        # Мы не используем статистику здесь, просто показываем популярные
         for lang in defaults:
             if len(buttons) >= 6: break
             if lang['code'] not in added_codes: add_button(lang['code'])
