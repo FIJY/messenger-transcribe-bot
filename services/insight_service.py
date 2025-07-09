@@ -45,5 +45,6 @@ class InsightService:
         prompt = PROMPTS["find_keywords"].format(text=text)
         keywords_str = self._get_completion(prompt)
         if keywords_str:
+            keywords_str = keywords_str.replace('"', '').replace("'", "")
             return [keyword.strip() for keyword in keywords_str.split(',')]
         return []

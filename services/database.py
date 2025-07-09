@@ -51,7 +51,6 @@ class Database:
         return user_data
 
     def save_raw_transcription(self, s3_key: str, **kwargs):
-        """Сохраняет сырую транскрипцию до подтверждения пользователем."""
         data = {"s3_object_key": s3_key, "created_at": datetime.now(timezone.utc), **kwargs}
         self.db.raw_transcriptions.update_one({"s3_object_key": s3_key}, {"$set": data}, upsert=True)
 
@@ -72,10 +71,7 @@ class Database:
         return self.db.notes.find_one({"_id": note_id})
 
     def find_notes_by_keywords(self, user_id: str, keywords: List[str], limit: int = 5) -> List[Dict[str, Any]]:
-        query = {
-            "user_id": user_id,
-            "$or": [{"content": re.compile(keyword, re.IGNORECASE)} for keyword in keywords]
-        }
+        query = {"user_id": user_id, "$or": [{"content": re.compile(keyword, re.IGNORECASE)} for keyword in keywords]}
         return list(self.db.notes.find(query).sort("created_at", -1).limit(limit))
 
     def get_notes_for_period(self, user_id: str, days: int) -> List[Dict[str, Any]]:

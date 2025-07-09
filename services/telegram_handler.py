@@ -2,11 +2,11 @@
 import os
 import logging
 import tempfile
-import httpx
 import uuid
 import asyncio
 from typing import Dict, Any, List, Optional
-from telegram import Update, InlineKeyboardMarkup, Bot, Message, BotCommand, ParseMode
+from telegram import Update, InlineKeyboardMarkup, Bot, Message, BotCommand
+from telegram.constants import ParseMode
 from datetime import datetime, timezone
 from bson import ObjectId
 
@@ -17,7 +17,6 @@ from .payment_service import PaymentService
 from .telegram_ui import TelegramUI
 from .insight_service import InsightService
 from .translation_service import TranslationService
-from config.transcrib_suggestion_config import DEFAULT_POPULAR_TRANSCRIPTION_LANGS, SUPPORTED_LANGUAGES_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -236,16 +235,18 @@ class TelegramHandler:
                 duration_minutes=raw_transcription.get('duration_minutes', 0)
             )
             message, reply_markup = self.ui.get_note_actions_message(note_id)
-            await query.edit_message_text(f"✅ Transcription confirmed and saved as a note.\n\n{message}",
-                                          reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+            await query.edit_message_text(f"✅ Note created!\n\n{message}", reply_markup=reply_markup)
             return
 
         if action_type == 'RETRY' and parts[1] == 'LANG':
-            # ... (логика для выбора другого языка, которую нужно будет реализовать)
+            s3_key = "_".join(parts[2:])
+            user = self.database.get_user(user_id)
+            reply_markup = self.ui.build_smart_buttons(user, 'transcription', s3_key)
+            await query.edit_message_text("Got it. What was the language, actually?", reply_markup=reply_markup)
             return
 
         if action_type == 'NOTE':
-            note_id = ObjectId(parts[2])
+            note_id = ObjectId(parts[-1])
             note = self.database.get_note_by_id(note_id)
             if not note:
                 await query.edit_message_text("This note has been deleted.")
@@ -259,15 +260,15 @@ class TelegramHandler:
                 await self.send_message(chat_id, f"*Summary:*\n{summary or 'Could not generate summary.'}")
 
             elif action == 'TODO':
-                self.database.update_note(note_id, {"type": "todo", "is_completed": False})
+                self.database.update_note(note_id, {"type": "todo"})
                 await self.send_message(chat_id, "✅ Note marked as a TODO.")
 
             elif action == 'TRANSLATE':
-                if len(parts) == 3:  # Клик по кнопке "Translate"
+                target_lang = parts[2] if len(parts) > 2 else None
+                if not target_lang:
                     text, markup = self.ui.get_translation_language_options(note_id)
                     await query.edit_message_text(text, reply_markup=markup)
-                else:  # Выбран язык для перевода
-                    target_lang = parts[3]
+                else:
                     await query.edit_message_text(f"Translating to {target_lang.upper()}...")
                     result = self.translation_service.translate_text(note['content'], target_lang,
                                                                      note.get('source_language'))
@@ -283,20 +284,20 @@ class TelegramHandler:
                     await self.send_message(chat_id, "Could not identify keywords to find related notes.")
                     return
                 await self.send_message(chat_id, f"🔍 Searching for notes related to: `{', '.join(keywords)}`")
-                related_notes = self.database.find_notes_by_keywords(user_id, keywords)
+                related_notes = self.database.find_notes_by_keywords(user_id, keywords, current_note_id=note_id)
                 response = self.ui.format_related_notes(related_notes)
                 await self.send_message(chat_id, response)
 
             elif action == 'DELETE':
-                if len(parts) > 3 and parts[2] == 'CONFIRM':
-                    note_id_to_delete = ObjectId(parts[3])
-                    if self.database.delete_note(note_id_to_delete):
+                confirm_action = parts[2] if len(parts) > 2 else None
+                if confirm_action == 'CONFIRM':
+                    if self.database.delete_note(note_id):
                         await query.edit_message_text("🗑️ Note successfully deleted.")
                     else:
                         await query.edit_message_text("Could not delete the note.")
-                elif len(parts) > 3 and parts[2] == 'CANCEL':
-                    await query.message.delete()
-                    await self.send_message(chat_id, "Deletion cancelled.")
+                elif confirm_action == 'CANCEL':
+                    message, reply_markup = self.ui.get_note_actions_message(note_id)
+                    await query.edit_message_text(f"✅ Note created!\n\n{message}", reply_markup=reply_markup)
                 else:
                     text, markup = self.ui.get_delete_confirmation(note_id)
                     await query.edit_message_text(text, reply_markup=markup)

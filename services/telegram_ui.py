@@ -1,5 +1,6 @@
 # services/telegram_ui.py
 import os
+import logging
 from typing import Dict, Any, List
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from bson import ObjectId
@@ -10,6 +11,8 @@ from config.transcrib_suggestion_config import (
     SUPPORTED_LANGUAGES_MAP,
     DEFAULT_POPULAR_TRANSCRIPTION_LANGS
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramUI:
@@ -146,18 +149,16 @@ class TelegramUI:
 
         return messages
 
-    def build_smart_buttons(self, user: Dict[str, Any], context: str) -> InlineKeyboardMarkup:
-        # Эта функция используется для выбора языка при повторной попытке
-        if context == 'transcription':
-            defaults = DEFAULT_POPULAR_TRANSCRIPTION_LANGS
-            usage_stats = user.get('transcription_lang_usage', {})
-            prefix = "RETRY_AS_"
-            # s3_key нужен для контекста, его нужно передавать
-            other_payload = "INPUT_OTHER_TRANSCRIPTION_LANG_"
-        else:
-            return InlineKeyboardMarkup([[]])  # Для перевода своя логика
+    def build_smart_buttons(self, user: Dict[str, Any], context: str, s3_key: str) -> InlineKeyboardMarkup:
+        if context != 'transcription':
+            return InlineKeyboardMarkup([[]])
 
-        sorted_user_langs = sorted(usage_stats.keys(), key=stats.get, reverse=True)
+        defaults = DEFAULT_POPULAR_TRANSCRIPTION_LANGS
+        usage_stats = user.get('transcription_lang_usage', {})
+        prefix = f"RETRY_AS_{s3_key}_"
+        other_payload = f"INPUT_OTHER_TRANSCRIPTION_LANG_{s3_key}"
+
+        sorted_user_langs = sorted(usage_stats.keys(), key=usage_stats.get, reverse=True)
         buttons, added_codes = [], set()
 
         def add_button(lang_code):
@@ -176,5 +177,6 @@ class TelegramUI:
             if len(buttons) >= 5: break
             if lang['code'] not in added_codes: add_button(lang['code'])
 
-        keyboard = [buttons, [InlineKeyboardButton("✍️ Type other...", callback_data=other_payload)]]
+        keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+        keyboard.append([InlineKeyboardButton("✍️ Type other...", callback_data=other_payload)])
         return InlineKeyboardMarkup(keyboard)

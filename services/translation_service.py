@@ -49,7 +49,7 @@ class TranslationService:
                     {"role": "user", "content": text}
                 ],
                 temperature=0.1,
-                max_tokens=int(len(text) * 2.5) + 50
+                max_tokens=int(len(text.split()) * 2.5) + 50
             )
 
             translated_text = response.choices[0].message.content.strip()

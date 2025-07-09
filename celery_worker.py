@@ -8,7 +8,6 @@ from celery import Celery
 from celery.schedules import crontab
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any
-from telegram import InlineKeyboardMarkup
 from datetime import datetime, timezone
 from bson import ObjectId
 
@@ -67,7 +66,6 @@ try:
     if telegram_token:
         bot_instance = Bot(token=telegram_token)
         payment_service = PaymentService(bot=bot_instance, database=database)
-        # ===> ИСПРАВЛЕНИЕ: Передаем все необходимые сервисы <===
         telegram_handler = TelegramHandler(
             token=telegram_token,
             database=database,
@@ -132,10 +130,7 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
         if result.get('success'):
             if platform == 'telegram' and chat_id:
-                # Временно сохраняем сырую транскрипцию для подтверждения
                 database.save_raw_transcription(s3_key=object_key, user_id=sender_id, **result)
-
-                # Отправляем на подтверждение
                 run_async_task(
                     handle_telegram_success(chat_id, user, result, object_key)
                 )
@@ -159,7 +154,6 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
 
 def run_async_task(coro):
-    """Надежно запускает асинхронную задачу из синхронного контекста."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
