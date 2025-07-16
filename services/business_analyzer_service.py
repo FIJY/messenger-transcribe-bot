@@ -9,36 +9,37 @@ logger = logging.getLogger(__name__)
 
 
 class BusinessAnalyzerService:
+    # ИСПРАВЛЕНИЕ: Все фигурные скобки в JSON-примере экранированы (удвоены)
     MASTER_PROMPT = """You are an expert business analyst. Analyze the following transcript of a business meeting or negotiation.
 **RULE: You MUST generate the entire analysis in the exact same language as the original transcript.** Do not translate.
 
 Your task is to produce a single, valid JSON object with the following structure. Fill in each key based on the transcript content.
 
-{
+{{
   "summary": "A concise summary of the entire discussion.",
   "keywords": ["keyword1", "keyword2", "keyword3"],
   "action_items": [
-    {"task": "The specific action to be taken", "assignee": "Person responsible, if mentioned", "deadline": "Deadline, if mentioned"}
+    {{"task": "The specific action to be taken", "assignee": "Person responsible, if mentioned", "deadline": "Deadline, if mentioned"}}
   ],
-  "sentiment": {
+  "sentiment": {{
     "overall": "positive | negative | neutral",
     "key_emotions": ["emotion1", "emotion2"]
-  },
-  "dynamics": {
+  }},
+  "dynamics": {{
     "power_balance": "Description of who holds more leverage and why.",
     "trust_level": "Description of the level of trust or distrust observed.",
     "communication_style": "Description of the communication style (e.g., collaborative, confrontational)."
-  },
-  "deal_terms": {
+  }},
+  "deal_terms": {{
     "financial": ["List of all financial figures, percentages, and monetary amounts discussed."],
     "legal_conditions": ["List of all legal conditions, responsibilities, or restrictions mentioned."]
-  },
-  "risk_assessment": {
+  }},
+  "risk_assessment": {{
     "key_risks": ["A list of the main risks or concerns raised by either party."],
     "deal_breakers": ["A list of potential deal-breakers or non-negotiable points."]
-  },
+  }},
   "next_agenda": ["A list of suggested agenda items for the next meeting based on unresolved issues."]
-}
+}}
 
 Transcript:
 ---
@@ -60,7 +61,7 @@ Transcript:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 max_tokens=max_tokens,
-                response_format={"type": "json_object"} # Используем JSON mode для гарантированного результата
+                response_format={"type": "json_object"}
             )
             return response.choices[0].message.content.strip()
         except Exception as e:

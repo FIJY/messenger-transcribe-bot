@@ -70,7 +70,7 @@ class TelegramUI:
             ],
             [
                 InlineKeyboardButton("👥 Partnership", callback_data=f"CATEGORY_PARTNERSHIP_{note_id}"),
-                InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_{note_id}")
+                InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_MAIN_{note_id}")
             ]
         ]
         return message_text, InlineKeyboardMarkup(keyboard)
@@ -108,8 +108,8 @@ class TelegramUI:
         return (
             "Are you sure you want to delete this note?",
             InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Yes, delete", callback_data=f"ACTION_DELETECONFIRM_{note_id}"),
-                InlineKeyboardButton("❌ Cancel", callback_data=f"ACTION_DELETECANCEL_{note_id}")
+                InlineKeyboardButton("✅ Yes, delete", callback_data=f"ACTION_DELETE_CONFIRM_{note_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"ACTION_DELETE_CANCEL_{note_id}")
             ]])
         )
 
@@ -120,7 +120,7 @@ class TelegramUI:
                                                 callback_data=f"ACTION_TRANSLATE_{note_id}_{lang['code']}"))
 
         keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
-        keyboard.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_{note_id}")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_MAIN_{note_id}")])
 
         return "Please select the target language:", InlineKeyboardMarkup(keyboard)
 
@@ -143,7 +143,7 @@ class TelegramUI:
                 InlineKeyboardButton("📋 Next Agenda", callback_data=f"BIZ_next_agenda_{note_id}"),
                 InlineKeyboardButton("😊 Sentiment", callback_data=f"BIZ_sentiment_{note_id}"),
             ],
-            [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_{note_id}")]
+            [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_MAIN_{note_id}")]
         ]
         return message_text, InlineKeyboardMarkup(keyboard)
 
