@@ -201,7 +201,6 @@ class TelegramHandler:
     async def _handle_callback_query(self, query: Update.callback_query):
         await query.answer()
         payload = query.data
-        chat_id = query.message.chat_id
 
         parts = payload.split('_')
 
@@ -218,17 +217,14 @@ class TelegramHandler:
 
         action_type = action.split('_')[0]
 
-        if action.startswith('BIZ_'):
-            await self._handle_biz_report_section(chat_id, note, action)
-
-        elif action_type == 'ACTION':
+        if action_type == 'ACTION':
             await self._handle_main_action(query, note, action, parts)
-
         elif action_type == 'CATEGORY':
             await self._handle_category_selection(query, note, action)
-
         elif action_type == 'TEMPLATE':
             await self._handle_template_selection(query, note, action)
+        elif action_type == 'BIZ':
+            await self._handle_biz_report_section(query, note, action)
 
     async def _handle_main_action(self, query: Update.callback_query, note: dict, action: str, parts: List[str]):
         note_id = note['_id']
@@ -254,7 +250,10 @@ class TelegramHandler:
                 self.database.update_note(note_id, {"$set": {"business_analysis": analysis_result},
                                                     "$addToSet": {"tags": "business_analysis"}})
                 text, markup = self.ui.get_business_analysis_menu(note_id)
+                # Отправляем новым сообщением, а не редактируем
                 await self.send_message(chat_id, text, reply_markup=markup)
+                # Удаляем сообщение "Starting..."
+                await query.delete_message()
             else:
                 await self.send_message(chat_id, "❌ Failed to perform business analysis.")
 
@@ -267,6 +266,8 @@ class TelegramHandler:
                 response_text = f"*{target_lang.upper()} Translation:*\n{result['translated_text']}" if result[
                     'success'] else f"❌ Translation failed: {result['error']}"
                 await self.send_message(chat_id, response_text)
+                text, markup = self.ui.get_main_actions_menu(note_id)
+                await query.edit_message_text(text, reply_markup=markup)
             else:
                 text, markup = self.ui.get_translation_language_options(note_id)
                 await query.edit_message_text(text, reply_markup=markup)
@@ -309,7 +310,6 @@ class TelegramHandler:
         else:
             await self.send_message(chat_id, "❌ Sorry, failed to generate the report.")
 
-        # После генерации отчета отправляем новое меню действий
         menu_text, menu_markup = self.ui.get_main_actions_menu(note_id)
         await self.send_message(chat_id, menu_text, reply_markup=menu_markup)
 
