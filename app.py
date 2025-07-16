@@ -2,6 +2,7 @@
 import os
 import logging
 import asyncio
+import json  # Добавляем импорт json
 from quart import Quart, request, jsonify
 from dotenv import load_dotenv
 
@@ -12,6 +13,7 @@ from services.telegram_handler import TelegramHandler
 from services.insight_service import InsightService
 from services.translation_service import TranslationService
 from telegram import Bot
+from services.business_analyzer_service import BusinessAnalyzerService
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -27,6 +29,7 @@ try:
     s3_service = S3Service()
     insight_service = InsightService()
     translation_service = TranslationService()
+    business_analyzer = BusinessAnalyzerService()  # Добавили инициализацию
     telegram_token = os.getenv('TELEGRAM_TOKEN')
 
     if not telegram_token:
@@ -42,6 +45,7 @@ try:
         payment_service=payment_service,
         insight_service=insight_service,
         translation_service=translation_service
+        # business_analyzer нужно передать в handler, если он там используется
     )
     logger.info("✅ Telegram Handler and services initialized successfully.")
 except Exception as e:
@@ -73,14 +77,15 @@ async def health_check():
 @app.route('/webhook/telegram', methods=['POST'])
 async def telegram_webhook():
     """Принимает обновления от Telegram."""
+    data = await request.get_json()
+
+    # НОВОЕ: Агрессивное логирование для отладки
+    logger.info("--- RAW TELEGRAM UPDATE RECEIVED ---")
+    logger.info(json.dumps(data, indent=2))
+    logger.info("------------------------------------")
+
     if not telegram_handler:
         return jsonify({"status": "error", "message": "Handler not initialized"}), 500
 
-    data = await request.get_json()
-    # Обрабатываем обновление в фоновом режиме, чтобы не задерживать ответ Telegram
     asyncio.create_task(telegram_handler.handle_update(data))
     return jsonify({"status": "ok"})
-
-# Этот блок больше не нужен, так как Hypercorn запускает приложение
-# if __name__ == '__main__':
-#     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)))

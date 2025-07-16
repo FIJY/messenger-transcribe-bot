@@ -360,3 +360,4 @@ class TelegramHandler:
                 )
         except Exception as e:
             logger.error(f"Failed to send message to Telegram chat {chat_id}: {e}")
+
