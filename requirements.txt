@@ -16,3 +16,4 @@ quart
 hypercorn
 pycountry
 yt-dlp
+instaloader
