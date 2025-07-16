@@ -47,8 +47,9 @@ class DownloaderService:
             if temp_audio_file and os.path.exists(temp_audio_file.name):
                 os.remove(temp_audio_file.name)
 
-            if 'Sign in to confirm' in str(e) or 'age-restricted' in str(e):
-                return None, 'YOUTUBE_AUTH'
+            error_string = str(e).lower()
+            if 'login required' in error_string or 'sign in to confirm' in error_string or 'age-restricted' in error_string:
+                return None, 'LOGIN_REQUIRED'
             return None, 'DOWNLOAD_FAILED'
 
         except Exception as e:

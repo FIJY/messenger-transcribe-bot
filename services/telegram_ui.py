@@ -13,7 +13,6 @@ class TelegramUI:
         self.base_url = os.getenv('RENDER_EXTERNAL_URL', 'https://your-app-name.onrender.com')
         self.support_contact = os.getenv('SUPPORT_CONTACT')
 
-    # ... get_welcome_message и get_help_message без изменений ...
     def get_welcome_message(self) -> str:
         return (
             "🎉 *Welcome to your AI Notes Assistant!*\n\n"
@@ -49,13 +48,14 @@ class TelegramUI:
         message_text = "What would you like to do with this transcription?"
         keyboard = [
             [
+                # ИЗМЕНЕНИЕ: Убрали лишний '_'
                 InlineKeyboardButton("📊 Create Smart Report", callback_data=f"ACTION_REPORT_{note_id}"),
                 InlineKeyboardButton("🌐 Translate", callback_data=f"ACTION_TRANSLATE_{note_id}")
             ],
             [
                 InlineKeyboardButton("📝 Simple Summary", callback_data=f"ACTION_SUMMARIZE_{note_id}"),
-                InlineKeyboardButton("📈 Business Analysis", callback_data=f"ACTION_BIZ_ANALYSIS_{note_id}")
-                # НОВАЯ КНОПКА
+                # ИЗМЕНЕНИЕ: Убрали лишний '_'
+                InlineKeyboardButton("📈 Business Analysis", callback_data=f"ACTION_BIZANALYSIS_{note_id}")
             ],
             [
                 InlineKeyboardButton("🗑️ Delete Note", callback_data=f"ACTION_DELETE_{note_id}")
@@ -63,7 +63,6 @@ class TelegramUI:
         ]
         return message_text, InlineKeyboardMarkup(keyboard)
 
-    # ... (остальные функции без изменений) ...
     def get_template_selection_message(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
         message_text = "Please choose a report template:"
         keyboard = [
@@ -79,8 +78,8 @@ class TelegramUI:
         return (
             "Are you sure you want to delete this note?",
             InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Yes, delete", callback_data=f"ACTION_DELETE_CONFIRM_{note_id}"),
-                InlineKeyboardButton("❌ Cancel", callback_data=f"ACTION_DELETE_CANCEL_{note_id}")
+                InlineKeyboardButton("✅ Yes, delete", callback_data=f"ACTION_DELETECONFIRM_{note_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"ACTION_DELETECANCEL_{note_id}")
             ]])
         )
 
@@ -114,13 +113,28 @@ class TelegramUI:
                 InlineKeyboardButton("📋 Next Agenda", callback_data=f"BIZ_next_agenda_{note_id}"),
                 InlineKeyboardButton("😊 Sentiment", callback_data=f"BIZ_sentiment_{note_id}"),
             ],
+            [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_{note_id}")]
         ]
         return message_text, InlineKeyboardMarkup(keyboard)
 
     def format_search_results(self, notes: List[Dict[str, Any]], query: str) -> str:
-        # ...
-        pass
+        if not notes: return f"No notes found matching your query: `{query}`"
+        message = f"🔍 *Search results for \"{query}\":*\n\n"
+        for note in notes:
+            content_preview = (note['content'][:100] + '...').replace('\n', ' ')
+            message += f"🗓️ _{note['created_at'].strftime('%Y-%m-%d')}_:\n`{content_preview}`\n\n"
+        return message
 
     def get_status_message(self, user: Dict[str, Any]) -> str:
-        # ...
-        pass
+        plan = user.get('plan', 'free').capitalize()
+        minutes_used = user.get('minutes_used', 0)
+        minutes_limit = user.get('minutes_limit', 0)
+
+        if plan == 'Free':
+            minutes_left = minutes_limit - minutes_used
+            return (f"📊 *Your Status*\n\nPlan: {plan}\nMinutes left: {minutes_left:.1f} / {minutes_limit} minutes")
+        else:
+            expires_at = user.get('subscription_expires_at')
+            expires_str = expires_at.strftime('%d %B %Y') if expires_at else 'N/A'
+            return (
+                f"📊 *Your Status*\n\nPlan: {plan} 💎\nSubscription valid until: {expires_str}\nMinutes used this period: {minutes_used:.1f} / {minutes_limit} minutes")
