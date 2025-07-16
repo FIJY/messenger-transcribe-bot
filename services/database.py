@@ -22,7 +22,8 @@ class Database:
         self.mongodb_uri = os.getenv('MONGODB_URI')
         if not self.mongodb_uri: raise ValueError("MONGODB_URI environment variable is required")
         self.client = MongoClient(self.mongodb_uri, tz_aware=True, tzinfo=timezone.utc)
-        self.db = self.client.messenger_transcribe_bot
+        # ИЗМЕНЕНИЕ: Подключаемся к правильной базе данных
+        self.db = self.client.transcribe_bot
         self._create_indexes()
         logger.info("Successfully connected to MongoDB")
 
@@ -31,10 +32,7 @@ class Database:
         self.db.notes.create_index([("user_id", 1), ("created_at", -1)])
         self.db.notes.create_index([("content", "text")], default_language="none")
         self.db.raw_transcriptions.create_index("s3_object_key", unique=True)
-
-        # MongoDB будет автоматически удалять документы из этой коллекции через 1 неделю после их создания
-        self.db.raw_transcriptions.create_index("created_at", expireAfterSeconds=604800)  # 604800 секунд = 7 дней
-
+        self.db.raw_transcriptions.create_index("created_at", expireAfterSeconds=604800)  # 7 дней
         self.db.app_counters.create_index("name", unique=True)
 
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
@@ -65,6 +63,7 @@ class Database:
             "user_id": user_id, "content": content, "created_at": datetime.now(timezone.utc),
             "type": "note", "tags": kwargs.get('tags', []), "s3_object_key": kwargs.get('s3_object_key'),
             "source_language": kwargs.get('detected_language'), "duration_minutes": kwargs.get('duration_minutes'),
+            "reports": {}  # Добавляем пустое поле для будущих отчетов
         }
         result = self.db.notes.insert_one(note_data)
         logger.info(f"Saved note for user {user_id}. Note ID: {result.inserted_id}")
@@ -85,14 +84,10 @@ class Database:
             .limit(limit)
         )
 
-    def get_notes_for_period(self, user_id: str, days: int) -> List[Dict[str, Any]]:
-        start_date = datetime.now(timezone.utc) - timedelta(days=days)
-        query = {"user_id": user_id, "created_at": {"$gte": start_date}}
-        return list(self.db.notes.find(query).sort("created_at", 1))
-
     def update_note(self, note_id: ObjectId, updates: Dict[str, Any]) -> bool:
-        logger.info(f"Attempting to update note {note_id} with data keys: {list(updates.keys())}")
-        result = self.db.notes.update_one({"_id": note_id}, {"$set": updates})
+        """Обновляет заметку, используя операторы MongoDB (например, $set, $push)."""
+        logger.info(f"Attempting to update note {note_id} with operators: {list(updates.keys())}")
+        result = self.db.notes.update_one({"_id": note_id}, updates)
 
         if result.modified_count > 0:
             logger.info(f"Successfully updated note {note_id}. Documents modified: {result.modified_count}.")

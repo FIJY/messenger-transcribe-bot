@@ -134,23 +134,19 @@ class TelegramHandler:
     async def _handle_url(self, url: str, user_id: str, chat_id: int):
         await self.send_message(chat_id, "🔗 Link received. Starting download...")
 
-        local_file_path = None
+        local_file_path, error_type = self.downloader_service.download_audio(url)
+
+        if not local_file_path:
+            if error_type == 'LOGIN_REQUIRED':
+                await self.send_message(chat_id,
+                                        "❌ This content is private or protected (e.g., private YouTube, Instagram Reels). Please download it manually and send me the file.")
+            else:
+                await self.send_message(chat_id,
+                                        "❌ Failed to download audio from the link. The link might be broken or from an unsupported site.")
+            return
+
         try:
-            local_file_path, error_type = self.downloader_service.download_audio(url)
-
-            if not local_file_path:
-                if error_type == 'LOGIN_REQUIRED':
-                    await self.send_message(chat_id,
-                                            "❌ This content is private or protected (e.g., private YouTube, Instagram Reels). Please download it manually and send me the file.")
-                else:
-                    await self.send_message(chat_id,
-                                            "❌ Failed to download audio from the link. The link might be broken or from an unsupported site.")
-                return
-
             await self._process_local_file(local_file_path, user_id, chat_id, from_url=True)
-        except Exception as e:
-            logger.error(f"Error handling URL {url}: {e}", exc_info=True)
-            await self.send_message(chat_id, "❌ An error occurred while processing your link.")
         finally:
             if local_file_path and os.path.exists(local_file_path):
                 os.remove(local_file_path)
@@ -183,9 +179,6 @@ class TelegramHandler:
                 await tg_file.download_to_drive(custom_path=local_file_path)
 
             await self._process_local_file(local_file_path, user_id, chat_id)
-        except Exception as e:
-            logger.error(f"Error handling Telegram file upload: {e}", exc_info=True)
-            await self.send_message(chat_id, "❌ An error occurred while processing your file.")
         finally:
             if local_file_path and os.path.exists(local_file_path):
                 os.remove(local_file_path)
@@ -206,14 +199,12 @@ class TelegramHandler:
         await self.send_message(chat_id, message)
 
     async def _handle_callback_query(self, query: Update.callback_query):
-        # Отвечаем Телеграму немедленно
         await query.answer()
-
         payload = query.data
         chat_id = query.message.chat_id
+
         parts = payload.split('_')
 
-        # Надежный парсер
         try:
             note_id = ObjectId(parts[-1])
             action = '_'.join(parts[:-1])
@@ -225,17 +216,19 @@ class TelegramHandler:
             return await query.edit_message_text("This menu is no longer active as the note was deleted.",
                                                  reply_markup=None)
 
-        action_type = parts[0]
+        action_type = action.split('_')[0]
 
-        # Маршрутизация по типу действия
-        if action_type == 'ACTION':
+        if action.startswith('BIZ_'):
+            await self._handle_biz_report_section(chat_id, note, action)
+
+        elif action_type == 'ACTION':
             await self._handle_main_action(query, note, action, parts)
+
         elif action_type == 'CATEGORY':
             await self._handle_category_selection(query, note, action)
+
         elif action_type == 'TEMPLATE':
             await self._handle_template_selection(query, note, action)
-        elif action_type == 'BIZ':
-            await self._handle_biz_report_section(query, note, action)
 
     async def _handle_main_action(self, query: Update.callback_query, note: dict, action: str, parts: List[str]):
         note_id = note['_id']
@@ -258,15 +251,15 @@ class TelegramHandler:
             await query.edit_message_text("🤖 Starting comprehensive business analysis...", reply_markup=None)
             analysis_result = self.business_analyzer.run_comprehensive_analysis(note['content'])
             if analysis_result:
-                self.database.update_note(note_id,
-                                          {"business_analysis": analysis_result, "tags": ["business_analysis"]})
+                self.database.update_note(note_id, {"$set": {"business_analysis": analysis_result},
+                                                    "$addToSet": {"tags": "business_analysis"}})
                 text, markup = self.ui.get_business_analysis_menu(note_id)
                 await self.send_message(chat_id, text, reply_markup=markup)
             else:
                 await self.send_message(chat_id, "❌ Failed to perform business analysis.")
 
         elif action.startswith('ACTION_TRANSLATE'):
-            if len(parts) > 2:  # '_'.join(['ACTION', 'TRANSLATE', 'noteid', 'en']) -> 'ACTION_TRANSLATE_noteid'
+            if len(parts) > 2:
                 target_lang = parts[-1]
                 await self.send_message(chat_id, f"🌐 Translating to {target_lang.upper()}...")
                 result = self.translation_service.translate_text(note['content'], target_lang,
@@ -274,8 +267,6 @@ class TelegramHandler:
                 response_text = f"*{target_lang.upper()} Translation:*\n{result['translated_text']}" if result[
                     'success'] else f"❌ Translation failed: {result['error']}"
                 await self.send_message(chat_id, response_text)
-                text, markup = self.ui.get_main_actions_menu(note_id)
-                await query.edit_message_text(text, reply_markup=markup)
             else:
                 text, markup = self.ui.get_translation_language_options(note_id)
                 await query.edit_message_text(text, reply_markup=markup)
@@ -307,14 +298,18 @@ class TelegramHandler:
         await query.edit_message_text(f"🤖 Generating report '{report_name}'...", reply_markup=None)
 
         report_text = self.insight_service.create_report(note['content'], template_key)
+
         if report_text:
             await self.send_message(chat_id, f"📊 *Report: {report_name}*\n\n{report_text}")
-            updated_content = f"# {report_name}\n\n{report_text}\n\n---\n\n## Original Transcription\n\n{note['content']}"
-            self.database.update_note(note_id, {"content": updated_content, "tags": [template_key.lower()]})
+            update_operation = {
+                "$set": {f"reports.{template_key}": report_text},
+                "$addToSet": {"tags": template_key.lower()}
+            }
+            self.database.update_note(note_id, update_operation)
         else:
             await self.send_message(chat_id, "❌ Sorry, failed to generate the report.")
 
-        # После генерации отчета всегда отправляем новое меню действий
+        # После генерации отчета отправляем новое меню действий
         menu_text, menu_markup = self.ui.get_main_actions_menu(note_id)
         await self.send_message(chat_id, menu_text, reply_markup=menu_markup)
 
@@ -360,4 +355,3 @@ class TelegramHandler:
                 )
         except Exception as e:
             logger.error(f"Failed to send message to Telegram chat {chat_id}: {e}")
-
