@@ -29,9 +29,12 @@ class Database:
     def _create_indexes(self):
         self.db.users.create_index("user_id", unique=True)
         self.db.notes.create_index([("user_id", 1), ("created_at", -1)])
-        # Используем текстовый индекс для эффективного поиска. `default_language='none'` хорошо подходит для многоязычного контента.
         self.db.notes.create_index([("content", "text")], default_language="none")
         self.db.raw_transcriptions.create_index("s3_object_key", unique=True)
+
+        # MongoDB будет автоматически удалять документы из этой коллекции через 1 неделю после их создания
+        self.db.raw_transcriptions.create_index("created_at", expireAfterSeconds=604800)  # 604800 секунд = 7 дней
+
         self.db.app_counters.create_index("name", unique=True)
 
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
@@ -70,14 +73,10 @@ class Database:
     def get_note_by_id(self, note_id: ObjectId) -> Optional[Dict[str, Any]]:
         return self.db.notes.find_one({"_id": note_id})
 
-    def find_notes_by_keywords(self, user_id: str, keywords: List[str], current_note_id: ObjectId, limit: int = 5) -> \
-    List[Dict[str, Any]]:
-        """ Находит связанные заметки, используя ключевые слова и текстовый индекс. """
-        search_string = " ".join(keywords)
+    def search_notes_by_query(self, user_id: str, search_query: str, limit: int = 10) -> List[Dict[str, Any]]:
         query = {
-            "_id": {"$ne": current_note_id},
             "user_id": user_id,
-            "$text": {"$search": search_string}
+            "$text": {"$search": search_query}
         }
         projection = {'score': {'$meta': 'textScore'}}
         return list(
@@ -91,22 +90,19 @@ class Database:
         query = {"user_id": user_id, "created_at": {"$gte": start_date}}
         return list(self.db.notes.find(query).sort("created_at", 1))
 
-    def search_notes_by_query(self, user_id: str, search_query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """ Выполняет общий текстовый поиск для команды /search. """
-        query = {
-            "user_id": user_id,
-            "$text": {"$search": search_query}
-        }
-        projection = {'score': {'$meta': 'textScore'}}
-        return list(
-            self.db.notes.find(query, projection)
-            .sort([('score', {'$meta': 'textScore'})])
-            .limit(limit)
-        )
-
     def update_note(self, note_id: ObjectId, updates: Dict[str, Any]) -> bool:
+        logger.info(f"Attempting to update note {note_id} with data keys: {list(updates.keys())}")
         result = self.db.notes.update_one({"_id": note_id}, {"$set": updates})
-        return result.modified_count > 0
+
+        if result.modified_count > 0:
+            logger.info(f"Successfully updated note {note_id}. Documents modified: {result.modified_count}.")
+            return True
+        elif result.matched_count > 0 and result.modified_count == 0:
+            logger.warning(f"Found note {note_id}, but no changes were made. The data might be the same.")
+            return False
+        else:
+            logger.error(f"Failed to find note {note_id} to update.")
+            return False
 
     def delete_note(self, note_id: ObjectId) -> bool:
         result = self.db.notes.delete_one({"_id": note_id})

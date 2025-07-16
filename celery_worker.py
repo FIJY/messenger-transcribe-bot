@@ -93,7 +93,7 @@ except Exception as e:
     logger.error(f"Celery worker: CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
 
 
-@celery_app.task(bind=True, name='tasks.process_media', max_retries=2, default_retry_delay=60)
+@celery_app.task(bind=True, name='tasks.process_media', max_retries=2)
 def process_media_task(self, sender_id: str, object_key: str, user_preferences: dict, platform_payload: dict):
     if not all([media_handler_service, database, audio_processor, payment_service, telegram_handler]):
         logger.error("Worker handlers not initialized. A service probably failed during startup. Check logs above.")
@@ -134,6 +134,7 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
         if result.get('success'):
             if platform == 'telegram' and chat_id:
+                database.save_raw_transcription(s3_key=object_key, user_id=sender_id, **result)
                 run_async_task(
                     handle_telegram_success(chat_id, sender_id, result, object_key)
                 )
@@ -146,11 +147,20 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         logger.warning(str(e))
         if platform == 'telegram' and payment_service and chat_id:
             run_async_task(payment_service.send_payment_instructions(chat_id, sender_id))
+
     except Exception as exc:
-        logger.error(f"[{self.request.id}] Error in Celery task: {exc}", exc_info=True)
-        error_message = "❌ Failed to process your file. Please try again later."
-        if platform == 'telegram' and telegram_handler and chat_id:
-            run_async_task(telegram_handler.send_message(chat_id, error_message))
+        logger.error(f"[{self.request.id}] Error in Celery task (attempt {self.request.retries + 1}): {exc}",
+                     exc_info=True)
+        try:
+            # Повторяем задачу с экспоненциальной задержкой
+            raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
+        except self.MaxRetriesExceededError:
+            # Все попытки исчерпаны, уведомляем пользователя
+            logger.error(f"Task {self.request.id} failed after all retries.")
+            error_message = "❌ We are sorry, but we could not process your file after several attempts. Please try again later or contact support."
+            if platform == 'telegram' and telegram_handler and chat_id:
+                run_async_task(telegram_handler.send_message(chat_id, error_message))
+
     finally:
         if local_file_path: audio_processor.cleanup_temp_file(local_file_path)
         logger.info(f"[{self.request.id}] Task finished for object {object_key}.")
