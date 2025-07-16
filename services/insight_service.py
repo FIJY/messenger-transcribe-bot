@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class InsightService:
+    # ДОБАВЛЕНЫ ВСЕ НЕДОСТАЮЩИЕ ШАБЛОНЫ
     REPORT_PROMPTS = {
         "MEETING": {
             "name": "Meeting Minutes",
@@ -64,6 +65,89 @@ Create a structured summary for a contractor (e.g., a copywriter) in Markdown, i
 Transcript:
 ---
 {text}"""
+        },
+        "PARTNERSHIP_MEETING": {
+            "name": "Partnership Discussion Analysis",
+            "prompt": """You are an expert report generator. Analyze the following partnership discussion transcript.
+**RULE: You MUST generate the entire report, including all headers and content, in the exact same language as the original transcript.** Do not translate.
+Create a partnership analysis in Markdown, including these sections:
+1. **Partnership Objectives**: (What both parties want to achieve)
+2. **Value Propositions**: (What each partner brings to the table)
+3. **Concerns & Risks**: (Hesitations or potential issues raised)
+4. **Next Steps**: (Immediate actions and timeline)
+
+Transcript:
+---
+{text}"""
+        },
+        "BUSINESS_NEGOTIATION": {
+            "name": "Business Negotiation Summary",
+            "prompt": """You are an expert report generator. Analyze the following business negotiation transcript.
+**RULE: You MUST generate the entire report, including all headers and content, in the exact same language as the original transcript.** Do not translate.
+Create a negotiation summary in Markdown, including these sections:
+1. **Negotiation Goals**: (What each party initially wanted)
+2. **Deal Points Agreed**: (Terms that both parties accepted)
+3. **Outstanding Issues**: (Unresolved points requiring further discussion)
+
+Transcript:
+---
+{text}"""
+        },
+        "DUE_DILIGENCE": {
+            "name": "Due Diligence Review",
+            "prompt": """You are an expert report generator. Analyze the following due diligence discussion transcript.
+**RULE: You MUST generate the entire report, including all headers and content, in the exact same language as the original transcript.** Do not translate.
+Create a due diligence analysis in Markdown, including these sections:
+1. **Company Overview**: (Target company profile and business model)
+2. **Financial Health**: (Revenue, profitability, cash flow discussions)
+3. **Red Flags**: (Concerns, risks, or problematic areas identified)
+4. **Growth Opportunities**: (Potential for expansion or improvement)
+
+Transcript:
+---
+{text}"""
+        },
+        "CONFLICT_RESOLUTION": {
+            "name": "Partnership Conflict Analysis",
+            "prompt": """You are an expert report generator. Analyze the following partnership conflict resolution transcript.
+**RULE: You MUST generate the entire report, including all headers and content, in the exact same language as the original transcript.** Do not translate.
+Create a conflict analysis in Markdown, including these sections:
+1. **Core Issues**: (Root causes of the disagreement)
+2. **Each Party's Position**: (What each partner claims or demands)
+3. **Agreements Reached**: (Any points of consensus or compromise)
+4. **Relationship Repair**: (Steps needed to rebuild trust and collaboration)
+
+Transcript:
+---
+{text}"""
+        },
+        "SALES_CALL": {
+            "name": "Sales Call Analysis",
+            "prompt": """You are an expert report generator. Analyze the following sales call transcript.
+**RULE: You MUST generate the entire report, including all headers and content, in the exact same language as the original transcript.** Do not translate.
+Create a sales call analysis in Markdown, including these sections:
+1. **Prospect Profile**: (Company/person details and current situation)
+2. **Pain Points Identified**: (Problems the prospect mentioned)
+3. **Objections Raised**: (Concerns or hesitations expressed)
+4. **Next Steps**: (Follow-up actions and commitments)
+
+Transcript:
+---
+{text}"""
+        },
+        "INTERVIEW": {
+            "name": "Interview Summary",
+            "prompt": """You are an expert report generator. Analyze the following interview transcript.
+**RULE: You MUST generate the entire report, including all headers and content, in the exact same language as the original transcript.** Do not translate.
+Create a comprehensive interview summary in Markdown, including these sections:
+1. **Candidate Profile**: (Key background and experience)
+2. **Strengths**: (Notable skills and positive traits)
+3. **Areas of Concern**: (Potential weaknesses or gaps)
+4. **Recommendation**: (Hire/No Hire with brief reasoning)
+
+Transcript:
+---
+{text}"""
         }
     }
 
@@ -75,7 +159,6 @@ Transcript:
         logger.info("InsightService initialized successfully.")
 
     def _get_completion(self, prompt: str, model: str = "gpt-4o", max_tokens: int = 1500) -> Optional[str]:
-        """Приватный метод для вызова OpenAI API."""
         try:
             response = self.client.chat.completions.create(
                 model=model,
@@ -89,8 +172,8 @@ Transcript:
             return None
 
     def create_report(self, text: str, template_key: str) -> Optional[str]:
-        """Генерирует структурированный отчет на основе выбранного шаблона."""
         if not text or not text.strip() or template_key not in self.REPORT_PROMPTS:
+            logger.error(f"Template key '{template_key}' not found in REPORT_PROMPTS.")
             return None
 
         prompt_template = self.REPORT_PROMPTS[template_key]["prompt"]
@@ -99,13 +182,11 @@ Transcript:
         return self._get_completion(prompt, max_tokens=2048)
 
     def get_summary(self, text: str) -> Optional[str]:
-        """Генерирует простое саммари для текста."""
         if not text or not text.strip(): return None
         prompt = f"You are an expert summarizer. Your task is to summarize the following text. **RULE: You MUST write the summary in the exact same language as the original text provided below.** Do not translate. Respond only with the summary.\n\nText to summarize:\n---\n{text}"
         return self._get_completion(prompt)
 
     def get_keywords(self, text: str) -> List[str]:
-        """Извлекает ключевые слова из текста."""
         if not text or not text.strip(): return []
         prompt = f"Extract the 3-5 most important keywords from the following text. Return them as a JSON array of strings, like [\"keyword1\", \"keyword2\"]. Provide only the JSON array.\n\n---\n\n{text}"
         response_str = self._get_completion(prompt, max_tokens=200)
