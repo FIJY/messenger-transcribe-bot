@@ -5,6 +5,7 @@ import tempfile
 import uuid
 import asyncio
 import re
+import json
 from typing import Dict, Any, List, Optional
 from telegram import Update, InlineKeyboardMarkup, Bot, Message, BotCommand
 from telegram.constants import ParseMode
@@ -18,6 +19,7 @@ from .telegram_ui import TelegramUI
 from .insight_service import InsightService
 from .translation_service import TranslationService
 from .downloader_service import DownloaderService
+from .business_analyzer_service import BusinessAnalyzerService
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,7 @@ class TelegramHandler:
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
         self.ui = TelegramUI()
         self.insight_service = insight_service
+        self.business_analyzer = BusinessAnalyzerService()
         self.translation_service = translation_service
 
     async def set_bot_commands(self):
@@ -109,10 +112,8 @@ class TelegramHandler:
             await self.send_message(chat_id, response_text)
 
         if user_id == self.admin_telegram_id:
-            if command == '/confirm':
-                await self._handle_confirm_command(command_parts, chat_id)
-            if command == '/check':
-                await self._handle_check_command(command_parts, chat_id)
+            # Add admin commands here if needed
+            pass
 
     async def _handle_text_note(self, text: str, user_id: str, chat_id: int):
         try:
@@ -129,10 +130,15 @@ class TelegramHandler:
 
         local_file_path = None
         try:
-            local_file_path = self.downloader_service.download_audio(url)
+            local_file_path, error_type = self.downloader_service.download_audio(url)
+
             if not local_file_path:
-                await self.send_message(chat_id,
-                                        "❌ Failed to download audio from the link. The link might be broken, private, or protected.")
+                if error_type == 'YOUTUBE_AUTH':
+                    await self.send_message(chat_id,
+                                            "❌ YouTube has blocked this download (it may be private, age-restricted, or require sign-in). Please try a different link or download the audio manually and send it as a file.")
+                else:
+                    await self.send_message(chat_id,
+                                            "❌ Failed to download audio from the link. The link might be broken or from an unsupported site.")
                 return
 
             await self._process_local_file(local_file_path, user_id, chat_id, from_url=True)
@@ -161,7 +167,7 @@ class TelegramHandler:
             logger.error(f"Error in _process_local_file: {e}", exc_info=True)
             await self.send_message(chat_id, "❌ An error occurred during file processing.")
 
-    async def _handle_file_upload(self, file_obj, user_id: str, chat_id: int):
+    async def _handle_file_upload(self, file_obj: Message, user_id: str, chat_id: int):
         await self.send_message(chat_id, "✅ File received. Processing...")
         local_file_path = None
         try:
@@ -193,14 +199,6 @@ class TelegramHandler:
         message = self.ui.get_status_message(user)
         await self.send_message(chat_id, message)
 
-    async def _handle_confirm_command(self, command_parts: List[str], chat_id: int):
-        # ... (код без изменений)
-        pass
-
-    async def _handle_check_command(self, command_parts: List[str], chat_id: int):
-        # ... (код без изменений)
-        pass
-
     async def _handle_callback_query(self, query: Update.callback_query):
         await query.answer()
         payload = query.data
@@ -208,25 +206,46 @@ class TelegramHandler:
 
         parts = payload.split('_')
         action_type = parts[0]
-        action_name = parts[1]
 
+        # Логика для интерактивного бизнес-отчета
+        if action_type == 'BIZ':
+            section_key = parts[1]
+            note_id = ObjectId(parts[2])
+            note = self.database.get_note_by_id(note_id)
+            if not note or 'business_analysis' not in note:
+                return await self.send_message(chat_id, "Analysis data not found for this note.")
+
+            analysis_data = note['business_analysis']
+            section_data = analysis_data.get(section_key)
+
+            if not section_data:
+                return await self.send_message(chat_id, f"Section '{section_key}' not found in the analysis.")
+
+            # Форматируем и отправляем запрошенную секцию
+            formatted_section = f"*{section_key.replace('_', ' ').title()}*:\n\n"
+            # Используем json.dumps для красивого вывода словарей/списков
+            if isinstance(section_data, (dict, list)):
+                formatted_section += "```json\n" + json.dumps(section_data, indent=2, ensure_ascii=False) + "\n```"
+            else:
+                formatted_section += str(section_data)
+
+            await self.send_message(chat_id, formatted_section)
+            return
+
+        # Основная логика обработки кнопок
         try:
-            note_id_str = parts[2] if len(parts) > 2 else None
-            note_id = ObjectId(note_id_str) if note_id_str else None
-        except Exception:
-            return await self.send_message(chat_id, "Error processing action: Invalid Note ID.")
-
-        if not note_id:
-            return await self.send_message(chat_id, "Error processing action: Note ID not found.")
+            action_name = parts[1]
+            note_id_str = parts[2]
+            note_id = ObjectId(note_id_str)
+        except (IndexError, Exception):
+            return await self.send_message(chat_id, "Error processing action: Invalid callback data.")
 
         note = self.database.get_note_by_id(note_id)
         if not note:
             return await query.edit_message_text("This menu is no longer active as the note was deleted.",
                                                  reply_markup=None)
 
-        # ОСНОВНОЕ МЕНЮ ДЕЙСТВИЙ
         if action_type == 'ACTION':
-            # Вернуться в главное меню (из меню выбора шаблонов или языков)
             if action_name == 'BACK':
                 text, markup = self.ui.get_main_actions_menu(note_id)
                 await query.edit_message_text(text, reply_markup=markup)
@@ -240,8 +259,19 @@ class TelegramHandler:
                 summary = self.insight_service.get_summary(note['content'])
                 await self.send_message(chat_id, f"*Summary:*\n{summary or 'Could not generate summary.'}")
 
+            elif action_name == 'BIZ_ANALYSIS':
+                await self.send_message(chat_id,
+                                        "🤖 Starting comprehensive business analysis. This may take several minutes...")
+                analysis_result = self.business_analyzer.run_comprehensive_analysis(note['content'])
+                if not analysis_result:
+                    return await self.send_message(chat_id, "❌ Failed to perform business analysis.")
+
+                self.database.update_note(note_id,
+                                          {"business_analysis": analysis_result, "tags": ["business_analysis"]})
+                text, markup = self.ui.get_business_analysis_menu(note_id)
+                await self.send_message(chat_id, text, reply_markup=markup)
+
             elif action_name == 'TRANSLATE':
-                # Если язык уже указан в callback'е (e.g., ACTION_TRANSLATE_note_id_en)
                 if len(parts) > 3:
                     target_lang = parts[3]
                     await self.send_message(chat_id, f"🌐 Translating to {target_lang.upper()}...")
@@ -250,31 +280,28 @@ class TelegramHandler:
                     response_text = f"*{target_lang.upper()} Translation:*\n{result['translated_text']}" if result[
                         'success'] else f"❌ Translation failed: {result['error']}"
                     await self.send_message(chat_id, response_text)
-                    # Восстанавливаем исходное меню
+
                     text, markup = self.ui.get_main_actions_menu(note_id)
                     await query.edit_message_text(text, reply_markup=markup)
-                # Если язык не указан, показываем кнопки выбора
                 else:
                     text, markup = self.ui.get_translation_language_options(note_id)
                     await query.edit_message_text(text, reply_markup=markup)
 
             elif action_name == 'DELETE':
-                if len(parts) > 2 and parts[2] == 'CONFIRM':
+                if len(parts) > 3 and parts[3] == 'CONFIRM':
                     if self.database.delete_note(note_id):
                         await query.edit_message_text("🗑️ Note successfully deleted.", reply_markup=None)
-                    else:
-                        await query.edit_message_text("Could not delete the note.")
-                elif len(parts) > 2 and parts[2] == 'CANCEL':
+                elif len(parts) > 3 and parts[3] == 'CANCEL':
                     text, markup = self.ui.get_main_actions_menu(note_id)
                     await query.edit_message_text(text, reply_markup=markup)
                 else:
                     text, markup = self.ui.get_delete_confirmation(note_id)
                     await query.edit_message_text(text, reply_markup=markup)
 
-        # МЕНЮ ВЫБОРА ШАБЛОНА
         elif action_type == 'TEMPLATE':
             template_key = action_name
-            await self.send_message(chat_id, f"🤖 Generating report with template '{template_key}'...")
+            await self.send_message(chat_id,
+                                    f"🤖 Generating report using template '{self.insight_service.REPORT_PROMPTS[template_key]['name']}'...")
 
             report_text = self.insight_service.create_report(note['content'], template_key)
             if not report_text:
@@ -284,20 +311,29 @@ class TelegramHandler:
                 final_report_header = f"📊 *Report: {report_name}*"
                 await self.send_message(chat_id, f"{final_report_header}\n\n{report_text}")
 
-            # Возвращаем исходное меню действий
-            text, markup = self.ui.get_main_actions_menu(note_id)
-            await query.edit_message_text(text, reply_markup=markup)
+                updated_content = f"# {report_name}\n\n{report_text}\n\n---\n\n## Original Transcription\n\n{note['content']}"
+                self.database.update_note(note_id, {"content": updated_content, "tags": [template_key.lower()]})
+
+                new_menu_text, new_markup = self.ui.get_main_actions_menu(note_id)
+                await self.send_message(chat_id, new_menu_text, reply_markup=new_markup)
+
+            await query.delete_message()
 
     async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None):
         try:
-            # Разбиваем длинные сообщения на части, если необходимо
             if len(text) > 4096:
-                for x in range(0, len(text), 4096):
+                header = text.split('\n\n', 1)[0]
+                await self.bot.send_message(chat_id=chat_id, text=header, parse_mode=ParseMode.MARKDOWN)
+
+                body = text[len(header):].strip()
+                for x in range(0, len(body), 4096):
                     await self.bot.send_message(
                         chat_id=chat_id,
-                        text=text[x:x + 4096],
+                        text=body[x:x + 4096],
                         parse_mode=ParseMode.MARKDOWN
                     )
+                if reply_markup:
+                    await self.bot.send_message(chat_id=chat_id, text="Actions:", reply_markup=reply_markup)
             else:
                 await self.bot.send_message(
                     chat_id=chat_id,

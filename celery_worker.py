@@ -134,7 +134,6 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
 
         if result.get('success'):
             if platform == 'telegram' and chat_id:
-                database.save_raw_transcription(s3_key=object_key, user_id=sender_id, **result)
                 run_async_task(
                     handle_telegram_success(chat_id, sender_id, result, object_key)
                 )
@@ -181,7 +180,6 @@ async def handle_telegram_success(chat_id: int, user_id: str, result: Dict[str, 
 
     lang_name = result.get('language_info', {}).get('name', 'N/A')
 
-    # Шаг 1: Сразу сохраняем заметку с простым текстом, чтобы получить note_id
     note_id = database.save_note(
         user_id=user_id,
         content=transcribed_text,
@@ -191,14 +189,11 @@ async def handle_telegram_success(chat_id: int, user_id: str, result: Dict[str, 
         tags=['plain_text']
     )
 
-    # Шаг 2: Отправляем пользователю сообщение с полным текстом транскрипции
     header = f"📝 *Transcription ({lang_name})*:"
-    # Отправляем только часть текста, чтобы не засорять чат, если он очень длинный
     text_preview = (transcribed_text[:3500] + '...') if len(transcribed_text) > 3500 else transcribed_text
     full_message = f"{header}\n\n```{text_preview}```"
     await telegram_handler.send_message(chat_id, full_message)
 
-    # Шаг 3: Сразу следом отправляем второе сообщение с меню действий
     menu_text, reply_markup = telegram_handler.ui.get_main_actions_menu(note_id)
     await telegram_handler.send_message(chat_id, menu_text, reply_markup=reply_markup)
 

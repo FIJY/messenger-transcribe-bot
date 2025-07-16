@@ -9,64 +9,59 @@ logger = logging.getLogger(__name__)
 
 
 class InsightService:
-    # Промпты для генерации отчетов по шаблонам
     REPORT_PROMPTS = {
         "MEETING": {
-            "name": "Протокол встречи",
-            "prompt": """Проанализируй следующий текст транскрипции совещания. Структурируй его в четкий протокол встречи в формате Markdown.
-Включи следующие разделы:
-1.  **Повестка дня**: (Основные обсуждавшиеся темы в виде списка)
-2.  **Ключевые решения**: (Список принятых решений)
-3.  **Задачи и следующие шаги (Action Items)**: (Список задач с указанием ответственных, если это возможно)
+            "name": "Meeting Minutes",
+            "prompt": """You are an expert report generator. Analyze the following meeting transcript.
+**RULE: You MUST generate the entire report, including all headers and content, in the exact same language as the original transcript.** Do not translate.
+Structure it into clear meeting minutes in Markdown, including these sections:
+1.  **Agenda**: (Main topics discussed)
+2.  **Key Decisions**: (List of decisions made)
+3.  **Action Items**: (List of tasks, assigning responsible people if possible)
 
-**Важно**: Тщательно расставь знаки препинания и раздели текст на абзацы для максимальной читаемости.
-
-Текст транскрипции:
+Transcript:
 ---
 {text}"""
         },
         "PODCAST": {
-            "name": "Шоу-ноуты для подкаста",
-            "prompt": """Проанализируй транскрипцию эпизода подкаста. Создай подробные "шоу-ноуты" в формате Markdown.
-Включи следующие разделы:
-1.  **Краткое описание эпизода (Summary)**: (2-4 цепляющих предложения)
-2.  **Таймкоды (Оглавление)**: (Список ключевых тем с указанием примерного времени начала)
-3.  **Ключевые цитаты (Quotes)**: (Выбери 3-5 ярких и интересных цитат для соцсетей)
-4.  **Упомянутые ресурсы**: (Книги, ссылки, инструменты, упомянутые в выпуске)
+            "name": "Podcast Show Notes",
+            "prompt": """You are an expert report generator. Analyze the following podcast episode transcript.
+**RULE: You MUST generate the entire report, including all headers and content, in the exact same language as the original transcript.** Do not translate.
+Create detailed show notes in Markdown, including these sections:
+1.  **Episode Summary**: (2-4 engaging sentences)
+2.  **Timestamps / Chapters**: (List of key topics with approximate start times)
+3.  **Key Quotes**: (3-5 powerful and interesting quotes for social media)
+4.  **Mentioned Resources**: (Books, links, or tools mentioned)
 
-**Важно**: Тщательно расставь знаки препинания и раздели текст на абзацы для максимальной читаемости.
-
-Текст транскрипции:
+Transcript:
 ---
 {text}"""
         },
         "COACHING": {
-            "name": "Отчет по коуч-сессии",
-            "prompt": """Проанализируй транскрипцию коуч-сессии. Подготовь структурированный отчет для клиента в формате Markdown.
-Включи следующие разделы:
-1.  **Основной запрос сессии**: (Главная тема или проблема, с которой пришел клиент)
-2.  **Ключевые инсайты клиента**: (Важные моменты и осознания, озвученные клиентом)
-3.  **Action Plan (Следующие шаги)**: (Конкретные шаги и упражнения для клиента после сессии)
+            "name": "Coaching Session Report",
+            "prompt": """You are an expert report generator. Analyze the following coaching session transcript.
+**RULE: You MUST generate the entire report, including all headers and content, in the exact same language as the original transcript.** Do not translate.
+Prepare a structured report for the client in Markdown, including these sections:
+1.  **Main Session Goal**: (The primary topic or problem the client brought)
+2.  **Client's Key Insights**: (Important "aha" moments and realizations voiced by the client)
+3.  **Action Plan**: (Specific next steps and exercises for the client)
 
-**Важно**: Тщательно расставь знаки препинания и раздели текст на абзацы для максимальной читаемости.
-
-Текст транскрипции:
+Transcript:
 ---
 {text}"""
         },
         "BRIEFING": {
-            "name": "Выжимка из брифинга с клиентом",
-            "prompt": """Проанализируй транскрипцию брифинга с клиентом. Сделай структурированную выжимку для исполнителя (например, копирайтера) в формате Markdown.
-Включи следующие разделы:
-1.  **Цель проекта**: (Что клиент хочет достичь в итоге?)
-2.  **Целевая аудитория**: (К кому мы обращаемся?)
-3.  **Ключевые сообщения (Key Messages)**: (Какие основные идеи нужно донести?)
-4.  **Ограничения и требования**: (Что нельзя делать? Какие есть обязательные условия?)
-5.  **Следующие шаги**: (Что требуется от исполнителя и от клиента?)
+            "name": "Client Briefing Summary",
+            "prompt": """You are an expert report generator. Analyze the following client briefing transcript.
+**RULE: You MUST generate the entire report, including all headers and content, in the exact same language as the original transcript.** Do not translate.
+Create a structured summary for a contractor (e.g., a copywriter) in Markdown, including these sections:
+1.  **Project Goal**: (What does the client want to achieve?)
+2.  **Target Audience**: (Who are we addressing?)
+3.  **Key Messages**: (What are the main ideas to convey?)
+4.  **Constraints & Requirements**: (What are the "don'ts" and mandatory conditions?)
+5.  **Next Steps**: (What is required from the contractor and the client?)
 
-**Важно**: Тщательно расставь знаки препинания и раздели текст на абзацы для максимальной читаемости.
-
-Текст транскрипции:
+Transcript:
 ---
 {text}"""
         }
@@ -106,7 +101,7 @@ class InsightService:
     def get_summary(self, text: str) -> Optional[str]:
         """Генерирует простое саммари для текста."""
         if not text or not text.strip(): return None
-        prompt = f"Summarize the key points of the following text concisely, in the same language as the original text:\n\n---\n\n{text}"
+        prompt = f"You are an expert summarizer. Your task is to summarize the following text. **RULE: You MUST write the summary in the exact same language as the original text provided below.** Do not translate. Respond only with the summary.\n\nText to summarize:\n---\n{text}"
         return self._get_completion(prompt)
 
     def get_keywords(self, text: str) -> List[str]:

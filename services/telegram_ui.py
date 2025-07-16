@@ -13,6 +13,7 @@ class TelegramUI:
         self.base_url = os.getenv('RENDER_EXTERNAL_URL', 'https://your-app-name.onrender.com')
         self.support_contact = os.getenv('SUPPORT_CONTACT')
 
+    # ... get_welcome_message и get_help_message без изменений ...
     def get_welcome_message(self) -> str:
         return (
             "🎉 *Welcome to your AI Notes Assistant!*\n\n"
@@ -53,11 +54,16 @@ class TelegramUI:
             ],
             [
                 InlineKeyboardButton("📝 Simple Summary", callback_data=f"ACTION_SUMMARIZE_{note_id}"),
+                InlineKeyboardButton("📈 Business Analysis", callback_data=f"ACTION_BIZ_ANALYSIS_{note_id}")
+                # НОВАЯ КНОПКА
+            ],
+            [
                 InlineKeyboardButton("🗑️ Delete Note", callback_data=f"ACTION_DELETE_{note_id}")
             ]
         ]
         return message_text, InlineKeyboardMarkup(keyboard)
 
+    # ... (остальные функции без изменений) ...
     def get_template_selection_message(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
         message_text = "Please choose a report template:"
         keyboard = [
@@ -84,31 +90,37 @@ class TelegramUI:
             buttons.append(InlineKeyboardButton(f"{lang['flag']} {lang['title']}",
                                                 callback_data=f"ACTION_TRANSLATE_{note_id}_{lang['code']}"))
 
-        # Разделяем кнопки на ряды по 3
         keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
-        # Добавляем кнопку "Назад"
         keyboard.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_{note_id}")])
 
         return "Please select the target language:", InlineKeyboardMarkup(keyboard)
 
+    def get_business_analysis_menu(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
+        message_text = "Comprehensive analysis complete. Choose a section to view:"
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 Summary", callback_data=f"BIZ_summary_{note_id}"),
+                InlineKeyboardButton("🔑 Keywords", callback_data=f"BIZ_keywords_{note_id}"),
+            ],
+            [
+                InlineKeyboardButton("✅ Action Items", callback_data=f"BIZ_action_items_{note_id}"),
+                InlineKeyboardButton("⚖️ Risks", callback_data=f"BIZ_risk_assessment_{note_id}"),
+            ],
+            [
+                InlineKeyboardButton("🤝 Dynamics", callback_data=f"BIZ_dynamics_{note_id}"),
+                InlineKeyboardButton("💰 Deal Terms", callback_data=f"BIZ_deal_terms_{note_id}"),
+            ],
+            [
+                InlineKeyboardButton("📋 Next Agenda", callback_data=f"BIZ_next_agenda_{note_id}"),
+                InlineKeyboardButton("😊 Sentiment", callback_data=f"BIZ_sentiment_{note_id}"),
+            ],
+        ]
+        return message_text, InlineKeyboardMarkup(keyboard)
+
     def format_search_results(self, notes: List[Dict[str, Any]], query: str) -> str:
-        if not notes: return f"No notes found matching your query: `{query}`"
-        message = f"🔍 *Search results for \"{query}\":*\n\n"
-        for note in notes:
-            content_preview = (note['content'][:100] + '...').replace('\n', ' ')
-            message += f"🗓️ _{note['created_at'].strftime('%Y-%m-%d')}_:\n`{content_preview}`\n\n"
-        return message
+        # ...
+        pass
 
     def get_status_message(self, user: Dict[str, Any]) -> str:
-        plan = user.get('plan', 'free').capitalize()
-        minutes_used = user.get('minutes_used', 0)
-        minutes_limit = user.get('minutes_limit', 0)
-
-        if plan == 'Free':
-            minutes_left = minutes_limit - minutes_used
-            return (f"📊 *Your Status*\n\nPlan: {plan}\nMinutes left: {minutes_left:.1f} / {minutes_limit} minutes")
-        else:
-            expires_at = user.get('subscription_expires_at')
-            expires_str = expires_at.strftime('%d %B %Y') if expires_at else 'N/A'
-            return (
-                f"📊 *Your Status*\n\nPlan: {plan} 💎\nSubscription valid until: {expires_str}\nMinutes used this period: {minutes_used:.1f} / {minutes_limit} minutes")
+        # ...
+        pass

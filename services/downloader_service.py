@@ -3,15 +3,17 @@ import os
 import yt_dlp
 import tempfile
 import logging
+from typing import Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class DownloaderService:
-    def download_audio(self, url: str) -> str | None:
+    def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Скачивает аудио по URL (включая YouTube) с помощью yt-dlp и сохраняет во временный mp3-файл.
-        Возвращает путь к файлу или None в случае ошибки.
+        Скачивает аудио по URL.
+        Возвращает кортеж (путь_к_файлу, тип_ошибки).
+        В случае успеха тип_ошибки будет None.
         """
         temp_audio_file = None
         try:
@@ -30,7 +32,7 @@ class DownloaderService:
                 'quiet': True,
                 'no_warnings': True,
                 'noplaylist': True,
-                'nocheckcertificate': True,  # Добавляем для обхода некоторых проверок
+                'nocheckcertificate': True,
             }
 
             logger.info(f"Начинаем скачивание аудио по ссылке: {url}")
@@ -38,16 +40,19 @@ class DownloaderService:
                 ydl.download([url])
 
             logger.info(f"Аудио успешно скачано и сохранено в: {temp_audio_path}")
-            return temp_audio_path
+            return temp_audio_path, None
 
         except yt_dlp.utils.DownloadError as e:
-            # Обрабатываем специфичную ошибку yt-dlp более изящно
             logger.error(f"yt-dlp download error for {url}: {e}")
             if temp_audio_file and os.path.exists(temp_audio_file.name):
                 os.remove(temp_audio_file.name)
-            return None
+
+            if 'Sign in to confirm' in str(e) or 'age-restricted' in str(e):
+                return None, 'YOUTUBE_AUTH'
+            return None, 'DOWNLOAD_FAILED'
+
         except Exception as e:
             logger.error(f"Ошибка при скачивании аудио из {url}: {e}", exc_info=True)
             if temp_audio_file and os.path.exists(temp_audio_file.name):
                 os.remove(temp_audio_file.name)
-            return None
+            return None, 'GENERAL_ERROR'
