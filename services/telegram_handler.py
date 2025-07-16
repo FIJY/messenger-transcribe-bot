@@ -121,9 +121,6 @@ class TelegramHandler:
             response_text = self.ui.format_search_results(notes, query)
             await self.send_message(chat_id, response_text)
 
-        if user_id == self.admin_telegram_id:
-            pass  # Admin commands logic here
-
     async def _handle_text_note(self, text: str, user_id: str, chat_id: int):
         try:
             note_id = self.database.save_note(user_id=user_id, content=text, tags=['plain_text'])
@@ -209,12 +206,14 @@ class TelegramHandler:
         await self.send_message(chat_id, message)
 
     async def _handle_callback_query(self, query: Update.callback_query):
+        # Отвечаем Телеграму немедленно
         await query.answer()
+
         payload = query.data
         chat_id = query.message.chat_id
-
         parts = payload.split('_')
 
+        # Надежный парсер
         try:
             note_id = ObjectId(parts[-1])
             action = '_'.join(parts[:-1])
@@ -226,23 +225,23 @@ class TelegramHandler:
             return await query.edit_message_text("This menu is no longer active as the note was deleted.",
                                                  reply_markup=None)
 
-        action_type = action.split('_')[0]
+        action_type = parts[0]
 
-        if action_type == 'BIZ':
-            section_key = '_'.join(action.split('_')[1:])
-            analysis_data = note.get('business_analysis', {})
-            section_data = analysis_data.get(section_key)
-            if section_data:
-                formatted_section = f"*{section_key.replace('_', ' ').title()}*:\n\n"
-                if isinstance(section_data, (dict, list)):
-                    formatted_section += "```json\n" + json.dumps(section_data, indent=2, ensure_ascii=False) + "\n```"
-                else:
-                    formatted_section += str(section_data)
-                await self.send_message(chat_id, formatted_section)
-            else:
-                await self.send_message(chat_id, f"Section '{section_key}' not found in the analysis.")
+        # Маршрутизация по типу действия
+        if action_type == 'ACTION':
+            await self._handle_main_action(query, note, action, parts)
+        elif action_type == 'CATEGORY':
+            await self._handle_category_selection(query, note, action)
+        elif action_type == 'TEMPLATE':
+            await self._handle_template_selection(query, note, action)
+        elif action_type == 'BIZ':
+            await self._handle_biz_report_section(query, note, action)
 
-        elif action == 'ACTION_BACK_MAIN':
+    async def _handle_main_action(self, query: Update.callback_query, note: dict, action: str, parts: List[str]):
+        note_id = note['_id']
+        chat_id = query.message.chat_id
+
+        if action == 'ACTION_BACK_MAIN':
             text, markup = self.ui.get_main_actions_menu(note_id)
             await query.edit_message_text(text, reply_markup=markup)
 
@@ -267,8 +266,8 @@ class TelegramHandler:
                 await self.send_message(chat_id, "❌ Failed to perform business analysis.")
 
         elif action.startswith('ACTION_TRANSLATE'):
-            if len(action.split('_')) > 2:
-                target_lang = action.split('_')[-1]
+            if len(parts) > 2:  # '_'.join(['ACTION', 'TRANSLATE', 'noteid', 'en']) -> 'ACTION_TRANSLATE_noteid'
+                target_lang = parts[-1]
                 await self.send_message(chat_id, f"🌐 Translating to {target_lang.upper()}...")
                 result = self.translation_service.translate_text(note['content'], target_lang,
                                                                  note.get('source_language'))
@@ -293,27 +292,47 @@ class TelegramHandler:
             text, markup = self.ui.get_main_actions_menu(note_id)
             await query.edit_message_text(text, reply_markup=markup)
 
-        elif action_type == 'CATEGORY':
-            category_name = action.split('_')[1]
-            text, markup = self.ui.get_template_selection_message(note_id, category_name)
-            await query.edit_message_text(text, reply_markup=markup)
+    async def _handle_category_selection(self, query: Update.callback_query, note: dict, action: str):
+        note_id = note['_id']
+        category_name = action.split('_')[1]
+        text, markup = self.ui.get_template_selection_message(note_id, category_name)
+        await query.edit_message_text(text, reply_markup=markup)
 
-        elif action_type == 'TEMPLATE':
-            template_key = '_'.join(action.split('_')[1:])
-            report_name = self.insight_service.REPORT_PROMPTS.get(template_key, {}).get('name', 'Report')
-            await query.edit_message_text(f"🤖 Generating report '{report_name}'...", reply_markup=None)
+    async def _handle_template_selection(self, query: Update.callback_query, note: dict, action: str):
+        note_id = note['_id']
+        chat_id = query.message.chat_id
+        template_key = '_'.join(action.split('_')[1:])
+        report_name = self.insight_service.REPORT_PROMPTS.get(template_key, {}).get('name', 'Report')
 
-            report_text = self.insight_service.create_report(note['content'], template_key)
-            if report_text:
-                await self.send_message(chat_id, f"📊 *Report: {report_name}*\n\n{report_text}")
-                updated_content = f"# {report_name}\n\n{report_text}\n\n---\n\n## Original Transcription\n\n{note['content']}"
-                self.database.update_note(note_id, {"content": updated_content, "tags": [template_key.lower()]})
+        await query.edit_message_text(f"🤖 Generating report '{report_name}'...", reply_markup=None)
+
+        report_text = self.insight_service.create_report(note['content'], template_key)
+        if report_text:
+            await self.send_message(chat_id, f"📊 *Report: {report_name}*\n\n{report_text}")
+            updated_content = f"# {report_name}\n\n{report_text}\n\n---\n\n## Original Transcription\n\n{note['content']}"
+            self.database.update_note(note_id, {"content": updated_content, "tags": [template_key.lower()]})
+        else:
+            await self.send_message(chat_id, "❌ Sorry, failed to generate the report.")
+
+        # После генерации отчета всегда отправляем новое меню действий
+        menu_text, menu_markup = self.ui.get_main_actions_menu(note_id)
+        await self.send_message(chat_id, menu_text, reply_markup=menu_markup)
+
+    async def _handle_biz_report_section(self, query: Update.callback_query, note: dict, action: str):
+        chat_id = query.message.chat_id
+        section_key = '_'.join(action.split('_')[1:])
+        analysis_data = note.get('business_analysis', {})
+        section_data = analysis_data.get(section_key)
+
+        if section_data:
+            formatted_section = f"*{section_key.replace('_', ' ').title()}*:\n\n"
+            if isinstance(section_data, (dict, list)):
+                formatted_section += "```json\n" + json.dumps(section_data, indent=2, ensure_ascii=False) + "\n```"
             else:
-                await self.send_message(chat_id, "❌ Sorry, failed to generate the report.")
-
-            # После генерации отчета всегда отправляем новое меню действий
-            menu_text, menu_markup = self.ui.get_main_actions_menu(note_id)
-            await self.send_message(chat_id, menu_text, reply_markup=menu_markup)
+                formatted_section += str(section_data)
+            await self.send_message(chat_id, formatted_section)
+        else:
+            await self.send_message(chat_id, f"Section '{section_key}' not found in the analysis.")
 
     async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None):
         try:
