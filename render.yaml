@@ -3,7 +3,7 @@ services:
   - type: web
     name: messenger-transcribe-bot
     env: python
-    plan: free
+    plan: starter
     buildCommand: "pip install -r requirements.txt"
     # ===> ИЗМЕНЕНИЕ: Gunicorn -> Hypercorn <===
     startCommand: "hypercorn app:app -b 0.0.0.0:$PORT"
@@ -24,7 +24,7 @@ services:
   - type: worker
     name: celery-beat
     env: python
-    plan: free
+    plan: starter
     buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app beat --loglevel=info"
     envVars:
