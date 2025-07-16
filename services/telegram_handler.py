@@ -9,7 +9,7 @@ import json
 from typing import Dict, Any, List, Optional
 from telegram import Update, InlineKeyboardMarkup, Bot, Message, BotCommand
 from telegram.constants import ParseMode
-from bson import ObjectId
+from bson import ObjectId, errors as bson_errors
 
 from .database import Database
 from .s3_service import S3Service
@@ -89,6 +89,42 @@ class TelegramHandler:
         elif update.message.text:
             await self._handle_text_note(update.message.text, user_id, chat_id)
 
+    async def _handle_command(self, user_id: str, chat_id: int, username: Optional[str], text: str):
+        command_parts = text.split()
+        command = command_parts[0]
+
+        if command == '/start':
+            await self._handle_start_command(user_id, chat_id, username)
+        elif command == '/status':
+            await self._handle_status_command(user_id, chat_id)
+        elif command == '/help':
+            bot_user = await self.bot.get_me()
+            add_to_group_url = f"https://t.me/{bot_user.username}?startgroup=true"
+            await self.send_message(chat_id, self.ui.get_help_message(add_to_group_url))
+        elif command == '/search':
+            query = " ".join(command_parts[1:])
+            if not query:
+                await self.send_message(chat_id, "Please provide a search term. Usage: `/search <your query>`")
+                return
+            await self.send_message(chat_id, f"🔍 Searching for notes matching: `{query}`...")
+            notes = self.database.search_notes_by_query(user_id, query)
+            response_text = self.ui.format_search_results(notes, query)
+            await self.send_message(chat_id, response_text)
+
+        if user_id == self.admin_telegram_id:
+            # ... (admin commands logic if any)
+            pass
+
+    async def _handle_text_note(self, text: str, user_id: str, chat_id: int):
+        try:
+            note_id = self.database.save_note(user_id=user_id, content=text, tags=['plain_text'])
+            await self.send_message(chat_id, f"✅ *Note saved:* ```{text[:250]}...```")
+            message, reply_markup = self.ui.get_main_actions_menu(note_id)
+            await self.send_message(chat_id, message, reply_markup=reply_markup)
+        except Exception as e:
+            logger.error(f"Error creating text note for user {user_id}: {e}")
+            await self.send_message(chat_id, "❌ Sorry, an error occurred while saving your note.")
+
     async def _handle_url(self, url: str, user_id: str, chat_id: int):
         await self.send_message(chat_id, "🔗 Link received. Starting download...")
 
@@ -113,20 +149,78 @@ class TelegramHandler:
             if local_file_path and os.path.exists(local_file_path):
                 os.remove(local_file_path)
 
+    async def _process_local_file(self, local_file_path: str, user_id: str, chat_id: int, from_url: bool = False):
+        try:
+            object_key = f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
+            if not self.s3_service.upload_file(local_file_path, object_key):
+                await self.send_message(chat_id, "❌ Server error: could not upload file to storage.")
+                return
+
+            if self.celery_app_client:
+                logger.info(f"Sending task to Celery for object {object_key}")
+                self.celery_app_client.send_task('tasks.process_media', args=[user_id, object_key, {},
+                                                                              {'platform': 'telegram',
+                                                                               'chat_id': chat_id}])
+                if from_url:
+                    await self.send_message(chat_id, "✅ Download complete. Your file is now being processed...")
+        except Exception as e:
+            logger.error(f"Error in _process_local_file: {e}", exc_info=True)
+            await self.send_message(chat_id, "❌ An error occurred during file processing.")
+
+    async def _handle_file_upload(self, file_obj: Message, user_id: str, chat_id: int):
+        await self.send_message(chat_id, "✅ File received. Processing...")
+        local_file_path = None
+        try:
+            tg_file = await file_obj.get_file()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(tg_file.file_path)[-1]) as temp_f:
+                local_file_path = temp_f.name
+                await tg_file.download_to_drive(custom_path=local_file_path)
+
+            await self._process_local_file(local_file_path, user_id, chat_id)
+        except Exception as e:
+            logger.error(f"Error handling Telegram file upload: {e}", exc_info=True)
+            await self.send_message(chat_id, "❌ An error occurred while processing your file.")
+        finally:
+            if local_file_path and os.path.exists(local_file_path):
+                os.remove(local_file_path)
+
+    async def _handle_start_command(self, user_id: str, chat_id: int, username: Optional[str]):
+        user = self.database.get_user(user_id)
+        if not user:
+            user = self.database.create_user(user_id, username=username)
+        await self.send_message(chat_id, self.ui.get_welcome_message())
+        return user
+
+    async def _handle_status_command(self, user_id: str, chat_id: int):
+        user = self.database.get_user(user_id)
+        if not user:
+            await self.send_message(chat_id, "Please use /start first.")
+            return
+        message = self.ui.get_status_message(user)
+        await self.send_message(chat_id, message)
+
     async def _handle_callback_query(self, query: Update.callback_query):
         await query.answer()
         payload = query.data
         chat_id = query.message.chat_id
 
         parts = payload.split('_')
-        action_type = parts[0]
-        action_name = parts[1]
+
+        # Новый, более надежный парсер
+        try:
+            action = '_'.join(parts[:-1])  # Действие - все, кроме последнего элемента
+            note_id = ObjectId(parts[-1])  # ID заметки - всегда последний элемент
+        except (IndexError, bson_errors.InvalidId):
+            return await self.send_message(chat_id, f"Error processing action: Invalid callback data '{payload}'")
+
+        note = self.database.get_note_by_id(note_id)
+        if not note:
+            return await query.edit_message_text("This menu is no longer active as the note was deleted.",
+                                                 reply_markup=None)
 
         # Обработка интерактивного бизнес-отчета
-        if action_type == 'BIZ':
-            section_key = action_name
-            note_id = ObjectId(parts[2])
-            note = self.database.get_note_by_id(note_id)
+        if action.startswith('BIZ'):
+            section_key = action.split('_')[1]  # Получаем ключ секции, например 'summary'
             if not note or 'business_analysis' not in note:
                 return await self.send_message(chat_id, "Analysis data not found for this note.")
 
@@ -144,26 +238,16 @@ class TelegramHandler:
             await self.send_message(chat_id, formatted_section)
             return
 
-        # Основная логика
-        try:
-            note_id_str = parts[2]
-            note_id = ObjectId(note_id_str)
-        except (IndexError, Exception):
-            return await self.send_message(chat_id, f"Error processing action: Invalid callback data '{payload}'")
+        # Обработка основного меню действий
+        if action.startswith('ACTION'):
+            action_name = action.split('_')[1]
 
-        note = self.database.get_note_by_id(note_id)
-        if not note:
-            return await query.edit_message_text("This menu is no longer active as the note was deleted.",
-                                                 reply_markup=None)
-
-        if action_type == 'ACTION':
-            # ... (Логика для ACTION_BACK, ACTION_REPORT, ACTION_SUMMARIZE, и др.)
-            if action_name == 'BACK':
+            if action_name == 'BACK' and parts[2] == 'MAIN':
                 text, markup = self.ui.get_main_actions_menu(note_id)
                 await query.edit_message_text(text, reply_markup=markup)
 
             elif action_name == 'REPORT':
-                text, markup = self.ui.get_template_selection_message(note_id)
+                text, markup = self.ui.get_template_category_menu(note_id)
                 await query.edit_message_text(text, reply_markup=markup)
 
             elif action_name == 'SUMMARIZE':
@@ -171,7 +255,7 @@ class TelegramHandler:
                 summary = self.insight_service.get_summary(note['content'])
                 await self.send_message(chat_id, f"*Summary:*\n{summary or 'Could not generate summary.'}")
 
-            elif action_name == 'BIZANALYSIS':  # ИСПРАВЛЕННЫЙ action_name
+            elif action_name == 'BIZANALYSIS':
                 await self.send_message(chat_id,
                                         "🤖 Starting comprehensive business analysis. This may take several minutes...")
                 analysis_result = self.business_analyzer.run_comprehensive_analysis(note['content'])
@@ -184,8 +268,11 @@ class TelegramHandler:
                 await query.edit_message_text(text, reply_markup=markup)
 
             elif action_name == 'TRANSLATE':
+                # Проверяем, есть ли код языка в callback'е
                 if len(parts) > 3:
-                    target_lang = parts[3]
+                    target_lang = parts[-1]  # Язык теперь тоже последний элемент, но перед ним есть ID
+                    note_id = ObjectId(parts[-2])  # ID перед языком
+
                     await self.send_message(chat_id, f"🌐 Translating to {target_lang.upper()}...")
                     result = self.translation_service.translate_text(note['content'], target_lang,
                                                                      note.get('source_language'))
@@ -211,28 +298,56 @@ class TelegramHandler:
                 text, markup = self.ui.get_main_actions_menu(note_id)
                 await query.edit_message_text(text, reply_markup=markup)
 
+        # Обработка меню выбора категории
+        elif action_type == 'CATEGORY':
+            category_name = action_name
+            text, markup = self.ui.get_template_selection_message(note_id, category_name)
+            await query.edit_message_text(text, reply_markup=markup)
+
+        # Обработка выбора конкретного шаблона
         elif action_type == 'TEMPLATE':
-            # ... (логика без изменений)
-            pass
+            template_key = action_name
+            await self.send_message(chat_id,
+                                    f"🤖 Generating report using template '{self.insight_service.REPORT_PROMPTS[template_key]['name']}'...")
 
-    # ... (все остальные методы без изменений)
-    async def _handle_command(self, user_id: str, chat_id: int, username: Optional[str], text: str):
-        pass
+            report_text = self.insight_service.create_report(note['content'], template_key)
 
-    async def _handle_text_note(self, text: str, user_id: str, chat_id: int):
-        pass
+            if not report_text:
+                await self.send_message(chat_id, "❌ Sorry, failed to generate the report.")
+            else:
+                report_name = self.insight_service.REPORT_PROMPTS.get(template_key, {}).get('name', 'Report')
+                final_report_header = f"📊 *Report: {report_name}*"
+                await self.send_message(chat_id, f"{final_report_header}\n\n{report_text}")
 
-    async def _process_local_file(self, local_file_path: str, user_id: str, chat_id: int, from_url: bool = False):
-        pass
+                updated_content = f"# {report_name}\n\n{report_text}\n\n---\n\n## Original Transcription\n\n{note['content']}"
+                self.database.update_note(note_id, {"content": updated_content, "tags": [template_key.lower()]})
 
-    async def _handle_file_upload(self, file_obj: Message, user_id: str, chat_id: int):
-        pass
+                new_menu_text, new_markup = self.ui.get_main_actions_menu(note_id)
+                await self.send_message(chat_id, new_menu_text, reply_markup=new_markup)
 
-    async def _handle_start_command(self, user_id: str, chat_id: int, username: Optional[str]):
-        pass
-
-    async def _handle_status_command(self, user_id: str, chat_id: int):
-        pass
+            await query.delete_message()
 
     async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None):
-        pass
+        try:
+            if len(text) > 4096:
+                header = text.split('\n\n', 1)[0]
+                await self.bot.send_message(chat_id=chat_id, text=header, parse_mode=ParseMode.MARKDOWN)
+
+                body = text[len(header):].strip()
+                for x in range(0, len(body), 4096):
+                    await self.bot.send_message(
+                        chat_id=chat_id,
+                        text=body[x:x + 4096],
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                if reply_markup:
+                    await self.bot.send_message(chat_id=chat_id, text="Actions:", reply_markup=reply_markup)
+            else:
+                await self.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+        except Exception as e:
+            logger.error(f"Failed to send message to Telegram chat {chat_id}: {e}")
