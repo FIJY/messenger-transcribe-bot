@@ -1,89 +1,170 @@
-# services/downloader_service.py
+# services/telegram_ui.py
 import os
-import yt_dlp
-import instaloader
-import tempfile
-import logging
-from typing import Tuple, Optional
-import subprocess
+from typing import Dict, Any, List
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from bson import ObjectId
 
-logger = logging.getLogger(__name__)
+from .database import PLANS
+from config.transcrib_suggestion_config import DEFAULT_POPULAR_TRANSLATION_LANGS
 
 
-class DownloaderService:
+class TelegramUI:
     def __init__(self):
-        self.L = instaloader.Instaloader()
+        self.base_url = os.getenv('RENDER_EXTERNAL_URL', 'https://your-app-name.onrender.com')
+        self.support_contact = os.getenv('SUPPORT_CONTACT')
 
-    def _download_with_yt_dlp(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        """Скачивает аудио с помощью yt-dlp."""
-        temp_audio_file = None
-        try:
-            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-            temp_audio_path = temp_audio_file.name
-            temp_audio_file.close()
+    def get_welcome_message(self) -> str:
+        return (
+            "🎉 *Welcome to your AI Notes Assistant!*\n\n"
+            "To get started, just send me a voice message, an audio/video file, a text message, or a link to a YouTube video.\n\n"
+            "Type /help to see all available commands."
+        )
 
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': temp_audio_path,
-                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
-                'quiet': True, 'no_warnings': True, 'noplaylist': True, 'nocheckcertificate': True,
-            }
+    def get_help_message(self, add_to_group_url: str) -> str:
+        basic_plan = PLANS['basic']
+        premium_plan = PLANS['premium']
+        help_text = (
+            "🤖 *Bot Help & Information*\n\n"
+            "**How to Use Me:**\n"
+            "Send me a voice message, audio/video file, text message, or a link, and I will turn it into a structured note.\n\n"
+            "💡 **Совет:** Чтобы отправить файл размером больше 20 МБ, прикрепите его как **'Файл'**, а не как 'Аудио' или 'Видео'.\n\n"
+            "**Available Commands:**\n"
+            "`/start` - Restart the bot.\n"
+            "`/status` - Check your current plan.\n"
+            "`/search <text>` - Find text in your notes.\n"
+            "`/help` - Show this help message.\n\n"
+            f"👥 *Add to a Group*\n"
+            f"Click here to add me to your group chat: [Add to Group]({add_to_group_url})\n\n"
+            "**Our Monthly Plans:**\n"
+            f"🔹 **Basic (${basic_plan['price_usd']}/month):** {basic_plan['limit_minutes']} minutes.\n"
+            f"💎 **Premium (${premium_plan['price_usd']}/month):** {premium_plan['limit_minutes']} minutes with all features.\n\n"
+            f"For more details, please see our [Terms of Service]({self.base_url}/terms) and [Privacy Policy]({self.base_url}/privacy).\n\n"
+        )
+        if self.support_contact:
+            help_text += f"If you have any questions, please contact our support: {self.support_contact}"
+        return help_text
 
-            logger.info(f"Начинаем скачивание (yt-dlp) по ссылке: {url}")
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-            return temp_audio_path, None
-        except yt_dlp.utils.DownloadError as e:
-            logger.error(f"yt-dlp download error for {url}: {e}")
-            if temp_audio_file and os.path.exists(temp_audio_file.name): os.remove(temp_audio_file.name)
-            if 'login required' in str(e) or 'sign in to confirm' in str(e) or 'age-restricted' in str(e):
-                return None, 'LOGIN_REQUIRED'
-            return None, 'DOWNLOAD_FAILED'
-        except Exception as e:
-            logger.error(f"Общая ошибка при скачивании (yt-dlp) из {url}: {e}", exc_info=True)
-            if temp_audio_file and os.path.exists(temp_audio_file.name): os.remove(temp_audio_file.name)
-            return None, 'GENERAL_ERROR'
+    def get_main_actions_menu(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
+        message_text = "What would you like to do with this transcription?"
+        keyboard = [
+            [
+                InlineKeyboardButton("📊 Create Smart Report", callback_data=f"ACTION_REPORT_{note_id}"),
+                InlineKeyboardButton("🌐 Translate", callback_data=f"ACTION_TRANSLATE_{note_id}")
+            ],
+            [
+                InlineKeyboardButton("📝 Simple Summary", callback_data=f"ACTION_SUMMARIZE_{note_id}"),
+                InlineKeyboardButton("📈 Business Analysis", callback_data=f"ACTION_BIZANALYSIS_{note_id}")
+            ],
+            [
+                InlineKeyboardButton("🗑️ Delete Note", callback_data=f"ACTION_DELETE_{note_id}")
+            ]
+        ]
+        return message_text, InlineKeyboardMarkup(keyboard)
 
-    def _download_with_instaloader(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        """Скачивает видео/аудио из Instagram и конвертирует в mp3."""
-        video_temp_file = None
-        audio_temp_file = None
-        try:
-            logger.info(f"Начинаем скачивание (instaloader) по ссылке: {url}")
-            shortcode = url.split("/reel/")[1].split("/")[0]
-            post = instaloader.Post.from_shortcode(self.L.context, shortcode)
+    def get_template_category_menu(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
+        message_text = "Please choose a report category:"
+        keyboard = [
+            [
+                InlineKeyboardButton("📁 General", callback_data=f"CATEGORY_GENERAL_{note_id}"),
+                InlineKeyboardButton("💼 Business", callback_data=f"CATEGORY_BUSINESS_{note_id}")
+            ],
+            [
+                InlineKeyboardButton("👥 Partnership", callback_data=f"CATEGORY_PARTNERSHIP_{note_id}"),
+                InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_{note_id}")
+            ]
+        ]
+        return message_text, InlineKeyboardMarkup(keyboard)
 
-            if not post.is_video:
-                return None, 'NOT_A_VIDEO'
+    def get_template_selection_message(self, note_id: ObjectId, category: str) -> tuple[str, InlineKeyboardMarkup]:
+        message_text = f"Selected category: *{category.capitalize()}*. Now choose a template:"
+        keyboard = []
+        if category == 'GENERAL':
+            keyboard.extend([
+                [InlineKeyboardButton("📝 Meeting Minutes", callback_data=f"TEMPLATE_MEETING_{note_id}")],
+                [InlineKeyboardButton("🎙️ Podcast Show Notes", callback_data=f"TEMPLATE_PODCAST_{note_id}")],
+                [InlineKeyboardButton("🎯 Coaching Session", callback_data=f"TEMPLATE_COACHING_{note_id}")],
+            ])
+        elif category == 'BUSINESS':
+            keyboard.extend([
+                [InlineKeyboardButton("💡 Client Briefing", callback_data=f"TEMPLATE_BRIEFING_{note_id}")],
+                [InlineKeyboardButton("📞 Sales Call Analysis", callback_data=f"TEMPLATE_SALES_CALL_{note_id}")],
+                [InlineKeyboardButton("🤵 Interview Summary", callback_data=f"TEMPLATE_INTERVIEW_{note_id}")],
+            ])
+        elif category == 'PARTNERSHIP':
+            keyboard.extend([
+                [InlineKeyboardButton("🤝 Partnership Discussion",
+                                      callback_data=f"TEMPLATE_PARTNERSHIP_MEETING_{note_id}")],
+                [InlineKeyboardButton("⚖️ Business Negotiation",
+                                      callback_data=f"TEMPLATE_BUSINESS_NEGOTIATION_{note_id}")],
+                [InlineKeyboardButton("🕵️ Due Diligence", callback_data=f"TEMPLATE_DUE_DILIGENCE_{note_id}")],
+                [InlineKeyboardButton("😡 Conflict Resolution",
+                                      callback_data=f"TEMPLATE_CONFLICT_RESOLUTION_{note_id}")],
+            ])
 
-            video_temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-            self.L.download_post(post, target=os.path.dirname(video_temp_file.name))
-            # instaloader сохраняет файл с именем YYYY-MM-DD_HH-MM-SS_UTC.mp4, нужно его найти
-            downloaded_video_path = None
-            for f in os.listdir(os.path.dirname(video_temp_file.name)):
-                if f.endswith('.mp4'):
-                    downloaded_video_path = os.path.join(os.path.dirname(video_temp_file.name), f)
-                    break
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Categories", callback_data=f"ACTION_REPORT_{note_id}")])
+        return message_text, InlineKeyboardMarkup(keyboard)
 
-            if not downloaded_video_path:
-                raise Exception("Не удалось найти скачанный файл Instagram")
+    def get_delete_confirmation(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
+        return (
+            "Are you sure you want to delete this note?",
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Yes, delete", callback_data=f"ACTION_DELETECONFIRM_{note_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"ACTION_DELETECANCEL_{note_id}")
+            ]])
+        )
 
-            # Конвертируем видео в аудио
-            audio_temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-            command = ['ffmpeg', '-i', downloaded_video_path, '-vn', '-q:a', '0', '-y', audio_temp_file.name]
-            subprocess.run(command, check=True, capture_output=True)
+    def get_translation_language_options(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
+        buttons = []
+        for lang in DEFAULT_POPULAR_TRANSLATION_LANGS:
+            buttons.append(InlineKeyboardButton(f"{lang['flag']} {lang['title']}",
+                                                callback_data=f"ACTION_TRANSLATE_{note_id}_{lang['code']}"))
 
-            os.remove(downloaded_video_path)  # Удаляем исходное видео
-            return audio_temp_file.name, None
+        keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_{note_id}")])
 
-        except Exception as e:
-            logger.error(f"Ошибка при скачивании (instaloader) из {url}: {e}", exc_info=True)
-            if video_temp_file and os.path.exists(video_temp_file.name): os.remove(video_temp_file.name)
-            if audio_temp_file and os.path.exists(audio_temp_file.name): os.remove(audio_temp_file.name)
-            return None, 'LOGIN_REQUIRED'  # Ошибки инстаграма чаще всего связаны с доступом
+        return "Please select the target language:", InlineKeyboardMarkup(keyboard)
 
-    def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        if "instagram.com/reel/" in url:
-            return self._download_with_instaloader(url)
+    def get_business_analysis_menu(self, note_id: ObjectId) -> tuple[str, InlineKeyboardMarkup]:
+        message_text = "Comprehensive analysis complete. Choose a section to view:"
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 Summary", callback_data=f"BIZ_summary_{note_id}"),
+                InlineKeyboardButton("🔑 Keywords", callback_data=f"BIZ_keywords_{note_id}"),
+            ],
+            [
+                InlineKeyboardButton("✅ Action Items", callback_data=f"BIZ_action_items_{note_id}"),
+                InlineKeyboardButton("⚖️ Risks", callback_data=f"BIZ_risk_assessment_{note_id}"),
+            ],
+            [
+                InlineKeyboardButton("🤝 Dynamics", callback_data=f"BIZ_dynamics_{note_id}"),
+                InlineKeyboardButton("💰 Deal Terms", callback_data=f"BIZ_deal_terms_{note_id}"),
+            ],
+            [
+                InlineKeyboardButton("📋 Next Agenda", callback_data=f"BIZ_next_agenda_{note_id}"),
+                InlineKeyboardButton("😊 Sentiment", callback_data=f"BIZ_sentiment_{note_id}"),
+            ],
+            [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data=f"ACTION_BACK_{note_id}")]
+        ]
+        return message_text, InlineKeyboardMarkup(keyboard)
+
+    def format_search_results(self, notes: List[Dict[str, Any]], query: str) -> str:
+        if not notes: return f"No notes found matching your query: `{query}`"
+        message = f"🔍 *Search results for \"{query}\":*\n\n"
+        for note in notes:
+            content_preview = (note['content'][:100] + '...').replace('\n', ' ')
+            message += f"🗓️ _{note['created_at'].strftime('%Y-%m-%d')}_:\n`{content_preview}`\n\n"
+        return message
+
+    def get_status_message(self, user: Dict[str, Any]) -> str:
+        plan = user.get('plan', 'free').capitalize()
+        minutes_used = user.get('minutes_used', 0)
+        minutes_limit = user.get('minutes_limit', 0)
+
+        if plan == 'Free':
+            minutes_left = minutes_limit - minutes_used
+            return (f"📊 *Your Status*\n\nPlan: {plan}\nMinutes left: {minutes_left:.1f} / {minutes_limit} minutes")
         else:
-            return self._download_with_yt_dlp(url)
+            expires_at = user.get('subscription_expires_at')
+            expires_str = expires_at.strftime('%d %B %Y') if expires_at else 'N/A'
+            return (
+                f"📊 *Your Status*\n\nPlan: {plan} 💎\nSubscription valid until: {expires_str}\nMinutes used this period: {minutes_used:.1f} / {minutes_limit} minutes")
