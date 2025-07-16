@@ -24,7 +24,7 @@ services:
   - type: worker
     name: celery-beat
     env: python
-    plan: starter
+    plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app beat --loglevel=info"
     envVars:
