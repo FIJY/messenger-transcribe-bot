@@ -204,18 +204,24 @@ class TelegramHandler:
         chat_id = query.message.chat_id
 
         parts = payload.split('_')
-        action_type = '_'.join(parts[:-1])  # Действие - все, кроме последнего элемента
-        note_id_str = parts[-1]  # ID заметки - всегда последний элемент
+
+        # Новый, надежный парсер
+        try:
+            action = '_'.join(parts[:-1])  # Действие - все, кроме последнего элемента
+            note_id = ObjectId(parts[-1])  # ID заметки - всегда последний элемент
+        except (IndexError, bson_errors.InvalidId):
+            return await self.send_message(chat_id, f"Error processing action: Invalid callback data '{payload}'")
+
+        note = self.database.get_note_by_id(note_id)
+        if not note:
+            return await query.edit_message_text("This menu is no longer active as the note was deleted.",
+                                                 reply_markup=None)
+
+        action_type = action.split('_')[0]
 
         # Обработка интерактивного бизнес-отчета
-        if action_type.startswith('BIZ'):
-            section_key = action_type.split('_')[1]
-            try:
-                note_id = ObjectId(note_id_str)
-            except bson_errors.InvalidId:
-                return await self.send_message(chat_id, "Error: Invalid note ID for BIZ action.")
-
-            note = self.database.get_note_by_id(note_id)
+        if action_type == 'BIZ':
+            section_key = action.split('_')[1]
             if not note or 'business_analysis' not in note:
                 return await self.send_message(chat_id, "Analysis data not found for this note.")
 
@@ -234,105 +240,104 @@ class TelegramHandler:
             return
 
         # Основная логика
-        try:
-            note_id = ObjectId(note_id_str)
-        except (IndexError, bson_errors.InvalidId):
-            return await self.send_message(chat_id, f"Error processing action: Invalid callback data '{payload}'")
+        if action_type == 'ACTION':
+            action_name = action.split('_')[1]
 
-        note = self.database.get_note_by_id(note_id)
-        if not note:
-            return await query.edit_message_text("This menu is no longer active as the note was deleted.",
-                                                 reply_markup=None)
-
-        if action_type == 'ACTION_BACK_MAIN':
-            text, markup = self.ui.get_main_actions_menu(note_id)
-            await query.edit_message_text(text, reply_markup=markup)
-
-        elif action_type == 'ACTION_REPORT':
-            text, markup = self.ui.get_template_category_menu(note_id)
-            await query.edit_message_text(text, reply_markup=markup)
-
-        elif action_type == 'ACTION_SUMMARIZE':
-            await self.send_message(chat_id, "🤖 Generating simple summary...")
-            summary = self.insight_service.get_summary(note['content'])
-            await self.send_message(chat_id, f"*Summary:*\n{summary or 'Could not generate summary.'}")
-
-        elif action_type == 'ACTION_BIZANALYSIS':
-            await self.send_message(chat_id,
-                                    "🤖 Starting comprehensive business analysis. This may take several minutes...")
-            analysis_result = self.business_analyzer.run_comprehensive_analysis(note['content'])
-            if not analysis_result:
-                return await self.send_message(chat_id, "❌ Failed to perform business analysis.")
-
-            self.database.update_note(note_id, {"business_analysis": analysis_result, "tags": ["business_analysis"]})
-            text, markup = self.ui.get_business_analysis_menu(note_id)
-            await query.edit_message_text(text, reply_markup=markup)
-
-        elif action_type.startswith('ACTION_TRANSLATE'):
-            if len(parts) > 2:  # ACTION_TRANSLATE_noteid_lang
-                target_lang = parts[-1]
-                await self.send_message(chat_id, f"🌐 Translating to {target_lang.upper()}...")
-                result = self.translation_service.translate_text(note['content'], target_lang,
-                                                                 note.get('source_language'))
-                response_text = f"*{target_lang.upper()} Translation:*\n{result['translated_text']}" if result[
-                    'success'] else f"❌ Translation failed: {result['error']}"
-                await self.send_message(chat_id, response_text)
+            if action_name == 'BACK' and parts[1] == 'MAIN':
                 text, markup = self.ui.get_main_actions_menu(note_id)
                 await query.edit_message_text(text, reply_markup=markup)
-            else:  # ACTION_TRANSLATE_noteid
-                text, markup = self.ui.get_translation_language_options(note_id)
+
+            elif action_name == 'REPORT':
+                text, markup = self.ui.get_template_category_menu(note_id)
                 await query.edit_message_text(text, reply_markup=markup)
 
-        elif action_type == 'ACTION_DELETE':
-            text, markup = self.ui.get_delete_confirmation(note_id)
-            await query.edit_message_text(text, reply_markup=markup)
+            elif action_name == 'SUMMARIZE':
+                await self.send_message(chat_id, "🤖 Generating simple summary...")
+                summary = self.insight_service.get_summary(note['content'])
+                await self.send_message(chat_id, f"*Summary:*\n{summary or 'Could not generate summary.'}")
 
-        elif action_type == 'ACTION_DELETE_CONFIRM':
-            if self.database.delete_note(note_id):
-                await query.edit_message_text("🗑️ Note successfully deleted.", reply_markup=None)
+            elif action_name == 'BIZANALYSIS':
+                await self.send_message(chat_id,
+                                        "🤖 Starting comprehensive business analysis. This may take several minutes...")
+                analysis_result = self.business_analyzer.run_comprehensive_analysis(note['content'])
+                if not analysis_result:
+                    return await self.send_message(chat_id, "❌ Failed to perform business analysis.")
 
-        elif action_type == 'ACTION_DELETE_CANCEL':
-            text, markup = self.ui.get_main_actions_menu(note_id)
-            await query.edit_message_text(text, reply_markup=markup)
+                self.database.update_note(note_id,
+                                          {"business_analysis": analysis_result, "tags": ["business_analysis"]})
+                text, markup = self.ui.get_business_analysis_menu(note_id)
+                await query.edit_message_text(text, reply_markup=markup)
 
-        elif action_type.startswith('CATEGORY'):
-            category_name = action_type.split('_')[1]
+            elif action_name == 'TRANSLATE':
+                if len(parts) > 3:
+                    target_lang = parts[-1]
+                    await self.send_message(chat_id, f"🌐 Translating to {target_lang.upper()}...")
+                    result = self.translation_service.translate_text(note['content'], target_lang,
+                                                                     note.get('source_language'))
+                    response_text = f"*{target_lang.upper()} Translation:*\n{result['translated_text']}" if result[
+                        'success'] else f"❌ Translation failed: {result['error']}"
+                    await self.send_message(chat_id, response_text)
+
+                    text, markup = self.ui.get_main_actions_menu(note_id)
+                    await query.edit_message_text(text, reply_markup=markup)
+                else:
+                    text, markup = self.ui.get_translation_language_options(note_id)
+                    await query.edit_message_text(text, reply_markup=markup)
+
+            elif action_name == 'DELETE':
+                text, markup = self.ui.get_delete_confirmation(note_id)
+                await query.edit_message_text(text, reply_markup=markup)
+
+            elif action_name == 'DELETECONFIRM':
+                if self.database.delete_note(note_id):
+                    await query.edit_message_text("🗑️ Note successfully deleted.", reply_markup=None)
+
+            elif action_name == 'DELETECANCEL':
+                text, markup = self.ui.get_main_actions_menu(note_id)
+                await query.edit_message_text(text, reply_markup=markup)
+
+        elif action_type == 'CATEGORY':
+            category_name = action.split('_')[1]
             text, markup = self.ui.get_template_selection_message(note_id, category_name)
             await query.edit_message_text(text, reply_markup=markup)
 
-        elif action_type.startswith('TEMPLATE'):
-            template_key = action_type.split('_')[1]
-            await self.send_message(chat_id,
-                                    f"🤖 Generating report using template '{self.insight_service.REPORT_PROMPTS[template_key]['name']}'...")
+        elif action_type == 'TEMPLATE':
+            template_key = '_'.join(parts[1:-1])  # Собираем полный ключ шаблона
+
+            report_name = self.insight_service.REPORT_PROMPTS.get(template_key, {}).get('name', 'Report')
+            await self.send_message(chat_id, f"🤖 Generating report using template '{report_name}'...")
 
             report_text = self.insight_service.create_report(note['content'], template_key)
 
             if not report_text:
                 await self.send_message(chat_id, "❌ Sorry, failed to generate the report.")
             else:
-                report_name = self.insight_service.REPORT_PROMPTS.get(template_key, {}).get('name', 'Report')
                 final_report_header = f"📊 *Report: {report_name}*"
                 await self.send_message(chat_id, f"{final_report_header}\n\n{report_text}")
 
                 updated_content = f"# {report_name}\n\n{report_text}\n\n---\n\n## Original Transcription\n\n{note['content']}"
                 self.database.update_note(note_id, {"content": updated_content, "tags": [template_key.lower()]})
 
-            text, markup = self.ui.get_main_actions_menu(note_id)
-            await query.edit_message_text(text, reply_markup=markup)
+                new_menu_text, new_markup = self.ui.get_main_actions_menu(note_id)
+                await self.send_message(chat_id, new_menu_text, reply_markup=new_markup)
+
+            await query.delete_message()
 
     async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None):
         try:
             if len(text) > 4096:
-                header = text.split('\n\n', 1)[0]
-                await self.bot.send_message(chat_id=chat_id, text=header, parse_mode=ParseMode.MARKDOWN)
+                parts = text.split('\n\n')
+                current_message = ""
+                for part in parts:
+                    if len(current_message) + len(part) + 2 > 4096:
+                        await self.bot.send_message(chat_id=chat_id, text=current_message,
+                                                    parse_mode=ParseMode.MARKDOWN)
+                        current_message = part
+                    else:
+                        current_message += "\n\n" + part
+                if current_message:
+                    await self.bot.send_message(chat_id=chat_id, text=current_message, parse_mode=ParseMode.MARKDOWN)
 
-                body = text[len(header):].strip()
-                for x in range(0, len(body), 4096):
-                    await self.bot.send_message(
-                        chat_id=chat_id,
-                        text=body[x:x + 4096],
-                        parse_mode=ParseMode.MARKDOWN
-                    )
                 if reply_markup:
                     await self.bot.send_message(chat_id=chat_id, text="Actions:", reply_markup=reply_markup)
             else:
