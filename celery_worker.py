@@ -21,6 +21,12 @@ from services.translation_service import TranslationService
 from services.insight_service import InsightService
 from telegram import Bot
 
+# ИЗМЕНЕНИЕ: Импортируем недостающие сервисы для полной инициализации TelegramHandler
+from services.downloader_service import DownloaderService
+from services.business_analyzer_service import BusinessAnalyzerService
+from services.youtube_service import YouTubeService
+
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -63,6 +69,10 @@ telegram_handler = None
 payment_service = None
 bot_instance = None
 media_handler_service = None
+downloader_service = None
+business_analyzer = None
+youtube_service = None
+
 
 try:
     database = Database()
@@ -71,18 +81,27 @@ try:
     transcription_service = TranscriptionService()
     translation_service = TranslationService()
     insight_service = InsightService()
+    # ИЗМЕНЕНИЕ: Инициализируем недостающие сервисы
+    downloader_service = DownloaderService()
+    business_analyzer = BusinessAnalyzerService()
+    youtube_service = YouTubeService()
+
 
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     if telegram_token:
         bot_instance = Bot(token=telegram_token)
         payment_service = PaymentService(bot=bot_instance, database=database)
+        # ИЗМЕНЕНИЕ: Передаем все зависимости в TelegramHandler
         telegram_handler = TelegramHandler(
             token=telegram_token,
             database=database,
             s3_service=s3_service,
             payment_service=payment_service,
             insight_service=insight_service,
-            translation_service=translation_service
+            translation_service=translation_service,
+            downloader_service=downloader_service,
+            business_analyzer=business_analyzer,
+            youtube_service=youtube_service
         )
     else:
         logger.warning("Telegram Bot is disabled due to missing token.")
@@ -102,6 +121,8 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
     local_file_path = None
     platform = platform_payload.get('platform')
     chat_id = platform_payload.get('chat_id')
+    # ИЗМЕНЕНИЕ: Извлекаем source_type
+    source_type = platform_payload.get('source_type', 'unknown')
 
     try:
         user = database.get_user(sender_id)
@@ -135,8 +156,9 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         if result.get('success'):
             if platform == 'telegram' and chat_id:
                 database.save_raw_transcription(s3_key=object_key, user_id=sender_id, **result)
+                # ИЗМЕНЕНИЕ: Передаем source_type дальше
                 run_async_task(
-                    handle_telegram_success(chat_id, sender_id, result, object_key)
+                    handle_telegram_success(chat_id, sender_id, result, object_key, source_type)
                 )
             duration_to_charge = result.get('duration_minutes', 0)
             database.update_minutes_used(sender_id, duration_to_charge)
@@ -152,10 +174,8 @@ def process_media_task(self, sender_id: str, object_key: str, user_preferences: 
         logger.error(f"[{self.request.id}] Error in Celery task (attempt {self.request.retries + 1}): {exc}",
                      exc_info=True)
         try:
-            # Повторяем задачу с экспоненциальной задержкой
             raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
         except self.MaxRetriesExceededError:
-            # Все попытки исчерпаны, уведомляем пользователя
             logger.error(f"Task {self.request.id} failed after all retries.")
             error_message = "❌ We are sorry, but we could not process your file after several attempts. Please try again later or contact support."
             if platform == 'telegram' and telegram_handler and chat_id:
@@ -180,7 +200,8 @@ def run_async_task(coro):
     return loop.run_until_complete(coro)
 
 
-async def handle_telegram_success(chat_id: int, user_id: str, result: Dict[str, Any], s3_key: str):
+# ИЗМЕНЕНИЕ: Принимаем source_type
+async def handle_telegram_success(chat_id: int, user_id: str, result: Dict[str, Any], s3_key: str, source_type: str):
     if not telegram_handler or not database: return
 
     transcribed_text = result.get('transcription', '')
@@ -190,13 +211,15 @@ async def handle_telegram_success(chat_id: int, user_id: str, result: Dict[str, 
 
     lang_name = result.get('language_info', {}).get('name', 'N/A')
 
+    # ИЗМЕНЕНИЕ: Сохраняем source_type в базу
     note_id = database.save_note(
         user_id=user_id,
         content=transcribed_text,
         s3_object_key=s3_key,
         detected_language=result.get('detected_language'),
         duration_minutes=result.get('duration_minutes', 0),
-        tags=['plain_text']
+        tags=['plain_text', source_type],
+        source_type=source_type
     )
 
     header = f"📝 *Transcription ({lang_name})*:"
@@ -210,7 +233,9 @@ async def handle_telegram_success(chat_id: int, user_id: str, result: Dict[str, 
 
 def _download_file_from_r2(object_key: str) -> Optional[str]:
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{object_key.split('.')[-1]}") as f:
+        # ИЗМЕНЕНИЕ: Используем корректное расширение для временного файла
+        file_suffix = os.path.splitext(object_key)[-1] or '.tmp'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as f:
             if s3_service.download_file(object_key, f.name): return f.name
             os.remove(f.name)
             return None
