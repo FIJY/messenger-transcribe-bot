@@ -29,21 +29,22 @@ logger = logging.getLogger(__name__)
 class TelegramHandler:
     def __init__(self, token: str, database: Database, s3_service: S3Service,
                  payment_service: PaymentService, insight_service: InsightService,
-                 translation_service: TranslationService):
+                 translation_service: TranslationService, downloader_service: DownloaderService,
+                 business_analyzer: BusinessAnalyzerService, youtube_service: YouTubeService):
         if not token: raise ValueError("Telegram token is required.")
         self.bot = Bot(token=token)
         self.database = database
         self.s3_service = s3_service
-        self.downloader_service = DownloaderService()
-        self.celery_app_client = get_celery_app_client()
         self.payment_service = payment_service
+        self.insight_service = insight_service
+        self.translation_service = translation_service
+        self.downloader_service = downloader_service
+        self.business_analyzer = business_analyzer
+        self.youtube_service = youtube_service
+
+        self.celery_app_client = get_celery_app_client()
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
         self.ui = TelegramUI()
-        self.insight_service = insight_service
-        self.business_analyzer = BusinessAnalyzerService()
-        self.translation_service = translation_service
-        self.youtube_service = YouTubeService()  # <-- ИНИЦИАЛИЗАЦИЯ
-
 
     async def set_bot_commands(self):
         commands = [

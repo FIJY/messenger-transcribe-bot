@@ -2,7 +2,7 @@
 import os
 import logging
 import asyncio
-import json  # Добавляем импорт json
+import json
 from quart import Quart, request, jsonify
 from dotenv import load_dotenv
 
@@ -12,8 +12,10 @@ from services.payment_service import PaymentService
 from services.telegram_handler import TelegramHandler
 from services.insight_service import InsightService
 from services.translation_service import TranslationService
-from telegram import Bot
 from services.business_analyzer_service import BusinessAnalyzerService
+from services.downloader_service import DownloaderService
+from services.youtube_service import YouTubeService
+from telegram import Bot
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -29,7 +31,10 @@ try:
     s3_service = S3Service()
     insight_service = InsightService()
     translation_service = TranslationService()
-    business_analyzer = BusinessAnalyzerService()  # Добавили инициализацию
+    business_analyzer = BusinessAnalyzerService()
+    downloader_service = DownloaderService()
+    youtube_service = YouTubeService()
+
     telegram_token = os.getenv('TELEGRAM_TOKEN')
 
     if not telegram_token:
@@ -44,8 +49,10 @@ try:
         s3_service=s3_service,
         payment_service=payment_service,
         insight_service=insight_service,
-        translation_service=translation_service
-        # business_analyzer нужно передать в handler, если он там используется
+        translation_service=translation_service,
+        downloader_service=downloader_service,
+        business_analyzer=business_analyzer,
+        youtube_service=youtube_service
     )
     logger.info("✅ Telegram Handler and services initialized successfully.")
 except Exception as e:
