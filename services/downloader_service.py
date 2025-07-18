@@ -36,7 +36,14 @@ class DownloaderService:
                 'quiet': True,
                 'no_warnings': True,
                 'noplaylist': True,
-                'nocheckcertificate': True
+                'nocheckcertificate': True,
+                # ИЗМЕНЕНИЕ: Добавляем аргументы, чтобы обойти проверку на бота от YouTube.
+                # yt-dlp будет пытаться маскироваться под веб-клиент или клиент Android.
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['web', 'android'],
+                    }
+                }
             }
 
             logger.info(f"Starting download (yt-dlp) for URL: {url}")
