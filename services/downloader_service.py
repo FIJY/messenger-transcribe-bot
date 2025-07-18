@@ -25,14 +25,24 @@ class DownloaderService:
                 return None, "UNSUPPORTED_URL"
 
             # Настройки yt-dlp
+            # Замените в вашем downloader_service.py:
+
             ydl_opts = {
-                'format': 'bestaudio[ext=m4a]/bestaudio/best',
+                'format': 'worst[ext=mp4]/worst',  # Берем худшее качество (быстрее)
                 'outtmpl': str(self.download_dir / '%(title)s.%(ext)s'),
                 'extractaudio': True,
                 'audioformat': 'mp3',
-                'noplaylist': True,  # Скачиваем только одно видео
-                'quiet': True,  # Меньше вывода в консоль
-                'no_warnings': True,
+                'noplaylist': True,
+                'quiet': False,  # Включаем логи для отладки
+                'no_warnings': False,
+
+                # Антибот настройки:
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                },
+                'sleep_interval': 3,  # Пауза 3 секунды между запросами
+                'socket_timeout': 30,
+                'retries': 2,
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
