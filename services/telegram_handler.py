@@ -21,6 +21,7 @@ from .insight_service import InsightService
 from .translation_service import TranslationService
 from .downloader_service import DownloaderService
 from .business_analyzer_service import BusinessAnalyzerService
+from .youtube_service import YouTubeService
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,8 @@ class TelegramHandler:
         self.insight_service = insight_service
         self.business_analyzer = BusinessAnalyzerService()
         self.translation_service = translation_service
+        self.youtube_service = YouTubeService()  # <-- ИНИЦИАЛИЗАЦИЯ
+
 
     async def set_bot_commands(self):
         commands = [
@@ -279,6 +282,38 @@ class TelegramHandler:
         elif action == 'ACTION_DELETE_CONFIRM':
             if self.database.delete_note(note_id):
                 await query.edit_message_text("🗑️ Note successfully deleted.", reply_markup=None)
+
+
+        elif action == 'ACTION_SUBTITLES':
+
+            if not note.get('s3_object_key') or not note['s3_object_key'].startswith('yt_'):
+                await self.send_message(chat_id,
+                                        "This function is only available for notes created from YouTube links.")
+
+                return
+
+            video_url = f"https://www.youtube.com/watch?v={note['s3_object_key'][3:]}"
+
+            await self.send_message(chat_id, "🤖 Trying to download existing subtitles from YouTube...")
+
+            srt_path, error = self.youtube_service.download_subtitles(video_url)
+
+            if srt_path:
+
+                try:
+
+                    await self.bot.send_document(chat_id=chat_id, document=open(srt_path, 'rb'),
+                                                 filename=f"{note_id}.srt",
+                                                 caption="Here are the subtitles from YouTube.")
+
+                finally:
+
+                    if os.path.exists(srt_path): os.remove(srt_path)
+
+            else:
+
+                await self.send_message(chat_id,
+                                        f"Could not download subtitles: {error}. You can still generate them from the transcript text using a third-party tool.")
 
         elif action == 'ACTION_DELETE_CANCEL':
             text, markup = self.ui.get_main_actions_menu(note_id)

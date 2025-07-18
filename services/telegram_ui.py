@@ -53,9 +53,11 @@ class TelegramUI:
             ],
             [
                 InlineKeyboardButton("📝 Simple Summary", callback_data=f"ACTION_SUMMARIZE_{note_id}"),
-                InlineKeyboardButton("📈 Business Analysis", callback_data=f"ACTION_BIZANALYSIS_{note_id}")
+                # НОВАЯ КНОПКА
+                InlineKeyboardButton("📜 Create Subtitles (.srt)", callback_data=f"ACTION_SUBTITLES_{note_id}")
             ],
             [
+                InlineKeyboardButton("📈 Business Analysis", callback_data=f"ACTION_BIZANALYSIS_{note_id}"),
                 InlineKeyboardButton("🗑️ Delete Note", callback_data=f"ACTION_DELETE_{note_id}")
             ]
         ]
