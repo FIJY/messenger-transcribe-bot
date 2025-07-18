@@ -1,121 +1,118 @@
 # services/downloader_service.py
 import os
-import yt_dlp
+import requests
+import tempfile
 import logging
-from pathlib import Path
+from typing import Tuple, Optional
+import yt_dlp
+import re
+
+logger = logging.getLogger(__name__)
 
 
 class DownloaderService:
-    def __init__(self, download_dir="downloads"):
-        self.download_dir = Path(download_dir)
-        self.download_dir.mkdir(exist_ok=True)
+    def __init__(self):
+        self.rapidapi_key = os.getenv('RAPIDAPI_KEY')
+        self.rapidapi_host = 'youtube-downloader6.p.rapidapi.com'
+        if not self.rapidapi_key:
+            logger.warning("RAPIDAPI_KEY не установлен. Скачивание с YouTube будет отключено.")
 
-        # Настройка логирования
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logging.getLogger(__name__)
+    def _download_with_youtube_api(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+        """Скачивает аудио с YouTube через RapidAPI."""
+        if not self.rapidapi_key:
+            return None, "API_KEY_MISSING"
 
-    def download_audio(self, url):
-        """
-        Скачивает аудио с YouTube/других сайтов
-        Returns: (file_path, error)
-        """
+        # ИСПРАВЛЕНИЕ: Используем правильный endpoint '/dl' и параметр 'url'
+        api_url = f"https://{self.rapidapi_host}/dl"
+        querystring = {"url": url}
+        headers = {
+            "x-rapidapi-key": self.rapidapi_key,
+            "x-rapidapi-host": self.rapidapi_host
+        }
+
+        temp_audio_file = None
         try:
-            # Проверяем, что это поддерживаемый URL
-            if not self._is_supported_url(url):
-                return None, "UNSUPPORTED_URL"
+            logger.info(f"Отправляем запрос на RapidAPI для YouTube URL: {url}")
+            api_response = requests.get(api_url, headers=headers, params=querystring, timeout=90)
+            api_response.raise_for_status()
 
-            # Настройки yt-dlp
-            # Замените в вашем downloader_service.py:
+            data = api_response.json()
+
+            audio_link = None
+            # Ищем ссылку на аудио-файл, отдавая предпочтение аудиоформатам
+            if data.get('formats'):
+                audio_formats = [f for f in data['formats'] if f.get('mimeType') and 'audio' in f['mimeType']]
+                if audio_formats:
+                    audio_formats.sort(key=lambda x: x.get('bitrate', 0), reverse=True)
+                    audio_link = audio_formats[0].get('url')
+
+            # Если чистого аудио нет, берем ссылку на видео с самым низким качеством
+            if not audio_link and data.get('formats'):
+                video_formats = [f for f in data['formats'] if f.get('hasAudio')]
+                if video_formats:
+                    video_formats.sort(key=lambda x: x.get('height', 9999))
+                    audio_link = video_formats[0].get('url')
+
+            if not audio_link:
+                logger.error(f"API не вернул подходящую ссылку для скачивания {url}. Ответ: {data}")
+                return None, "DOWNLOAD_FAILED"
+
+            logger.info("Получена ссылка, начинаем скачивание...")
+            audio_response = requests.get(audio_link, stream=True, timeout=300)
+            audio_response.raise_for_status()
+
+            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+            with open(temp_audio_file.name, 'wb') as f:
+                for chunk in audio_response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            logger.info(f"Аудио с YouTube успешно скачано: {temp_audio_file.name}")
+            return temp_audio_file.name, None
+
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"Ошибка HTTP при обращении к RapidAPI: {e.response.text}")
+            if e.response.status_code == 404:
+                logger.error("API endpoint returned 404 Not Found. Please check the API host and endpoint path.")
+            return None, "DOWNLOAD_FAILED"
+        except Exception as e:
+            logger.error(f"Общая ошибка при скачивании через API из {url}: {e}", exc_info=True)
+            if temp_audio_file and os.path.exists(temp_audio_file.name):
+                os.remove(temp_audio_file.name)
+            return None, 'GENERAL_ERROR'
+
+    def _download_with_yt_dlp(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+        """Резервный метод скачивания (для всех остальных сайтов)."""
+        temp_audio_file = None
+        try:
+            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+            temp_audio_path = temp_audio_file.name
+            temp_audio_file.close()
 
             ydl_opts = {
-                'format': 'worst[ext=mp4]/worst',  # Берем худшее качество (быстрее)
-                'outtmpl': str(self.download_dir / '%(title)s.%(ext)s'),
-                'extractaudio': True,
-                'audioformat': 'mp3',
-                'noplaylist': True,
-                'quiet': False,  # Включаем логи для отладки
-                'no_warnings': False,
-
-                # Антибот настройки:
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                },
-                'sleep_interval': 3,  # Пауза 3 секунды между запросами
-                'socket_timeout': 30,
-                'retries': 2,
+                'format': 'bestaudio/best',
+                'outtmpl': temp_audio_path,
+                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
+                'quiet': True, 'no_warnings': True, 'noplaylist': True, 'nocheckcertificate': True
             }
 
+            logger.info(f"Начинаем скачивание (yt-dlp) по ссылке: {url}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Получаем информацию о видео
-                self.logger.info(f"Извлекаем информацию: {url}")
-                info = ydl.extract_info(url, download=False)
-
-                if not info:
-                    return None, "NO_VIDEO_INFO"
-
-                # Формируем имя файла
-                safe_title = self._sanitize_filename(info.get('title', 'audio'))
-                audio_file = self.download_dir / f"{safe_title}.mp3"
-
-                # Обновляем настройки с конкретным именем файла
-                ydl_opts['outtmpl'] = str(audio_file.with_suffix('.%(ext)s'))
-
-                # Скачиваем
-                self.logger.info(f"Скачиваем: {info.get('title')}")
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
-                    ydl_download.download([url])
-
-                # Проверяем, что файл создался
-                possible_files = [
-                    audio_file,
-                    audio_file.with_suffix('.m4a'),
-                    audio_file.with_suffix('.webm'),
-                    audio_file.with_suffix('.mp4')
-                ]
-
-                for file_path in possible_files:
-                    if file_path.exists():
-                        self.logger.info(f"✅ Файл сохранен: {file_path}")
-                        return str(file_path), None
-
-                return None, "FILE_NOT_FOUND"
-
-        except yt_dlp.DownloadError as e:
-            self.logger.error(f"Ошибка скачивания: {e}")
-            return None, f"DOWNLOAD_ERROR: {str(e)}"
-
+                ydl.download([url])
+            return temp_audio_path, None
+        except yt_dlp.utils.DownloadError as e:
+            logger.error(f"yt-dlp ошибка скачивания для {url}: {e}")
+            if temp_audio_file and os.path.exists(temp_audio_file.name): os.remove(temp_audio_file.name)
+            if 'login required' in str(e) or 'sign in to confirm' in str(e) or 'age-restricted' in str(e):
+                return None, 'LOGIN_REQUIRED'
+            return None, 'DOWNLOAD_FAILED'
         except Exception as e:
-            self.logger.error(f"Неожиданная ошибка: {e}")
-            return None, f"UNEXPECTED_ERROR: {str(e)}"
+            logger.error(f"Общая ошибка при скачивании (yt-dlp) из {url}: {e}", exc_info=True)
+            if temp_audio_file and os.path.exists(temp_audio_file.name): os.remove(temp_audio_file.name)
+            return None, 'GENERAL_ERROR'
 
-    def _is_supported_url(self, url):
-        """Проверяет, поддерживается ли URL"""
-        supported_domains = [
-            'youtube.com', 'youtu.be', 'vimeo.com',
-            'soundcloud.com', 'twitch.tv'
-        ]
-
-        return any(domain in url.lower() for domain in supported_domains)
-
-    def _sanitize_filename(self, filename):
-        """Очищает имя файла от недопустимых символов"""
-        import re
-        # Удаляем/заменяем недопустимые символы
-        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
-        # Ограничиваем длину
-        return filename[:100] if len(filename) > 100 else filename
-
-    def cleanup_old_files(self, max_age_hours=24):
-        """Удаляет старые файлы"""
-        import time
-        current_time = time.time()
-
-        for file_path in self.download_dir.glob('*'):
-            if file_path.is_file():
-                file_age = current_time - file_path.stat().st_mtime
-                if file_age > (max_age_hours * 3600):
-                    try:
-                        file_path.unlink()
-                        self.logger.info(f"Удален старый файл: {file_path}")
-                    except Exception as e:
-                        self.logger.warning(f"Не удалось удалить {file_path}: {e}")
+    def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+        """Главный метод, который решает, какой загрузчик использовать."""
+        if re.search(r'(?:youtube\.com|youtu\.be)', url):
+            return self._download_with_youtube_api(url)
+        else:
+            return self._download_with_yt_dlp(url)
