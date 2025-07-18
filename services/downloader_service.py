@@ -1,10 +1,12 @@
 # services/downloader_service.py
 import os
-import yt_dlp
-import instaloader
+import requests
 import tempfile
 import logging
 from typing import Tuple, Optional
+import yt_dlp
+import instaloader
+import re
 import subprocess
 
 logger = logging.getLogger(__name__)
@@ -12,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 class DownloaderService:
     def __init__(self):
-        # Инициализируем Instaloader без входа в аккаунт
+        self.rapidapi_key = os.getenv('RAPIDAPI_KEY')
+        self.rapidapi_host = 'youtube-downloader6.p.rapidapi.com'
         self.L = instaloader.Instaloader(
             download_pictures=False,
             download_videos=True,
@@ -22,9 +25,65 @@ class DownloaderService:
             save_metadata=False,
             compress_json=False
         )
+        if not self.rapidapi_key:
+            logger.warning("RAPIDAPI_KEY не установлен. Скачивание с YouTube будет отключено.")
+
+    def _download_with_youtube_api(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+        """Скачивает аудио с YouTube через RapidAPI."""
+        if not self.rapidapi_key:
+            return None, "API_KEY_MISSING"
+
+        api_url = f"https://{self.rapidapi_host}/dl"
+        querystring = {"url": url}
+        headers = {
+            "x-rapidapi-key": self.rapidapi_key,
+            "x-rapidapi-host": self.rapidapi_host
+        }
+
+        temp_audio_file = None
+        try:
+            logger.info(f"Отправляем запрос на RapidAPI для YouTube URL: {url}")
+            api_response = requests.get(api_url, headers=headers, params=querystring, timeout=60)
+            api_response.raise_for_status()
+
+            data = api_response.json()
+            # Ищем ссылку на аудио-файл в формате m4a (самый частый для аудио)
+            audio_link = None
+            if data.get('formats'):
+                audio_formats = [f for f in data['formats'] if f.get('mimeType') and 'audio' in f['mimeType']]
+                if audio_formats:
+                    audio_link = audio_formats[0].get('url')  # Берем первый доступный аудиоформат
+
+            if not audio_link and data.get('link'):
+                audio_link = data.get('link')
+
+            if not audio_link:
+                logger.error(f"API не вернул ссылку на скачивание аудио для {url}. Ответ: {data}")
+                return None, "DOWNLOAD_FAILED"
+
+            logger.info("Получена ссылка, начинаем скачивание...")
+            audio_response = requests.get(audio_link, stream=True, timeout=300)
+            audio_response.raise_for_status()
+
+            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+            with open(temp_audio_file.name, 'wb') as f:
+                for chunk in audio_response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            logger.info(f"Аудио с YouTube успешно скачано: {temp_audio_file.name}")
+            return temp_audio_file.name, None
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Ошибка сети при обращении к API или скачивании файла: {e}")
+            return None, "DOWNLOAD_FAILED"
+        except Exception as e:
+            logger.error(f"Общая ошибка при скачивании через API из {url}: {e}", exc_info=True)
+            if temp_audio_file and os.path.exists(temp_audio_file.name):
+                os.remove(temp_audio_file.name)
+            return None, 'GENERAL_ERROR'
 
     def _download_with_yt_dlp(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        """Скачивает аудио с помощью yt-dlp с улучшенными опциями."""
+        """Скачивает аудио с помощью yt-dlp (для всех остальных сайтов)."""
         temp_audio_file = None
         try:
             temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
@@ -35,81 +94,29 @@ class DownloaderService:
                 'format': 'bestaudio/best',
                 'outtmpl': temp_audio_path,
                 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
-                'quiet': True,
-                'no_warnings': True,
-                'noplaylist': True,
-                'nocheckcertificate': True,
-                # ДОБАВЛЕНО: Маскируемся под обычный браузер
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
-                }
+                'quiet': True, 'no_warnings': True, 'noplaylist': True, 'nocheckcertificate': True
             }
 
             logger.info(f"Начинаем скачивание (yt-dlp) по ссылке: {url}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
-
             return temp_audio_path, None
-
         except yt_dlp.utils.DownloadError as e:
-            logger.error(f"yt-dlp download error for {url}: {e}")
+            logger.error(f"yt-dlp ошибка скачивания для {url}: {e}")
             if temp_audio_file and os.path.exists(temp_audio_file.name): os.remove(temp_audio_file.name)
-
-            error_string = str(e).lower()
-            if 'login required' in error_string or 'sign in to confirm' in error_string or 'age-restricted' in error_string:
+            if 'login required' in str(e) or 'sign in to confirm' in str(e) or 'age-restricted' in str(e):
                 return None, 'LOGIN_REQUIRED'
             return None, 'DOWNLOAD_FAILED'
-
         except Exception as e:
             logger.error(f"Общая ошибка при скачивании (yt-dlp) из {url}: {e}", exc_info=True)
             if temp_audio_file and os.path.exists(temp_audio_file.name): os.remove(temp_audio_file.name)
             return None, 'GENERAL_ERROR'
 
-    def _download_with_instaloader(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        """Скачивает видео/аудио из Instagram и конвертирует в mp3."""
-        video_temp_dir = None
-        try:
-            logger.info(f"Начинаем скачивание (instaloader) по ссылке: {url}")
-            shortcode = re.search(r"(?:/p/|/reel/)([\w-]+)", url)
-            if not shortcode:
-                return None, 'INVALID_URL'
-
-            post = instaloader.Post.from_shortcode(self.L.context, shortcode.group(1))
-
-            if not post.is_video:
-                return None, 'NOT_A_VIDEO'
-
-            video_temp_dir = tempfile.mkdtemp()
-            self.L.download_post(post, target=video_temp_dir)
-
-            downloaded_video_path = None
-            for f in os.listdir(video_temp_dir):
-                if f.endswith('.mp4'):
-                    downloaded_video_path = os.path.join(video_temp_dir, f)
-                    break
-
-            if not downloaded_video_path:
-                raise Exception("Не удалось найти скачанный файл Instagram")
-
-            audio_temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-            audio_path = audio_temp_file.name
-            audio_temp_file.close()
-
-            command = ['ffmpeg', '-i', downloaded_video_path, '-vn', '-q:a', '0', '-y', audio_path]
-            subprocess.run(command, check=True, capture_output=False)
-
-            return audio_path, None
-
-        except Exception as e:
-            logger.error(f"Ошибка при скачивании (instaloader) из {url}: {e}", exc_info=True)
-            return None, 'LOGIN_REQUIRED'
-        finally:
-            if video_temp_dir and os.path.exists(video_temp_dir):
-                import shutil
-                shutil.rmtree(video_temp_dir)
-
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        if "instagram.com/" in url:
-            return self._download_with_instaloader(url)
+        """Главный метод, который решает, какой загрузчик использовать."""
+        # Проверяем, является ли ссылка на YouTube
+        if re.search(r'(?:youtube\.com|youtu\.be)', url):
+            return self._download_with_youtube_api(url)
         else:
+            # Для всех остальных ссылок используем yt-dlp
             return self._download_with_yt_dlp(url)
