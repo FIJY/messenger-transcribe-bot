@@ -22,8 +22,8 @@ class DownloaderService:
         if not self.rapidapi_key:
             return None, "API_KEY_MISSING"
 
-        # ИСПРАВЛЕНИЕ: Используем правильный endpoint '/download' и параметр 'url'
-        api_url = f"https://{self.rapidapi_host}/download"
+        # ИСПРАВЛЕНИЕ: Используем правильный endpoint '/dl' и параметр 'url'
+        api_url = f"https://{self.rapidapi_host}/dl"
         querystring = {"url": url}
         headers = {
             "x-rapidapi-key": self.rapidapi_key,
@@ -39,16 +39,22 @@ class DownloaderService:
             data = api_response.json()
 
             audio_link = None
-            # Ищем ссылку на аудио-файл в 'audio_formats' или 'video_formats'
-            if data.get('audio_formats'):
-                audio_link = data['audio_formats'][0].get('url')
-            elif data.get('video_formats'):
-                # Если нет чистого аудио, берем видео с самым низким качеством
-                data['video_formats'].sort(key=lambda x: x.get('filesize', 999999999))
-                audio_link = data['video_formats'][0].get('url')
+            # Ищем ссылку на аудио-файл, отдавая предпочтение аудиоформатам
+            if data.get('formats'):
+                audio_formats = [f for f in data['formats'] if f.get('mimeType') and 'audio' in f['mimeType']]
+                if audio_formats:
+                    audio_formats.sort(key=lambda x: x.get('bitrate', 0), reverse=True)
+                    audio_link = audio_formats[0].get('url')
+
+            # Если чистого аудио нет, берем ссылку на видео с самым низким качеством
+            if not audio_link and data.get('formats'):
+                video_formats = [f for f in data['formats'] if f.get('hasAudio')]
+                if video_formats:
+                    video_formats.sort(key=lambda x: x.get('height', 9999))
+                    audio_link = video_formats[0].get('url')
 
             if not audio_link:
-                logger.error(f"API не вернул ссылку на скачивание для {url}. Ответ: {data}")
+                logger.error(f"API не вернул подходящую ссылку для скачивания {url}. Ответ: {data}")
                 return None, "DOWNLOAD_FAILED"
 
             logger.info("Получена ссылка, начинаем скачивание...")
