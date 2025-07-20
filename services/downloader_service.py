@@ -19,14 +19,23 @@ class DownloaderService:
 
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Скачивает аудио с YouTube, используя прокси-сервер для обхода блокировок.
+        Скачивает аудио с YouTube, используя yt-dlp для всего процесса,
+        чтобы обеспечить максимальную надежность при работе через прокси.
         """
         logger.info(f"Starting audio download for URL: {url}")
 
+        # Создаем временный файл, в который yt-dlp будет напрямую скачивать аудио.
+        # Мы не указываем расширение, yt-dlp добавит его сам.
+        temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix='.tmp')
+        temp_audio_path = temp_audio_file.name
+        temp_audio_file.close()  # Закрываем файл, чтобы yt-dlp мог в него писать
+
         ydl_opts = {
-            # ИЗМЕНЕНИЕ: Упрощаем запрос формата, чтобы он был более гибким.
-            # Теперь yt-dlp будет сам выбирать лучший доступный аудио-формат.
+            # Указываем, что нужно скачать лучшее аудио и сохранить его в mp3.
             'format': 'bestaudio/best',
+            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
+            # Указываем путь для сохранения файла.
+            'outtmpl': temp_audio_path,
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
@@ -41,45 +50,46 @@ class DownloaderService:
             ydl_opts['proxy'] = proxy_url
         else:
             logger.error("YT_DLP_PROXY is not set. YouTube downloads will fail.")
+            # Удаляем временный файл перед выходом
+            if os.path.exists(temp_audio_path):
+                os.remove(temp_audio_path)
             return None, 'DOWNLOAD_FAILED'
 
         try:
-            # Шаг 1: Извлекаем информацию о видео через прокси.
-            logger.info("Step 1: Extracting video info with yt-dlp...")
+            logger.info("Starting download process with yt-dlp...")
+            # Теперь yt-dlp делает всю работу: и получает ссылку, и скачивает.
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-            logger.info("Step 1: Successfully extracted video info.")
+                ydl.download([url])
 
-            stream_url = info.get('url')
+            # yt-dlp сохранит файл с правильным расширением. Нам нужно найти его.
+            # Обычно он просто заменяет .tmp на .mp3
+            final_path = temp_audio_path.replace('.tmp', '.mp3')
+            if not os.path.exists(final_path):
+                # Если файл не найден, ищем его в той же директории
+                # (на случай, если yt-dlp сгенерировал другое имя)
+                temp_dir = os.path.dirname(temp_audio_path)
+                found_files = [f for f in os.listdir(temp_dir) if
+                               f.startswith(os.path.basename(temp_audio_path).replace('.tmp', ''))]
+                if found_files:
+                    final_path = os.path.join(temp_dir, found_files[0])
+                else:
+                    logger.error("Downloaded file not found after yt-dlp process.")
+                    return None, 'DOWNLOAD_FAILED'
 
-            if not stream_url:
-                logger.error(f"Could not find a valid audio stream URL for {url}")
-                return None, 'DOWNLOAD_FAILED'
-
-            logger.info(f"Successfully extracted audio stream URL.")
-
-            # Шаг 2: Скачиваем аудио по прямой ссылке, также через прокси.
-            logger.info("Step 2: Downloading audio stream with requests...")
-            file_extension = f".{info.get('ext', 'mp3')}"
-            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
-
-            proxies = {'http': proxy_url, 'https': proxy_url} if proxy_url else None
-
-            with requests.get(stream_url, stream=True, timeout=120, proxies=proxies) as r:
-                r.raise_for_status()
-                for chunk in r.iter_content(chunk_size=8192):
-                    temp_audio_file.write(chunk)
-
-            temp_audio_file.close()
-            logger.info(f"Step 2: Audio successfully downloaded to: {temp_audio_file.name}")
-            return temp_audio_file.name, None
+            logger.info(f"Audio successfully downloaded by yt-dlp to: {final_path}")
+            return final_path, None
 
         except yt_dlp.utils.DownloadError as e:
             error_str = str(e).lower()
-            logger.error(f"yt-dlp info extraction failed for {url}: {e}")
+            logger.error(f"yt-dlp download failed for {url}: {e}")
             if 'login required' in error_str or 'sign in to confirm' in error_str or 'age-restricted' in error_str:
                 return None, 'LOGIN_REQUIRED'
             return None, 'DOWNLOAD_FAILED'
         except Exception as e:
             logger.error(f"General error during audio download: {e}", exc_info=True)
             return None, 'GENERAL_ERROR'
+        finally:
+            # Очищаем временный .tmp файл, если он остался
+            if os.path.exists(temp_audio_path):
+                os.remove(temp_audio_path)
+
