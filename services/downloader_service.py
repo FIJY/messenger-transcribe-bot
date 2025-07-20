@@ -19,60 +19,50 @@ class DownloaderService:
 
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Скачивает аудио с YouTube, извлекая прямую ссылку через yt-dlp
-        и загружая ее с помощью requests.
+        Скачивает аудио с YouTube, используя продвинутые методы для обхода блокировок,
+        найденные в open-source проектах.
         """
         logger.info(f"Starting audio download for URL: {url}")
 
         ydl_opts = {
-            'format': 'bestaudio/best',
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
-            'nocheckcertificate': True,
-            # ИЗМЕНЕНИЕ: Добавляем "человеческие" заголовки, чтобы обмануть защиту от ботов.
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9',
-            },
+            # ИЗМЕНЕНИЕ: Используем самый надежный метод, найденный на GitHub.
+            # Принудительно используем клиент 'ANDROID' для доступа к внутреннему API '/youtubei/v1/player',
+            # который менее подвержен блокировкам на серверах.
             'extractor_args': {
                 'youtube': {
-                    # Пробуем разные клиенты, начиная с мобильного
-                    'player_client': ['android', 'web'],
+                    'player_client': ['ANDROID'],
+                    'client': ['ANDROID'],
                 }
+            },
+            # Добавляем User-Agent от мобильного клиента для полной маскировки.
+            'http_headers': {
+                'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 12; en_US) gzip',
             }
         }
 
         try:
-            # Шаг 1: Извлекаем информацию о видео, включая прямые ссылки, НЕ скачивая его.
+            # Шаг 1: Извлекаем информацию о видео, включая прямые ссылки.
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
             # Шаг 2: Находим наилучший аудио-формат из списка доступных.
-            # Отдаем предпочтение форматам без видеокодека (только аудио).
-            audio_formats = [f for f in info.get('formats', []) if
-                             f.get('acodec') != 'none' and f.get('vcodec') == 'none']
+            # Формат m4a часто бывает наилучшего качества.
+            stream_url = info.get('url')
 
-            # Если чистого аудио нет, ищем смешанные форматы
-            if not audio_formats:
-                audio_formats = [f for f in info.get('formats', []) if f.get('acodec') != 'none']
-
-            # Сортируем по качеству аудио (битрейту)
-            if audio_formats:
-                audio_formats.sort(key=lambda f: f.get('abr', 0), reverse=True)
-                audio_format = audio_formats[0]
-            else:
-                audio_format = None
-
-            if not audio_format or not audio_format.get('url'):
+            if not stream_url:
                 logger.error(f"Could not find a valid audio stream URL for {url}")
                 return None, 'DOWNLOAD_FAILED'
 
-            stream_url = audio_format['url']
-            logger.info(f"Successfully extracted audio stream URL with bitrate {audio_format.get('abr')}k.")
+            logger.info(f"Successfully extracted audio stream URL using ANDROID client.")
 
-            # Шаг 3: Скачиваем аудио по прямой ссылке с помощью простого GET-запроса.
-            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+            # Шаг 3: Скачиваем аудио по прямой ссылке.
+            # Используем расширение из полученной информации, по умолчанию .m4a
+            file_extension = f".{info.get('ext', 'm4a')}"
+            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
 
             with requests.get(stream_url, stream=True, timeout=300) as r:
                 r.raise_for_status()
