@@ -29,14 +29,9 @@ class DownloaderService:
             'no_warnings': True,
             'noplaylist': True,
             'nocheckcertificate': True,
-            # ПОСЛЕДНЯЯ ПОПЫТКА: Имитируем клиент Smart TV / встроенного плеера.
-            # Этот метод иногда обходит блокировки, когда другие клиенты (web, android) не справляются.
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['TV_EMBEDDED'],
-                    'client': ['TV_EMBEDDED'],
-                }
-            },
+            # ПОСЛЕДНЯЯ ПОПЫТКА: Принудительно используем IPv4 для подключения.
+            # Иногда это помогает обойти блокировки на уровне сети.
+            'source_address': '0.0.0.0',
         }
 
         # Мы оставляем код для прокси. Если и этот метод не сработает,
@@ -59,7 +54,7 @@ class DownloaderService:
                 logger.error(f"Could not find a valid audio stream URL for {url}")
                 return None, 'DOWNLOAD_FAILED'
 
-            logger.info(f"Successfully extracted audio stream URL using TV_EMBEDDED client.")
+            logger.info(f"Successfully extracted audio stream URL using IPv4 source address.")
 
             # Шаг 2: Скачиваем аудио по прямой ссылке.
             file_extension = f".{info.get('ext', 'm4a')}"
