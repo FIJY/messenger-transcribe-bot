@@ -20,34 +20,35 @@ class DownloaderService:
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
         Скачивает аудио с YouTube, используя прокси-сервер для обхода блокировок.
-        Это самый надежный метод для работы с сервера.
         """
         logger.info(f"Starting audio download for URL: {url}")
 
         ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            # ИЗМЕНЕНИЕ: Упрощаем запрос формата, чтобы он был более гибким.
+            # Теперь yt-dlp будет сам выбирать лучший доступный аудио-формат.
+            'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
             'nocheckcertificate': True,
-            'source_address': '0.0.0.0',  # Принудительное использование IPv4
+            'socket_timeout': 60,
         }
 
-        # ФИНАЛЬНОЕ РЕШЕНИЕ: Добавляем поддержку прокси из переменных окружения.
-        # Это единственный гарантированный способ обойти блокировку по IP.
+        # Добавляем поддержку прокси из переменных окружения.
         proxy_url = os.getenv('YT_DLP_PROXY')
         if proxy_url:
-            logger.info(f"Using proxy for yt-dlp: {proxy_url.split('@')[-1]}")  # Логируем без пароля
+            logger.info(f"Using proxy for yt-dlp...")
             ydl_opts['proxy'] = proxy_url
         else:
-            # Если прокси не указан, бот не сможет работать с YouTube.
             logger.error("YT_DLP_PROXY is not set. YouTube downloads will fail.")
             return None, 'DOWNLOAD_FAILED'
 
         try:
             # Шаг 1: Извлекаем информацию о видео через прокси.
+            logger.info("Step 1: Extracting video info with yt-dlp...")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
+            logger.info("Step 1: Successfully extracted video info.")
 
             stream_url = info.get('url')
 
@@ -58,18 +59,19 @@ class DownloaderService:
             logger.info(f"Successfully extracted audio stream URL.")
 
             # Шаг 2: Скачиваем аудио по прямой ссылке, также через прокси.
-            file_extension = f".{info.get('ext', 'm4a')}"
+            logger.info("Step 2: Downloading audio stream with requests...")
+            file_extension = f".{info.get('ext', 'mp3')}"
             temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
 
             proxies = {'http': proxy_url, 'https': proxy_url} if proxy_url else None
 
-            with requests.get(stream_url, stream=True, timeout=300, proxies=proxies) as r:
+            with requests.get(stream_url, stream=True, timeout=120, proxies=proxies) as r:
                 r.raise_for_status()
                 for chunk in r.iter_content(chunk_size=8192):
                     temp_audio_file.write(chunk)
 
             temp_audio_file.close()
-            logger.info(f"Audio successfully downloaded to: {temp_audio_file.name}")
+            logger.info(f"Step 2: Audio successfully downloaded to: {temp_audio_file.name}")
             return temp_audio_file.name, None
 
         except yt_dlp.utils.DownloadError as e:
