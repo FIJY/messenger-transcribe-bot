@@ -4,65 +4,60 @@ import requests
 import tempfile
 import logging
 from typing import Tuple, Optional
-import yt_dlp
 
 logger = logging.getLogger(__name__)
+
+# ПРИМЕР: Это базовый URL гипотетического сервиса. Вам нужно будет заменить его на реальный.
+# Мы будем использовать сервис co.wuk.sh, так как он предоставляет простой и бесплатный API.
+DOWNLOADER_API_BASE_URL = "https://co.wuk.sh/api/json"
 
 
 class DownloaderService:
     def __init__(self):
         """
         Инициализация сервиса загрузки.
-        Использует yt-dlp для извлечения информации и requests для скачивания.
+        Использует внешний API для получения прямых ссылок на аудио.
         """
-        logger.info("DownloaderService initialized with proxy support.")
+        logger.info("DownloaderService initialized to use an external download API.")
 
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Скачивает аудио с YouTube, используя продвинутые методы для обхода блокировок.
+        Скачивает аудио с YouTube, получая прямую ссылку через внешний API.
         """
-        logger.info(f"Starting audio download for URL: {url}")
+        logger.info(f"Requesting download link from external API for URL: {url}")
 
-        ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-            'noplaylist': True,
-            'nocheckcertificate': True,
-            # ПОСЛЕДНЯЯ ПОПЫТКА: Принудительно используем IPv4 для подключения.
-            # Иногда это помогает обойти блокировки на уровне сети.
-            'source_address': '0.0.0.0',
+        # Параметры для запроса к API co.wuk.sh
+        api_payload = {
+            "url": url,
+            "aFormat": "mp3",  # Запрашиваем формат mp3
+            "isAudioOnly": True,
         }
 
-        # Мы оставляем код для прокси. Если и этот метод не сработает,
-        # использование прокси останется единственным надежным решением.
-        proxy_url = os.getenv('YT_DLP_PROXY')
-        if proxy_url:
-            logger.info(f"Using proxy for yt-dlp: {proxy_url}")
-            ydl_opts['proxy'] = proxy_url
-        else:
-            logger.warning("YT_DLP_PROXY is not set. YouTube downloads might be blocked.")
-
         try:
-            # Шаг 1: Извлекаем информацию о видео, включая прямые ссылки.
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+            # Шаг 1: Обращаемся к внешнему API за ссылкой на скачивание.
+            api_response = requests.post(DOWNLOADER_API_BASE_URL, json=api_payload, timeout=60)
+            api_response.raise_for_status()
 
-            stream_url = info.get('url')
+            response_data = api_response.json()
 
-            if not stream_url:
-                logger.error(f"Could not find a valid audio stream URL for {url}")
+            if response_data.get("status") != "success":
+                error_message = response_data.get("text", "Unknown API error")
+                logger.error(f"External API returned an error: {error_message}")
+                if "age restricted" in error_message.lower():
+                    return None, 'LOGIN_REQUIRED'
                 return None, 'DOWNLOAD_FAILED'
 
-            logger.info(f"Successfully extracted audio stream URL using IPv4 source address.")
+            stream_url = response_data.get("url")
+            if not stream_url:
+                logger.error("External API did not return a stream URL.")
+                return None, 'DOWNLOAD_FAILED'
 
-            # Шаг 2: Скачиваем аудио по прямой ссылке.
-            file_extension = f".{info.get('ext', 'm4a')}"
-            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
+            logger.info("Successfully retrieved audio stream URL from external API.")
 
-            proxies = {'http': proxy_url, 'https': proxy_url} if proxy_url else None
+            # Шаг 2: Скачиваем аудио по полученной прямой ссылке.
+            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
 
-            with requests.get(stream_url, stream=True, timeout=300, proxies=proxies) as r:
+            with requests.get(stream_url, stream=True, timeout=300) as r:
                 r.raise_for_status()
                 for chunk in r.iter_content(chunk_size=8192):
                     temp_audio_file.write(chunk)
@@ -71,12 +66,9 @@ class DownloaderService:
             logger.info(f"Audio successfully downloaded to: {temp_audio_file.name}")
             return temp_audio_file.name, None
 
-        except yt_dlp.utils.DownloadError as e:
-            error_str = str(e).lower()
-            logger.error(f"yt-dlp info extraction failed for {url}: {e}")
-            if 'login required' in error_str or 'sign in to confirm' in error_str or 'age-restricted' in error_str:
-                return None, 'LOGIN_REQUIRED'
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to communicate with the external download API: {e}", exc_info=True)
             return None, 'DOWNLOAD_FAILED'
         except Exception as e:
-            logger.error(f"General error during audio download from {url}: {e}", exc_info=True)
+            logger.error(f"General error during audio download via external API: {e}", exc_info=True)
             return None, 'GENERAL_ERROR'
