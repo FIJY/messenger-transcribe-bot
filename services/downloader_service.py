@@ -5,7 +5,6 @@ import tempfile
 import logging
 from typing import Tuple, Optional
 import yt_dlp
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -14,62 +13,70 @@ class DownloaderService:
     def __init__(self):
         """
         Инициализация сервиса загрузки.
-        Убрана зависимость от RapidAPI, так как он перестал работать.
+        Использует yt-dlp для извлечения информации и requests для скачивания.
         """
-        logger.info("DownloaderService initialized to use yt-dlp for all downloads.")
-
-    def _download_with_yt_dlp(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Основной метод скачивания аудио с любого поддерживаемого сайта с помощью yt-dlp.
-        """
-        temp_audio_file = None
-        try:
-            # Создаем временный файл с правильным расширением .mp3
-            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-            temp_audio_path = temp_audio_file.name
-            temp_audio_file.close()  # Закрываем файл, чтобы yt-dlp мог в него писать
-
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': temp_audio_path,
-                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
-                'quiet': True,
-                'no_warnings': True,
-                'noplaylist': True,
-                'nocheckcertificate': True,
-                # ИЗМЕНЕНИЕ: Добавляем аргументы, чтобы обойти проверку на бота от YouTube.
-                # yt-dlp будет пытаться маскироваться под веб-клиент или клиент Android.
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['web', 'android'],
-                    }
-                }
-            }
-
-            logger.info(f"Starting download (yt-dlp) for URL: {url}")
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-
-            logger.info(f"Audio successfully downloaded via yt-dlp to: {temp_audio_path}")
-            return temp_audio_path, None
-
-        except yt_dlp.utils.DownloadError as e:
-            logger.error(f"yt-dlp download error for {url}: {e}")
-            if temp_audio_file and os.path.exists(temp_audio_file.name):
-                os.remove(temp_audio_file.name)
-            if 'login required' in str(e).lower() or 'sign in to confirm' in str(e).lower() or 'age-restricted' in str(
-                    e).lower():
-                return None, 'LOGIN_REQUIRED'
-            return None, 'DOWNLOAD_FAILED'
-        except Exception as e:
-            logger.error(f"General error during yt-dlp download from {url}: {e}", exc_info=True)
-            if temp_audio_file and os.path.exists(temp_audio_file.name):
-                os.remove(temp_audio_file.name)
-            return None, 'GENERAL_ERROR'
+        logger.info("DownloaderService initialized with new yt-dlp info extraction method.")
 
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Главный метод-обертка для скачивания аудио.
-        Теперь всегда использует yt-dlp.
+        Скачивает аудио с YouTube, извлекая прямую ссылку через yt-dlp
+        и загружая ее с помощью requests.
         """
-        return self._download_with_yt_dlp(url)
+        logger.info(f"Starting audio download for URL: {url}")
+
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+            'nocheckcertificate': True,
+            # Маскируемся под веб-клиент, чтобы обойти проверку на бота
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web'],
+                }
+            }
+        }
+
+        try:
+            # Шаг 1: Извлекаем информацию о видео, включая прямые ссылки, НЕ скачивая его.
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+
+            # Шаг 2: Находим наилучший аудио-формат из списка доступных.
+            audio_format = next((f for f in info['formats'] if f.get('acodec') != 'none' and f.get('vcodec') == 'none'),
+                                None)
+
+            # Если нет чистого аудио, берем формат с видео, но лучшим звуком
+            if not audio_format:
+                audio_format = info
+
+            if not audio_format or not audio_format.get('url'):
+                logger.error(f"Could not find a valid audio stream URL for {url}")
+                return None, 'DOWNLOAD_FAILED'
+
+            stream_url = audio_format['url']
+            logger.info("Successfully extracted audio stream URL.")
+
+            # Шаг 3: Скачиваем аудио по прямой ссылке с помощью простого GET-запроса.
+            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+
+            with requests.get(stream_url, stream=True, timeout=300) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=8192):
+                    temp_audio_file.write(chunk)
+
+            temp_audio_file.close()
+            logger.info(f"Audio successfully downloaded to: {temp_audio_file.name}")
+            return temp_audio_file.name, None
+
+        except yt_dlp.utils.DownloadError as e:
+            error_str = str(e).lower()
+            logger.error(f"yt-dlp info extraction failed for {url}: {e}")
+            if 'login required' in error_str or 'sign in to confirm' in error_str or 'age-restricted' in error_str:
+                return None, 'LOGIN_REQUIRED'
+            return None, 'DOWNLOAD_FAILED'
+        except Exception as e:
+            logger.error(f"General error during audio download from {url}: {e}", exc_info=True)
+            return None, 'GENERAL_ERROR'
+
