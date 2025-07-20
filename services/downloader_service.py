@@ -4,68 +4,66 @@ import requests
 import tempfile
 import logging
 from typing import Tuple, Optional
+import yt_dlp
 
 logger = logging.getLogger(__name__)
-
-# ИЗМЕНЕНИЕ: Используем правильный хост и URL для того API,
-# на который вы подписаны (согласно вашему скриншоту).
-DOWNLOADER_API_HOST = "youtube-videos-downloader.p.rapidapi.com"
-DOWNLOADER_API_URL = f"https://{DOWNLOADER_API_HOST}/download"
 
 
 class DownloaderService:
     def __init__(self):
         """
         Инициализация сервиса загрузки.
-        Использует профессиональный внешний API для получения прямых ссылок на аудио.
+        Использует yt-dlp с поддержкой прокси для максимальной надежности.
         """
-        self.rapidapi_key = os.getenv('RAPIDAPI_KEY')
-        if not self.rapidapi_key:
-            logger.error("RAPIDAPI_KEY is not set. DownloaderService cannot function.")
-            raise ValueError("RAPIDAPI_KEY is not set in environment variables.")
-
-        self.headers = {
-            "x-rapidapi-key": self.rapidapi_key,
-            "x-rapidapi-host": DOWNLOADER_API_HOST
-        }
-        logger.info("DownloaderService initialized to use the correct RapidAPI endpoint.")
+        logger.info("DownloaderService initialized with full proxy support for yt-dlp.")
 
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Скачивает аудио с YouTube, получая прямую ссылку через внешний API.
+        Скачивает аудио с YouTube, используя прокси-сервер для обхода блокировок.
+        Это самый надежный метод для работы с сервера.
         """
-        logger.info(f"Requesting download link from RapidAPI for URL: {url}")
+        logger.info(f"Starting audio download for URL: {url}")
 
-        querystring = {"url": url}
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+            'nocheckcertificate': True,
+            'source_address': '0.0.0.0',  # Принудительное использование IPv4
+        }
+
+        # ФИНАЛЬНОЕ РЕШЕНИЕ: Добавляем поддержку прокси из переменных окружения.
+        # Это единственный гарантированный способ обойти блокировку по IP.
+        proxy_url = os.getenv('YT_DLP_PROXY')
+        if proxy_url:
+            logger.info(f"Using proxy for yt-dlp: {proxy_url.split('@')[-1]}")  # Логируем без пароля
+            ydl_opts['proxy'] = proxy_url
+        else:
+            # Если прокси не указан, бот не сможет работать с YouTube.
+            logger.error("YT_DLP_PROXY is not set. YouTube downloads will fail.")
+            return None, 'DOWNLOAD_FAILED'
 
         try:
-            # Шаг 1: Обращаемся к API за информацией о видео и ссылками.
-            api_response = requests.get(DOWNLOADER_API_URL, headers=self.headers, params=querystring, timeout=90)
-            api_response.raise_for_status()
+            # Шаг 1: Извлекаем информацию о видео через прокси.
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
 
-            response_data = api_response.json()
+            stream_url = info.get('url')
 
-            # ИЗМЕНЕНИЕ: Ищем аудиоформат в новой структуре ответа.
-            # Нам нужен объект, где 'quality' равно 'Audio'.
-            audio_stream = next((item for item in response_data.get("links", []) if item.get("quality") == "Audio"),
-                                None)
-
-            if not audio_stream:
-                logger.error("RapidAPI response did not contain an 'Audio' quality stream.")
-                return None, 'DOWNLOAD_FAILED'
-
-            stream_url = audio_stream.get("link")
             if not stream_url:
-                logger.error("RapidAPI audio stream did not contain a 'link'.")
+                logger.error(f"Could not find a valid audio stream URL for {url}")
                 return None, 'DOWNLOAD_FAILED'
 
-            logger.info("Successfully retrieved audio stream URL from RapidAPI.")
+            logger.info(f"Successfully extracted audio stream URL.")
 
-            # Шаг 2: Скачиваем аудио по полученной прямой ссылке.
-            # API возвращает mp3, поэтому используем это расширение.
-            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+            # Шаг 2: Скачиваем аудио по прямой ссылке, также через прокси.
+            file_extension = f".{info.get('ext', 'm4a')}"
+            temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
 
-            with requests.get(stream_url, stream=True, timeout=300) as r:
+            proxies = {'http': proxy_url, 'https': proxy_url} if proxy_url else None
+
+            with requests.get(stream_url, stream=True, timeout=300, proxies=proxies) as r:
                 r.raise_for_status()
                 for chunk in r.iter_content(chunk_size=8192):
                     temp_audio_file.write(chunk)
@@ -74,12 +72,12 @@ class DownloaderService:
             logger.info(f"Audio successfully downloaded to: {temp_audio_file.name}")
             return temp_audio_file.name, None
 
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error from RapidAPI: {e.response.text}")
-            return None, 'DOWNLOAD_FAILED'
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to communicate with the RapidAPI: {e}", exc_info=True)
+        except yt_dlp.utils.DownloadError as e:
+            error_str = str(e).lower()
+            logger.error(f"yt-dlp info extraction failed for {url}: {e}")
+            if 'login required' in error_str or 'sign in to confirm' in error_str or 'age-restricted' in error_str:
+                return None, 'LOGIN_REQUIRED'
             return None, 'DOWNLOAD_FAILED'
         except Exception as e:
-            logger.error(f"General error during audio download via RapidAPI: {e}", exc_info=True)
+            logger.error(f"General error during audio download: {e}", exc_info=True)
             return None, 'GENERAL_ERROR'
