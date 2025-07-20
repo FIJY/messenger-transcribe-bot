@@ -15,12 +15,11 @@ class DownloaderService:
         Инициализация сервиса загрузки.
         Использует yt-dlp для извлечения информации и requests для скачивания.
         """
-        logger.info("DownloaderService initialized with new yt-dlp info extraction method.")
+        logger.info("DownloaderService initialized with proxy support.")
 
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Скачивает аудио с YouTube, используя продвинутые методы для обхода блокировок,
-        найденные в open-source проектах.
+        Скачивает аудио с YouTube, используя продвинутые методы для обхода блокировок.
         """
         logger.info(f"Starting audio download for URL: {url}")
 
@@ -29,42 +28,46 @@ class DownloaderService:
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
-            # ИЗМЕНЕНИЕ: Используем самый надежный метод, найденный на GitHub.
-            # Принудительно используем клиент 'ANDROID' для доступа к внутреннему API '/youtubei/v1/player',
-            # который менее подвержен блокировкам на серверах.
+            'nocheckcertificate': True,
+            # ПОСЛЕДНЯЯ ПОПЫТКА: Имитируем клиент Smart TV / встроенного плеера.
+            # Этот метод иногда обходит блокировки, когда другие клиенты (web, android) не справляются.
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['ANDROID'],
-                    'client': ['ANDROID'],
+                    'player_client': ['TV_EMBEDDED'],
+                    'client': ['TV_EMBEDDED'],
                 }
             },
-            # Добавляем User-Agent от мобильного клиента для полной маскировки.
-            'http_headers': {
-                'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 12; en_US) gzip',
-            }
         }
+
+        # Мы оставляем код для прокси. Если и этот метод не сработает,
+        # использование прокси останется единственным надежным решением.
+        proxy_url = os.getenv('YT_DLP_PROXY')
+        if proxy_url:
+            logger.info(f"Using proxy for yt-dlp: {proxy_url}")
+            ydl_opts['proxy'] = proxy_url
+        else:
+            logger.warning("YT_DLP_PROXY is not set. YouTube downloads might be blocked.")
 
         try:
             # Шаг 1: Извлекаем информацию о видео, включая прямые ссылки.
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
-            # Шаг 2: Находим наилучший аудио-формат из списка доступных.
-            # Формат m4a часто бывает наилучшего качества.
             stream_url = info.get('url')
 
             if not stream_url:
                 logger.error(f"Could not find a valid audio stream URL for {url}")
                 return None, 'DOWNLOAD_FAILED'
 
-            logger.info(f"Successfully extracted audio stream URL using ANDROID client.")
+            logger.info(f"Successfully extracted audio stream URL using TV_EMBEDDED client.")
 
-            # Шаг 3: Скачиваем аудио по прямой ссылке.
-            # Используем расширение из полученной информации, по умолчанию .m4a
+            # Шаг 2: Скачиваем аудио по прямой ссылке.
             file_extension = f".{info.get('ext', 'm4a')}"
             temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
 
-            with requests.get(stream_url, stream=True, timeout=300) as r:
+            proxies = {'http': proxy_url, 'https': proxy_url} if proxy_url else None
+
+            with requests.get(stream_url, stream=True, timeout=300, proxies=proxies) as r:
                 r.raise_for_status()
                 for chunk in r.iter_content(chunk_size=8192):
                     temp_audio_file.write(chunk)
