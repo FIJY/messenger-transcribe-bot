@@ -30,10 +30,15 @@ class DownloaderService:
             'no_warnings': True,
             'noplaylist': True,
             'nocheckcertificate': True,
-            # Маскируемся под веб-клиент, чтобы обойти проверку на бота
+            # ИЗМЕНЕНИЕ: Добавляем "человеческие" заголовки, чтобы обмануть защиту от ботов.
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['web'],
+                    # Пробуем разные клиенты, начиная с мобильного
+                    'player_client': ['android', 'web'],
                 }
             }
         }
@@ -44,19 +49,27 @@ class DownloaderService:
                 info = ydl.extract_info(url, download=False)
 
             # Шаг 2: Находим наилучший аудио-формат из списка доступных.
-            audio_format = next((f for f in info['formats'] if f.get('acodec') != 'none' and f.get('vcodec') == 'none'),
-                                None)
+            # Отдаем предпочтение форматам без видеокодека (только аудио).
+            audio_formats = [f for f in info.get('formats', []) if
+                             f.get('acodec') != 'none' and f.get('vcodec') == 'none']
 
-            # Если нет чистого аудио, берем формат с видео, но лучшим звуком
-            if not audio_format:
-                audio_format = info
+            # Если чистого аудио нет, ищем смешанные форматы
+            if not audio_formats:
+                audio_formats = [f for f in info.get('formats', []) if f.get('acodec') != 'none']
+
+            # Сортируем по качеству аудио (битрейту)
+            if audio_formats:
+                audio_formats.sort(key=lambda f: f.get('abr', 0), reverse=True)
+                audio_format = audio_formats[0]
+            else:
+                audio_format = None
 
             if not audio_format or not audio_format.get('url'):
                 logger.error(f"Could not find a valid audio stream URL for {url}")
                 return None, 'DOWNLOAD_FAILED'
 
             stream_url = audio_format['url']
-            logger.info("Successfully extracted audio stream URL.")
+            logger.info(f"Successfully extracted audio stream URL with bitrate {audio_format.get('abr')}k.")
 
             # Шаг 3: Скачиваем аудио по прямой ссылке с помощью простого GET-запроса.
             temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
@@ -79,4 +92,3 @@ class DownloaderService:
         except Exception as e:
             logger.error(f"General error during audio download from {url}: {e}", exc_info=True)
             return None, 'GENERAL_ERROR'
-
