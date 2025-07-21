@@ -6,7 +6,7 @@ services:
     plan: standard
     # ИЗМЕНЕНИЕ: Подключаем группу с переменными окружения
     envVarGroups:
-      - name: bot-secrets # Убедитесь, что это имя совпадает с тем, что вы создали
+      - name: variables_bot # Убедитесь, что это имя совпадает с тем, что вы создали
 
   # 2. Воркер Celery
   - type: worker
@@ -15,7 +15,7 @@ services:
     plan: standard
     # ИЗМЕНЕНИЕ: Подключаем группу с переменными окружения
     envVarGroups:
-      - name: bot-secrets # Убедитесь, что это имя совпадает с тем, что вы создали
+      - name: variables_bot # Убедитесь, что это имя совпадает с тем, что вы создали
 
   # 3. Планировщик Celery (оставляем как есть)
   - type: worker
@@ -26,7 +26,7 @@ services:
     startCommand: "celery -A celery_worker.celery_app beat --loglevel=info"
     # ИЗМЕНЕНИЕ: Подключаем группу и сюда, так как ему нужен REDIS_URL
     envVarGroups:
-      - name: bot-secrets
+      - name: variables_bot
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
