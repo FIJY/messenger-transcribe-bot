@@ -4,8 +4,8 @@ services:
     name: messenger-transcribe-bot
     env: python
     plan: starter
-    # ИЗМЕНЕНИЕ: Возвращаем команду сборки к стандартной.
-    buildCommand: "pip install -r requirements.txt"
+    # ИЗМЕНЕНИЕ: Принудительно обновляем yt-dlp до последней версии перед установкой.
+    buildCommand: "pip install --upgrade yt-dlp && pip install -r requirements.txt"
     startCommand: "hypercorn app:app -b 0.0.0.0:$PORT"
     envVars:
       - key: PYTHON_VERSION
@@ -16,8 +16,8 @@ services:
     name: celery-worker
     env: python
     plan: starter
-    # ИЗМЕНЕНИЕ: Возвращаем команду сборки к стандартной.
-    buildCommand: "pip install -r requirements.txt"
+    # ИЗМЕНЕНИЕ: Принудительно обновляем yt-dlp и здесь.
+    buildCommand: "pip install --upgrade yt-dlp && pip install -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info -c 1 --pool=solo"
     envVars:
       - key: PYTHON_VERSION
