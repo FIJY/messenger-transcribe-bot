@@ -118,33 +118,26 @@ class TelegramHandler:
         elif command == '/search':
             query = " ".join(command_parts[1:])
             if not query:
-                await self.send_message(chat_id, "Please provide a search term. Usage: `/search <your query>`")
+                await self.send_message(chat_id, "Usage: `/search <your query>`")
                 return
             await self.send_message(chat_id, f"🔍 Searching for notes matching: `{query}`...")
             notes = self.database.search_notes_by_query(user_id, query)
             response_text = self.ui.format_search_results(notes, query)
             await self.send_message(chat_id, response_text)
-        # НОВАЯ КОМАНДА: /grant
         elif command == '/grant':
-            # Проверяем, что команду отправил администратор
             if user_id != self.admin_telegram_id:
                 await self.send_message(chat_id, "❌ You are not authorized to use this command.")
                 return
-
-            # Проверяем и парсим аргументы
             try:
                 target_user_id = command_parts[1]
                 days = int(command_parts[2])
             except (IndexError, ValueError):
                 await self.send_message(chat_id, "Usage: `/grant <user_id> <days>`")
                 return
-
-            # Вызываем метод из базы данных для выдачи премиума
             success = self.database.grant_premium_subscription(target_user_id, days)
             if success:
                 await self.send_message(chat_id,
                                         f"✅ Premium subscription granted to user `{target_user_id}` for {days} days.")
-                # Опционально: уведомляем пользователя
                 try:
                     await self.send_message(int(target_user_id),
                                             f"🎉 Your premium subscription has been extended by {days} days!")
@@ -165,7 +158,7 @@ class TelegramHandler:
 
     async def _handle_url(self, url: str, user_id: str, chat_id: int):
         """
-        ИЗМЕНЕНИЕ: Этот метод больше не скачивает файлы. Он только создает задачу для Celery.
+        Этот метод больше не скачивает файлы. Он только создает задачу для Celery.
         """
         await self.send_message(chat_id, "🔗 Link received. Processing will start shortly...")
 
