@@ -24,25 +24,27 @@ class DownloaderService:
         """
         logger.info(f"Starting audio download for URL: {url}")
 
-        # Создаем временный файл, в который yt-dlp будет напрямую скачивать аудио.
         temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix='.tmp')
         temp_audio_path = temp_audio_file.name
         temp_audio_file.close()
 
         ydl_opts = {
-            # ИЗМЕНЕНИЕ: Убираем конвертацию в MP3.
-            # yt-dlp скачает лучшее аудио в его оригинальном формате (например, m4a).
-            # OpenAI Whisper отлично работает с этими форматами.
             'format': 'bestaudio/best',
-            'outtmpl': f'{temp_audio_path}.%(ext)s',  # Позволяем yt-dlp самому подставить расширение.
+            'outtmpl': f'{temp_audio_path}.%(ext)s',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
             'nocheckcertificate': True,
             'socket_timeout': 60,
+            # ФИНАЛЬНАЯ ПОПЫТКА: Добавляем автоматические повторы и имитируем iOS клиент.
+            'extractor_retries': 3,  # Попробовать 3 раза, если не получится с первого
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['IOS', 'ANDROID', 'WEB'],  # Пробуем разные клиенты, начиная с iOS
+                }
+            },
         }
 
-        # Добавляем поддержку прокси из переменных окружения.
         proxy_url = os.getenv('YT_DLP_PROXY')
         if proxy_url:
             logger.info(f"Using proxy for yt-dlp...")
@@ -54,12 +56,10 @@ class DownloaderService:
             return None, 'DOWNLOAD_FAILED'
 
         try:
-            logger.info("Starting download process with yt-dlp...")
+            logger.info("Starting download process with yt-dlp (with retries)...")
 
-            # yt-dlp делает всю работу: и получает ссылку, и скачивает.
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 meta = ydl.extract_info(url, download=True)
-                # Получаем путь к скачанному файлу из метаданных
                 final_path = ydl.prepare_filename(meta)
 
             if not os.path.exists(final_path):
@@ -79,6 +79,5 @@ class DownloaderService:
             logger.error(f"General error during audio download: {e}", exc_info=True)
             return None, 'GENERAL_ERROR'
         finally:
-            # Очищаем временный .tmp файл, если он остался
             if os.path.exists(temp_audio_path):
                 os.remove(temp_audio_path)
