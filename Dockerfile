@@ -10,12 +10,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && \
 WORKDIR /app
 
 # Копируем файл с зависимостями и устанавливаем их
-# Также принудительно обновляем yt-dlp до последней версии
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade yt-dlp && \
     pip install --no-cache-dir -r requirements.txt
 
-# Копируем весь остальной код проекта в рабочую директорию
+# Копируем весь остальной код проекта
 COPY . .
 
-# Render будет использовать startCommand из render.yaml, поэтому CMD здесь не нужен
+# Копируем и делаем исполняемым наш скрипт-точку входа
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
+# Указываем, что все команды должны запускаться через этот скрипт
+ENTRYPOINT ["./entrypoint.sh"]
