@@ -164,40 +164,26 @@ class TelegramHandler:
             await self.send_message(chat_id, "❌ Sorry, an error occurred while saving your note.")
 
     async def _handle_url(self, url: str, user_id: str, chat_id: int):
-        await self.send_message(chat_id, "🔗 Link received. Starting download...")
+        """
+        ИЗМЕНЕНИЕ: Этот метод больше не скачивает файлы. Он только создает задачу для Celery.
+        """
+        await self.send_message(chat_id, "🔗 Link received. Processing will start shortly...")
 
-        source_type = 'url'
-        object_key = None
-        is_youtube = bool(re.search(r'(?:youtube\.com|youtu\.be)', url))
+        if self.celery_app_client:
+            logger.info(f"Sending URL processing task to Celery for URL: {url}")
+            platform_payload = {'platform': 'telegram', 'chat_id': chat_id}
+            # Создаем новую задачу для обработки URL
+            self.celery_app_client.send_task('tasks.process_url', args=[user_id, url, {}, platform_payload])
+        else:
+            logger.error("Celery client not available. Cannot process URL.")
+            await self.send_message(chat_id, "❌ Server error: cannot queue URL for processing.")
 
-        if is_youtube:
-            source_type = 'youtube'
-            video_info = self.youtube_service.get_info(url)
-            if video_info and video_info.get('id'):
-                object_key = f"yt_{video_info['id']}{uuid.uuid4()}.mp3"
-            else:
-                logger.warning(f"Could not get video ID for YouTube URL: {url}")
-
-        local_file_path, error_type = self.downloader_service.download_audio(url)
-
-        if not local_file_path:
-            error_message = "❌ Failed to download audio from the link. The link might be broken or from an unsupported site."
-            if error_type == 'LOGIN_REQUIRED':
-                error_message = "❌ This content is private or protected (e.g., private YouTube, Instagram Reels). Please download it manually and send me the file."
-            await self.send_message(chat_id, error_message)
-            return
-
+    async def _process_local_file(self, local_file_path: str, user_id: str, chat_id: int, source_type: str):
+        """
+        Обрабатывает локальный файл (загруженный пользователем).
+        """
         try:
-            await self._process_local_file(local_file_path, user_id, chat_id, source_type=source_type,
-                                           pregenerated_object_key=object_key, from_url=True)
-        finally:
-            if local_file_path and os.path.exists(local_file_path):
-                os.remove(local_file_path)
-
-    async def _process_local_file(self, local_file_path: str, user_id: str, chat_id: int, source_type: str,
-                                  pregenerated_object_key: Optional[str] = None, from_url: bool = False):
-        try:
-            object_key = pregenerated_object_key or f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
+            object_key = f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
 
             if not self.s3_service.upload_file(local_file_path, object_key):
                 await self.send_message(chat_id, "❌ Server error: could not upload file to storage.")
@@ -208,15 +194,14 @@ class TelegramHandler:
                 platform_payload = {'platform': 'telegram', 'chat_id': chat_id, 'source_type': source_type}
                 self.celery_app_client.send_task('tasks.process_media',
                                                  args=[user_id, object_key, {}, platform_payload])
-
-                if from_url:
-                    await self.send_message(chat_id, "✅ Download complete. Your file is now being processed...")
-                else:
-                    await self.send_message(chat_id, "✅ Upload complete. Your file is now being processed...")
+                await self.send_message(chat_id, "✅ Upload complete. Your file is now being processed...")
 
         except Exception as e:
             logger.error(f"Error in _process_local_file: {e}", exc_info=True)
             await self.send_message(chat_id, "❌ An error occurred during file processing.")
+        finally:
+            if local_file_path and os.path.exists(local_file_path):
+                os.remove(local_file_path)
 
     async def _handle_file_upload(self, file_obj: Message, user_id: str, chat_id: int):
         await self.send_message(chat_id, "✅ File received. Downloading...")
@@ -228,9 +213,10 @@ class TelegramHandler:
                 await tg_file.download_to_drive(custom_path=local_file_path)
 
             await self._process_local_file(local_file_path, user_id, chat_id, source_type='upload')
-        finally:
-            if local_file_path and os.path.exists(local_file_path):
-                os.remove(local_file_path)
+
+        except Exception as e:
+            logger.error(f"Error during file download from Telegram: {e}", exc_info=True)
+            await self.send_message(chat_id, "❌ Failed to download file from Telegram.")
 
     async def _handle_start_command(self, user_id: str, chat_id: int, username: Optional[str]):
         user = self.database.get_user(user_id)

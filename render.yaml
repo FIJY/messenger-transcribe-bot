@@ -2,28 +2,24 @@ services:
   # 1. Веб-сервис
   - type: web
     name: messenger-transcribe-bot
-    env: python
-    plan: starter
-    # ИЗМЕНЕНИЕ: Добавляем установку ffmpeg и обновляем yt-dlp
-    buildCommand: "apt-get update && apt-get install -y ffmpeg && pip install --upgrade yt-dlp && pip install -r requirements.txt"
+    # ИЗМЕНЕНИЕ: Указываем, что нужно использовать Docker
+    env: docker
+    # ИЗМЕНЕНИЕ: План повышен до 'Standard' для увеличения лимитов (RAM/CPU)
+    plan: standard
+    # buildCommand и envVars для Python больше не нужны
+    # Render будет использовать startCommand для запуска контейнера
     startCommand: "hypercorn app:app -b 0.0.0.0:$PORT"
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.11
 
   # 2. Воркер Celery, который выполняет скачивание
   - type: worker
     name: celery-worker
-    env: python
-    plan: starter
-    # ИЗМЕНЕНИЕ: Добавляем установку ffmpeg и обновляем yt-dlp
-    buildCommand: "apt-get update && apt-get install -y ffmpeg && pip install --upgrade yt-dlp && pip install -r requirements.txt"
+    # ИЗМЕНЕНИЕ: Указываем, что нужно использовать Docker
+    env: docker
+    # ИЗМЕНЕНИЕ: План повышен до 'Standard' для увеличения производительности
+    plan: standard
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info -c 1 --pool=solo"
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.11
 
-  # 3. Планировщик Celery
+  # 3. Планировщик Celery (ему не нужен ffmpeg, оставляем как есть)
   - type: worker
     name: celery-beat
     env: python
