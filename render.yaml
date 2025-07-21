@@ -6,7 +6,7 @@ services:
     plan: standard
     envVarGroups:
       - name: variables_bot
-    # ИЗМЕНЕНИЕ: Явно подключаем REDIS_URL напрямую из сервиса Redis
+    # Явно подключаем REDIS_URL напрямую из сервиса Redis
     envVars:
       - key: PROCESS_TYPE
         value: web
@@ -23,7 +23,7 @@ services:
     plan: standard
     envVarGroups:
       - name: variables_bot
-    # ИЗМЕНЕНИЕ: Явно подключаем REDIS_URL напрямую из сервиса Redis
+    # Явно подключаем REDIS_URL напрямую из сервиса Redis
     envVars:
       - key: PROCESS_TYPE
         value: worker
@@ -40,7 +40,7 @@ services:
     plan: standard
     envVarGroups:
       - name: variables_bot
-    # ИЗМЕНЕНИЕ: Явно подключаем REDIS_URL напрямую из сервиса Redis
+    # Явно подключаем REDIS_URL напрямую из сервиса Redis
     envVars:
       - key: PROCESS_TYPE
         value: beat
