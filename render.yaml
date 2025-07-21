@@ -4,23 +4,26 @@ services:
     name: messenger-transcribe-bot
     env: python
     plan: starter
+    # ИЗМЕНЕНИЕ: Возвращаем команду сборки к стандартной.
     buildCommand: "pip install -r requirements.txt"
-    # ===> ИЗМЕНЕНИЕ: Gunicorn -> Hypercorn <===
     startCommand: "hypercorn app:app -b 0.0.0.0:$PORT"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
 
-  # ... (остальные сервисы - celery-worker, celery-beat, redis - без изменений) ...
+  # 2. Воркер Celery, который выполняет скачивание
   - type: worker
     name: celery-worker
     env: python
     plan: starter
+    # ИЗМЕНЕНИЕ: Возвращаем команду сборки к стандартной.
     buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info -c 1 --pool=solo"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
+
+  # 3. Планировщик Celery
   - type: worker
     name: celery-beat
     env: python
@@ -30,10 +33,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
+
+  # 4. Redis
   - type: redis
     name: bot-redis
     plan: free
     ipAllowList: []
-
-
-    # Force sync on June 25, 2025

@@ -25,17 +25,16 @@ class DownloaderService:
         logger.info(f"Starting audio download for URL: {url}")
 
         # Создаем временный файл, в который yt-dlp будет напрямую скачивать аудио.
-        # Мы не указываем расширение, yt-dlp добавит его сам.
         temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix='.tmp')
         temp_audio_path = temp_audio_file.name
-        temp_audio_file.close()  # Закрываем файл, чтобы yt-dlp мог в него писать
+        temp_audio_file.close()
 
         ydl_opts = {
-            # Указываем, что нужно скачать лучшее аудио и сохранить его в mp3.
+            # ИЗМЕНЕНИЕ: Убираем конвертацию в MP3.
+            # yt-dlp скачает лучшее аудио в его оригинальном формате (например, m4a).
+            # OpenAI Whisper отлично работает с этими форматами.
             'format': 'bestaudio/best',
-            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
-            # Указываем путь для сохранения файла.
-            'outtmpl': temp_audio_path,
+            'outtmpl': f'{temp_audio_path}.%(ext)s',  # Позволяем yt-dlp самому подставить расширение.
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
@@ -50,31 +49,22 @@ class DownloaderService:
             ydl_opts['proxy'] = proxy_url
         else:
             logger.error("YT_DLP_PROXY is not set. YouTube downloads will fail.")
-            # Удаляем временный файл перед выходом
             if os.path.exists(temp_audio_path):
                 os.remove(temp_audio_path)
             return None, 'DOWNLOAD_FAILED'
 
         try:
             logger.info("Starting download process with yt-dlp...")
-            # Теперь yt-dlp делает всю работу: и получает ссылку, и скачивает.
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
 
-            # yt-dlp сохранит файл с правильным расширением. Нам нужно найти его.
-            # Обычно он просто заменяет .tmp на .mp3
-            final_path = temp_audio_path.replace('.tmp', '.mp3')
+            # yt-dlp делает всю работу: и получает ссылку, и скачивает.
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                meta = ydl.extract_info(url, download=True)
+                # Получаем путь к скачанному файлу из метаданных
+                final_path = ydl.prepare_filename(meta)
+
             if not os.path.exists(final_path):
-                # Если файл не найден, ищем его в той же директории
-                # (на случай, если yt-dlp сгенерировал другое имя)
-                temp_dir = os.path.dirname(temp_audio_path)
-                found_files = [f for f in os.listdir(temp_dir) if
-                               f.startswith(os.path.basename(temp_audio_path).replace('.tmp', ''))]
-                if found_files:
-                    final_path = os.path.join(temp_dir, found_files[0])
-                else:
-                    logger.error("Downloaded file not found after yt-dlp process.")
-                    return None, 'DOWNLOAD_FAILED'
+                logger.error(f"Downloaded file not found at expected path: {final_path}")
+                return None, 'DOWNLOAD_FAILED'
 
             logger.info(f"Audio successfully downloaded by yt-dlp to: {final_path}")
             return final_path, None
@@ -92,4 +82,3 @@ class DownloaderService:
             # Очищаем временный .tmp файл, если он остался
             if os.path.exists(temp_audio_path):
                 os.remove(temp_audio_path)
-
