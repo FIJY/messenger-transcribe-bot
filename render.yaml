@@ -4,32 +4,51 @@ services:
     name: messenger-transcribe-bot
     env: docker
     plan: standard
-    # ИЗМЕНЕНИЕ: Подключаем группу с переменными окружения
     envVarGroups:
-      - name: variables_bot # Убедитесь, что это имя совпадает с тем, что вы создали
+      - name: variables_bot
+    # ИЗМЕНЕНИЕ: Явно подключаем REDIS_URL напрямую из сервиса Redis
+    envVars:
+      - key: PROCESS_TYPE
+        value: web
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bot-redis
+          property: connectionString
 
   # 2. Воркер Celery
   - type: worker
     name: celery-worker
     env: docker
     plan: standard
-    # ИЗМЕНЕНИЕ: Подключаем группу с переменными окружения
-    envVarGroups:
-      - name: variables_bot # Убедитесь, что это имя совпадает с тем, что вы создали
-
-  # 3. Планировщик Celery (оставляем как есть)
-  - type: worker
-    name: celery-beat
-    env: python
-    plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "celery -A celery_worker.celery_app beat --loglevel=info"
-    # ИЗМЕНЕНИЕ: Подключаем группу и сюда, так как ему нужен REDIS_URL
     envVarGroups:
       - name: variables_bot
+    # ИЗМЕНЕНИЕ: Явно подключаем REDIS_URL напрямую из сервиса Redis
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.11
+      - key: PROCESS_TYPE
+        value: worker
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bot-redis
+          property: connectionString
+
+  # 3. Планировщик Celery
+  - type: worker
+    name: celery-beat
+    env: docker
+    plan: standard
+    envVarGroups:
+      - name: variables_bot
+    # ИЗМЕНЕНИЕ: Явно подключаем REDIS_URL напрямую из сервиса Redis
+    envVars:
+      - key: PROCESS_TYPE
+        value: beat
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bot-redis
+          property: connectionString
 
   # 4. Redis
   - type: redis
