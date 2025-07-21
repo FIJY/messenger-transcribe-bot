@@ -27,8 +27,6 @@ class Database:
         logger.info("Successfully connected to MongoDB")
 
     def _create_indexes(self):
-        # ИЗМЕНЕНИЕ: В оригинальном коде было user_id, но для единообразия лучше _id
-        # Оставляем user_id, так как get_user ищет по нему.
         self.db.users.create_index("user_id", unique=True)
         self.db.notes.create_index([("user_id", 1), ("created_at", -1)])
         self.db.notes.create_index([("content", "text")], default_language="none")
@@ -37,7 +35,6 @@ class Database:
         self.db.app_counters.create_index("name", unique=True)
 
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
-        # В create_user мы используем user_id как _id, поэтому ищем по _id
         return self.db.users.find_one({"user_id": str(user_id)})
 
     def create_user(self, user_id: str, **kwargs) -> Dict[str, Any]:
@@ -140,8 +137,7 @@ class Database:
         """
         Выдает или продлевает премиум-подписку пользователю.
         """
-        # Используем self.db.users.find_one, а не self.get_user, чтобы избежать путаницы с _id
-        user = self.db.users.find_one({"user_id": user_id})
+        user = self.get_user(user_id)
         if not user:
             logger.warning(f"Attempted to grant premium to non-existent user: {user_id}")
             return False
@@ -174,7 +170,9 @@ class Database:
                     f"Granted premium for {days} days to user {user_id}. New expiry: {new_expiry_date.isoformat()}")
                 return True
             else:
-                logger.warning(f"User {user_id} found, but subscription was not updated.")
+                # Эта ситуация может возникнуть, если пользователь не найден, хотя мы его проверили.
+                # Маловероятно, но лучше обработать.
+                logger.warning(f"User {user_id} found, but subscription was not updated. Matched: {result.matched_count}")
                 return False
         except Exception as e:
             logger.error(f"Failed to grant premium to user {user_id}: {e}", exc_info=True)
