@@ -4,21 +4,18 @@ services:
     name: messenger-transcribe-bot
     env: docker
     plan: standard
-    # startCommand УДАЛЕН, так как это запрещено для Docker
-    # Вместо него мы используем переменную окружения
-    envVars:
-      - key: PROCESS_TYPE
-        value: web
+    # ИЗМЕНЕНИЕ: Подключаем группу с переменными окружения
+    envVarGroups:
+      - name: bot-secrets # Убедитесь, что это имя совпадает с тем, что вы создали
 
   # 2. Воркер Celery
   - type: worker
     name: celery-worker
     env: docker
     plan: standard
-    # startCommand УДАЛЕН
-    envVars:
-      - key: PROCESS_TYPE
-        value: worker
+    # ИЗМЕНЕНИЕ: Подключаем группу с переменными окружения
+    envVarGroups:
+      - name: bot-secrets # Убедитесь, что это имя совпадает с тем, что вы создали
 
   # 3. Планировщик Celery (оставляем как есть)
   - type: worker
@@ -27,6 +24,9 @@ services:
     plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app beat --loglevel=info"
+    # ИЗМЕНЕНИЕ: Подключаем группу и сюда, так как ему нужен REDIS_URL
+    envVarGroups:
+      - name: bot-secrets
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
