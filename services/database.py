@@ -125,3 +125,44 @@ class Database:
     def update_user(self, user_id: str, update_data: Dict[str, Any]) -> bool:
         result = self.db.users.update_one({"user_id": str(user_id)}, {"$set": update_data})
         return result.modified_count > 0
+
+    def grant_premium_subscription(self, user_id: str, days: int) -> bool:
+        """
+        Выдает или продлевает премиум-подписку пользователю.
+        """
+        user = self.get_user(user_id)
+        if not user:
+            self.logger.warning(f"Attempted to grant premium to non-existent user: {user_id}")
+            return False
+
+        # Определяем новую дату окончания подписки
+        now = datetime.now(timezone.utc)
+        current_expiry = user.get('subscription_expires_at')
+
+        # Если подписка уже активна и не истекла, продлеваем от ее даты окончания
+        if current_expiry and current_expiry > now:
+            new_expiry_date = current_expiry + timedelta(days=days)
+        # Иначе - отсчитываем от сегодняшнего дня
+        else:
+            new_expiry_date = now + timedelta(days=days)
+
+        premium_plan = PLANS['premium']
+
+        update_data = {
+            "$set": {
+                "plan": "premium",
+                "subscription_expires_at": new_expiry_date,
+                "minutes_limit": premium_plan['limit_minutes'],
+                "minutes_used": 0  # Сбрасываем использованные минуты
+            }
+        }
+
+        try:
+            self.users_collection.update_one({"_id": user_id}, update_data)
+            self.logger.info(
+                f"Granted premium for {days} days to user {user_id}. New expiry: {new_expiry_date.isoformat()}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to grant premium to user {user_id}: {e}", exc_info=True)
+            return False
+

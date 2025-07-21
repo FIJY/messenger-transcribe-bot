@@ -124,10 +124,38 @@ class TelegramHandler:
             notes = self.database.search_notes_by_query(user_id, query)
             response_text = self.ui.format_search_results(notes, query)
             await self.send_message(chat_id, response_text)
+        # НОВАЯ КОМАНДА: /grant
+        elif command == '/grant':
+            # Проверяем, что команду отправил администратор
+            if user_id != self.admin_telegram_id:
+                await self.send_message(chat_id, "❌ You are not authorized to use this command.")
+                return
+
+            # Проверяем и парсим аргументы
+            try:
+                target_user_id = command_parts[1]
+                days = int(command_parts[2])
+            except (IndexError, ValueError):
+                await self.send_message(chat_id, "Usage: `/grant <user_id> <days>`")
+                return
+
+            # Вызываем метод из базы данных для выдачи премиума
+            success = self.database.grant_premium_subscription(target_user_id, days)
+            if success:
+                await self.send_message(chat_id,
+                                        f"✅ Premium subscription granted to user `{target_user_id}` for {days} days.")
+                # Опционально: уведомляем пользователя
+                try:
+                    await self.send_message(int(target_user_id),
+                                            f"🎉 Your premium subscription has been extended by {days} days!")
+                except Exception as e:
+                    logger.warning(f"Could not notify user {target_user_id} about their new subscription: {e}")
+            else:
+                await self.send_message(chat_id, f"❌ Could not find user with ID `{target_user_id}`.")
 
     async def _handle_text_note(self, text: str, user_id: str, chat_id: int):
         try:
-            note_id = self.database.save_note(user_id=user_id, content=text, tags=['plain_text'])
+            note_id = self.database.save_note(user_id=user_id, content=text, tags=['plain_text'], source_type='text')
             await self.send_message(chat_id, f"✅ *Note saved:* ```{text[:250]}...```")
             message, reply_markup = self.ui.get_main_actions_menu(note_id)
             await self.send_message(chat_id, message, reply_markup=reply_markup)
@@ -138,43 +166,60 @@ class TelegramHandler:
     async def _handle_url(self, url: str, user_id: str, chat_id: int):
         await self.send_message(chat_id, "🔗 Link received. Starting download...")
 
+        source_type = 'url'
+        object_key = None
+        is_youtube = bool(re.search(r'(?:youtube\.com|youtu\.be)', url))
+
+        if is_youtube:
+            source_type = 'youtube'
+            video_info = self.youtube_service.get_info(url)
+            if video_info and video_info.get('id'):
+                object_key = f"yt_{video_info['id']}{uuid.uuid4()}.mp3"
+            else:
+                logger.warning(f"Could not get video ID for YouTube URL: {url}")
+
         local_file_path, error_type = self.downloader_service.download_audio(url)
 
         if not local_file_path:
+            error_message = "❌ Failed to download audio from the link. The link might be broken or from an unsupported site."
             if error_type == 'LOGIN_REQUIRED':
-                await self.send_message(chat_id,
-                                        "❌ This content is private or protected (e.g., private YouTube, Instagram Reels). Please download it manually and send me the file.")
-            else:
-                await self.send_message(chat_id,
-                                        "❌ Failed to download audio from the link. The link might be broken or from an unsupported site.")
+                error_message = "❌ This content is private or protected (e.g., private YouTube, Instagram Reels). Please download it manually and send me the file."
+            await self.send_message(chat_id, error_message)
             return
 
         try:
-            await self._process_local_file(local_file_path, user_id, chat_id, from_url=True)
+            await self._process_local_file(local_file_path, user_id, chat_id, source_type=source_type,
+                                           pregenerated_object_key=object_key, from_url=True)
         finally:
             if local_file_path and os.path.exists(local_file_path):
                 os.remove(local_file_path)
 
-    async def _process_local_file(self, local_file_path: str, user_id: str, chat_id: int, from_url: bool = False):
+    async def _process_local_file(self, local_file_path: str, user_id: str, chat_id: int, source_type: str,
+                                  pregenerated_object_key: Optional[str] = None, from_url: bool = False):
         try:
-            object_key = f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
+            object_key = pregenerated_object_key or f"{uuid.uuid4()}{os.path.splitext(local_file_path)[-1]}"
+
             if not self.s3_service.upload_file(local_file_path, object_key):
                 await self.send_message(chat_id, "❌ Server error: could not upload file to storage.")
                 return
 
             if self.celery_app_client:
                 logger.info(f"Sending task to Celery for object {object_key}")
-                self.celery_app_client.send_task('tasks.process_media', args=[user_id, object_key, {},
-                                                                              {'platform': 'telegram',
-                                                                               'chat_id': chat_id}])
+                platform_payload = {'platform': 'telegram', 'chat_id': chat_id, 'source_type': source_type}
+                self.celery_app_client.send_task('tasks.process_media',
+                                                 args=[user_id, object_key, {}, platform_payload])
+
                 if from_url:
                     await self.send_message(chat_id, "✅ Download complete. Your file is now being processed...")
+                else:
+                    await self.send_message(chat_id, "✅ Upload complete. Your file is now being processed...")
+
         except Exception as e:
             logger.error(f"Error in _process_local_file: {e}", exc_info=True)
             await self.send_message(chat_id, "❌ An error occurred during file processing.")
 
     async def _handle_file_upload(self, file_obj: Message, user_id: str, chat_id: int):
-        await self.send_message(chat_id, "✅ File received. Processing...")
+        await self.send_message(chat_id, "✅ File received. Downloading...")
         local_file_path = None
         try:
             tg_file = await file_obj.get_file()
@@ -182,7 +227,7 @@ class TelegramHandler:
                 local_file_path = temp_f.name
                 await tg_file.download_to_drive(custom_path=local_file_path)
 
-            await self._process_local_file(local_file_path, user_id, chat_id)
+            await self._process_local_file(local_file_path, user_id, chat_id, source_type='upload')
         finally:
             if local_file_path and os.path.exists(local_file_path):
                 os.remove(local_file_path)
@@ -212,12 +257,14 @@ class TelegramHandler:
             note_id = ObjectId(parts[-1])
             action = '_'.join(parts[:-1])
         except (IndexError, bson_errors.InvalidId):
-            return await query.edit_message_text(f"Error: Invalid callback data '{payload}'", reply_markup=None)
+            await query.edit_message_text(f"Error: Invalid callback data '{payload}'", reply_markup=None)
+            return
 
         note = self.database.get_note_by_id(note_id)
         if not note:
-            return await query.edit_message_text("This menu is no longer active as the note was deleted.",
-                                                 reply_markup=None)
+            await query.edit_message_text("This menu is no longer active as the note was deleted.",
+                                          reply_markup=None)
+            return
 
         action_type = action.split('_')[0]
 
@@ -254,9 +301,7 @@ class TelegramHandler:
                 self.database.update_note(note_id, {"$set": {"business_analysis": analysis_result},
                                                     "$addToSet": {"tags": "business_analysis"}})
                 text, markup = self.ui.get_business_analysis_menu(note_id)
-                # Отправляем новым сообщением, а не редактируем
                 await self.send_message(chat_id, text, reply_markup=markup)
-                # Удаляем сообщение "Starting..."
                 await query.delete_message()
             else:
                 await self.send_message(chat_id, "❌ Failed to perform business analysis.")
@@ -284,35 +329,32 @@ class TelegramHandler:
             if self.database.delete_note(note_id):
                 await query.edit_message_text("🗑️ Note successfully deleted.", reply_markup=None)
 
-
         elif action == 'ACTION_SUBTITLES':
-
-            if not note.get('s3_object_key') or not note['s3_object_key'].startswith('yt_'):
+            if note.get('source_type') != 'youtube':
                 await self.send_message(chat_id,
                                         "This function is only available for notes created from YouTube links.")
-
                 return
 
-            video_url = f"https://www.youtube.com/watch?v={note['s3_object_key'][3:]}"
+            s3_key = note.get('s3_object_key', '')
+            match = re.search(r'yt_([a-zA-Z0-9_-]{11})', s3_key)
+            if not match:
+                await self.send_message(chat_id, "Could not extract YouTube video ID from the record.")
+                return
+
+            video_id = match.group(1)
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
 
             await self.send_message(chat_id, "🤖 Trying to download existing subtitles from YouTube...")
-
             srt_path, error = self.youtube_service.download_subtitles(video_url)
 
             if srt_path:
-
                 try:
-
                     await self.bot.send_document(chat_id=chat_id, document=open(srt_path, 'rb'),
                                                  filename=f"{note_id}.srt",
                                                  caption="Here are the subtitles from YouTube.")
-
                 finally:
-
                     if os.path.exists(srt_path): os.remove(srt_path)
-
             else:
-
                 await self.send_message(chat_id,
                                         f"Could not download subtitles: {error}. You can still generate them from the transcript text using a third-party tool.")
 
@@ -377,11 +419,10 @@ class TelegramHandler:
                         current_message = part
                     else:
                         current_message += "\n\n" + part
-                if current_message:
-                    await self.bot.send_message(chat_id=chat_id, text=current_message, parse_mode=ParseMode.MARKDOWN)
 
-                if reply_markup:
-                    await self.bot.send_message(chat_id=chat_id, text="Actions:", reply_markup=reply_markup)
+                if current_message:
+                    await self.bot.send_message(chat_id=chat_id, text=current_message, parse_mode=ParseMode.MARKDOWN,
+                                                reply_markup=reply_markup)
             else:
                 await self.bot.send_message(
                     chat_id=chat_id,
