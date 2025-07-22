@@ -16,7 +16,7 @@ class DownloaderService:
         """
         Инициализация сервиса загрузки.
         """
-        logger.info("DownloaderService initialized with a proxy-only, two-step download/convert process.")
+        logger.info("DownloaderService initialized with a robust two-step download/convert process.")
 
     def _get_ydl_options(self, out_template: str) -> dict:
         """
@@ -34,6 +34,9 @@ class DownloaderService:
             'retries': 5,
             'cachedir': False,
         }
+        proxy_url = os.getenv('YT_DLP_PROXY')
+        if proxy_url:
+            opts['proxy'] = proxy_url
         return opts
 
     def _convert_to_mp3(self, source_path: str) -> Optional[str]:
@@ -74,44 +77,40 @@ class DownloaderService:
 
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Шаг 1: Скачивает аудиофайл, используя ТОЛЬКО прокси.
+        Шаг 1: Скачивает аудиофайл в специальную временную папку.
         Шаг 2: Конвертирует его в MP3.
         """
-        logger.info(f"Starting proxy-only, two-step audio download for URL: {url}")
+        logger.info(f"Starting two-step audio download for URL: {url}")
 
         temp_dir = tempfile.mkdtemp()
         source_audio_path = None
         final_mp3_path = None
 
         try:
+            # ИЗМЕНЕНИЕ: Задаем шаблон имени файла, чтобы yt-dlp сам его создал
             out_template = os.path.join(temp_dir, '%(id)s.%(ext)s')
             ydl_opts = self._get_ydl_options(out_template)
+
+            logger.info("Step 1: Downloading audio with yt-dlp...")
             info = None
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+            except yt_dlp.utils.DownloadError as e:
+                if 'proxy' in str(e).lower() and 'proxy' in ydl_opts:
+                    logger.warning(f"Proxy error on download. Retrying without proxy...")
+                    del ydl_opts['proxy']
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                else:
+                    raise e
 
-            # --- НОВАЯ ЛОГИКА: Используем только прокси, без прямых попыток ---
-            proxy_url = os.getenv('YT_DLP_PROXY')
-            if not proxy_url:
-                logger.error("YT_DLP_PROXY environment variable is not set. Cannot proceed.")
-                return None, 'PROXY_NOT_CONFIGURED'
-
-            logger.info("Step 1: Downloading audio via proxy...")
-            ydl_opts['proxy'] = proxy_url
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-            # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
-
+            # ИЗМЕНЕНИЕ: Получаем точный путь к скачанному файлу из ответа yt-dlp
             if info and 'requested_downloads' in info and info['requested_downloads']:
                 source_audio_path = info['requested_downloads'][0].get('filepath')
             else:
-                # Резервный метод на случай, если информация о скачанном файле отсутствует
-                files_in_dir = os.listdir(temp_dir)
-                if files_in_dir:
-                    logger.warning("Could not find 'requested_downloads' in info. Using first file found in temp dir.")
-                    source_audio_path = os.path.join(temp_dir, files_in_dir[0])
-                else:
-                    logger.error("Download seemed to succeed, but no file was found in the temp directory.")
-                    source_audio_path = None
+                # Резервный метод, если `requested_downloads` пуст
+                source_audio_path = ydl.prepare_filename(info)
 
             if not source_audio_path or not os.path.exists(source_audio_path) or os.path.getsize(
                     source_audio_path) == 0:
@@ -141,3 +140,4 @@ class DownloaderService:
             if os.path.exists(temp_dir):
                 logger.info(f"Cleaning up temporary directory: {temp_dir}")
                 shutil.rmtree(temp_dir)
+
