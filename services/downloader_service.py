@@ -16,11 +16,11 @@ class DownloaderService:
         """
         Инициализация сервиса загрузки.
         """
-        logger.info("DownloaderService initialized with a robust two-step download/convert process.")
+        logger.info("DownloaderService initialized with a resilient, proxy-only, two-step process.")
 
     def _get_ydl_options(self, out_template: str) -> dict:
         """
-        Собирает опции для yt-dlp, нацеленные ТОЛЬКО на скачивание лучшего аудио.
+        Собирает опции для yt-dlp, нацеленные на отказоустойчивое скачивание через прокси.
         """
         opts = {
             'format': 'bestaudio/best',
@@ -30,13 +30,10 @@ class DownloaderService:
             'forceipv4': True,
             'noplaylist': True,
             'nocheckcertificate': True,
-            'socket_timeout': 60,
-            'retries': 5,
+            'socket_timeout': 20,  # ИЗМЕНЕНИЕ: Уменьшаем таймаут, чтобы быстрее отбрасывать плохие IP
+            'retries': 10,  # ИЗМЕНЕНИЕ: Увеличиваем кол-во попыток, чтобы повысить шанс на успех
             'cachedir': False,
         }
-        proxy_url = os.getenv('YT_DLP_PROXY')
-        if proxy_url:
-            opts['proxy'] = proxy_url
         return opts
 
     def _convert_to_mp3(self, source_path: str) -> Optional[str]:
@@ -77,40 +74,41 @@ class DownloaderService:
 
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Шаг 1: Скачивает аудиофайл в специальную временную папку.
+        Шаг 1: Скачивает аудиофайл, используя ТОЛЬКО прокси.
         Шаг 2: Конвертирует его в MP3.
         """
-        logger.info(f"Starting two-step audio download for URL: {url}")
+        logger.info(f"Starting resilient proxy-only download for URL: {url}")
 
         temp_dir = tempfile.mkdtemp()
         source_audio_path = None
         final_mp3_path = None
 
         try:
-            # ИЗМЕНЕНИЕ: Задаем шаблон имени файла, чтобы yt-dlp сам его создал
             out_template = os.path.join(temp_dir, '%(id)s.%(ext)s')
             ydl_opts = self._get_ydl_options(out_template)
-
-            logger.info("Step 1: Downloading audio with yt-dlp...")
             info = None
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-            except yt_dlp.utils.DownloadError as e:
-                if 'proxy' in str(e).lower() and 'proxy' in ydl_opts:
-                    logger.warning(f"Proxy error on download. Retrying without proxy...")
-                    del ydl_opts['proxy']
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=True)
-                else:
-                    raise e
 
-            # ИЗМЕНЕНИЕ: Получаем точный путь к скачанному файлу из ответа yt-dlp
+            # --- Логика "только прокси" ---
+            proxy_url = os.getenv('YT_DLP_PROXY')
+            if not proxy_url:
+                logger.error("YT_DLP_PROXY environment variable is not set. Cannot proceed.")
+                return None, 'PROXY_NOT_CONFIGURED'
+
+            logger.info("Step 1: Downloading audio via proxy with aggressive timeouts...")
+            ydl_opts['proxy'] = proxy_url
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+            # --- Конец логики ---
+
             if info and 'requested_downloads' in info and info['requested_downloads']:
                 source_audio_path = info['requested_downloads'][0].get('filepath')
             else:
-                # Резервный метод, если `requested_downloads` пуст
-                source_audio_path = ydl.prepare_filename(info)
+                files_in_dir = os.listdir(temp_dir)
+                if files_in_dir:
+                    source_audio_path = os.path.join(temp_dir, files_in_dir[0])
+                else:
+                    source_audio_path = None
 
             if not source_audio_path or not os.path.exists(source_audio_path) or os.path.getsize(
                     source_audio_path) == 0:
@@ -136,8 +134,6 @@ class DownloaderService:
             logger.error(f"An unexpected error occurred: {e}", exc_info=True)
             return None, 'GENERAL_ERROR'
         finally:
-            # Очищаем временную папку со всеми скачанными файлами
             if os.path.exists(temp_dir):
                 logger.info(f"Cleaning up temporary directory: {temp_dir}")
                 shutil.rmtree(temp_dir)
-
