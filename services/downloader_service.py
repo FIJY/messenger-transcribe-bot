@@ -2,7 +2,10 @@
 import os
 import tempfile
 import logging
+import subprocess
+import shutil
 from typing import Tuple, Optional
+
 import yt_dlp
 
 logger = logging.getLogger(__name__)
@@ -13,15 +16,15 @@ class DownloaderService:
         """
         Инициализация сервиса загрузки.
         """
-        logger.info("DownloaderService initialized, targeting MP3 format.")
+        logger.info("DownloaderService initialized with a robust two-step download/convert process.")
 
-    def _get_ydl_options(self) -> dict:
+    def _get_ydl_options(self, out_template: str) -> dict:
         """
-        Собирает и возвращает полный набор опций для yt-dlp.
-        Эта версия нацелена на скачивание и конвертацию в MP3 для большей стабильности.
+        Собирает опции для yt-dlp, нацеленные ТОЛЬКО на скачивание лучшего аудио.
         """
         opts = {
             'format': 'bestaudio/best',
+            'outtmpl': out_template,
             'quiet': True,
             'no_warnings': True,
             'forceipv4': True,
@@ -29,92 +32,112 @@ class DownloaderService:
             'nocheckcertificate': True,
             'socket_timeout': 60,
             'retries': 5,
-            'fragment_retries': 5,
-            'extractor_retries': 5,
             'cachedir': False,
-            # ИЗМЕНЕНИЕ: Конвертируем в MP3 вместо WAV
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192', # Стандартное качество для MP3
-            }],
-            # 'postprocessor_args' убран, т.к. для MP3 он не нужен
         }
         proxy_url = os.getenv('YT_DLP_PROXY')
         if proxy_url:
             opts['proxy'] = proxy_url
         return opts
 
+    def _convert_to_mp3(self, source_path: str) -> Optional[str]:
+        """
+        Конвертирует скачанный аудиофайл в MP3 16kHz с помощью ffmpeg.
+        """
+        if not os.path.exists(source_path) or os.path.getsize(source_path) == 0:
+            logger.error(f"Source file for conversion does not exist or is empty: {source_path}")
+            return None
+
+        mp3_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        mp3_path = mp3_file.name
+        mp3_file.close()
+
+        logger.info(f"Starting conversion: {source_path} -> {mp3_path}")
+        command = [
+            'ffmpeg', '-y', '-i', source_path,
+            '-vn', '-ar', '16000', '-ac', '1',
+            '-codec:a', 'libmp3lame', '-q:a', '2', mp3_path
+        ]
+
+        try:
+            process = subprocess.run(command, check=True, capture_output=True, text=True)
+            logger.info("ffmpeg stdout: " + process.stdout)
+            logger.error("ffmpeg stderr: " + process.stderr)
+            logger.info(f"Successfully converted file to {mp3_path}")
+            return mp3_path
+        except subprocess.CalledProcessError as e:
+            logger.error(f"ffmpeg conversion failed for {source_path}!")
+            logger.error("ffmpeg return code: " + str(e.returncode))
+            logger.error("ffmpeg stdout: " + e.stdout)
+            logger.error("ffmpeg stderr: " + e.stderr)
+            if os.path.exists(mp3_path): os.remove(mp3_path)
+            return None
+        except FileNotFoundError:
+            logger.error("ffmpeg not found. Please ensure ffmpeg is installed and in the system's PATH.")
+            return None
+
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Скачивает и конвертирует аудио в MP3, используя все известные методы обхода блокировок
-        и механизм отката при ошибке прокси.
+        Шаг 1: Скачивает аудиофайл в специальную временную папку.
+        Шаг 2: Конвертирует его в MP3.
         """
-        logger.info(f"Starting audio download for URL: {url}")
+        logger.info(f"Starting two-step audio download for URL: {url}")
 
-        # Создаем временный файл, куда yt-dlp сохранит результат
-        temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix='.tmp')
-        temp_audio_path = temp_audio_file.name
-        temp_audio_file.close()
+        temp_dir = tempfile.mkdtemp()
+        source_audio_path = None
+        final_mp3_path = None
 
-        ydl_opts = self._get_ydl_options()
-        # Указываем шаблон имени файла без расширения, yt-dlp добавит .mp3
-        ydl_opts['outtmpl'] = temp_audio_path
-
-        final_path = None
         try:
-            logger.info("Starting download process with yt-dlp (targeting MP3)...")
+            # ИЗМЕНЕНИЕ: Задаем шаблон имени файла, чтобы yt-dlp сам его создал
+            out_template = os.path.join(temp_dir, '%(id)s.%(ext)s')
+            ydl_opts = self._get_ydl_options(out_template)
 
-            # --- Блок с повторной попыткой без прокси ---
+            logger.info("Step 1: Downloading audio with yt-dlp...")
+            info = None
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
+                    info = ydl.extract_info(url, download=True)
             except yt_dlp.utils.DownloadError as e:
                 if 'proxy' in str(e).lower() and 'proxy' in ydl_opts:
-                    logger.warning(f"Proxy error on audio download: {e}. Retrying without proxy...")
+                    logger.warning(f"Proxy error on download. Retrying without proxy...")
                     del ydl_opts['proxy']
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
+                        info = ydl.extract_info(url, download=True)
                 else:
                     raise e
-            # --- Конец блока ---
 
-            # ИЗМЕНЕНИЕ: Ожидаем файл с расширением .mp3
-            final_path = temp_audio_path + '.mp3'
-            if not os.path.exists(final_path) or os.path.getsize(final_path) == 0:
-                logger.error(f"Downloaded file not found or is empty. Expected at: {final_path}")
-                files_in_dir = os.listdir(os.path.dirname(final_path))
-                logger.error(f"Files found in temp dir: {files_in_dir}")
+            # ИЗМЕНЕНИЕ: Получаем точный путь к скачанному файлу из ответа yt-dlp
+            if info and 'requested_downloads' in info and info['requested_downloads']:
+                source_audio_path = info['requested_downloads'][0].get('filepath')
+            else:
+                # Резервный метод, если `requested_downloads` пуст
+                source_audio_path = ydl.prepare_filename(info)
+
+            if not source_audio_path or not os.path.exists(source_audio_path) or os.path.getsize(
+                    source_audio_path) == 0:
+                logger.error(f"Download failed: file not found or is empty. Path: {source_audio_path}")
                 return None, 'DOWNLOAD_FAILED'
 
-            logger.info(f"Audio successfully downloaded and converted to: {final_path}")
-            return final_path, None
+            logger.info(f"Step 1 successful. Downloaded file: {source_audio_path}")
+
+            logger.info("Step 2: Converting to MP3...")
+            final_mp3_path = self._convert_to_mp3(source_audio_path)
+
+            if not final_mp3_path:
+                logger.error("Conversion to MP3 failed.")
+                return None, 'CONVERSION_FAILED'
+
+            logger.info(f"Step 2 successful. Final MP3 path: {final_mp3_path}")
+            return final_mp3_path, None
 
         except yt_dlp.utils.DownloadError as e:
-            error_str = str(e).lower()
             logger.error(f"yt-dlp download failed for {url}: {e}")
-
-            if 'login required' in error_str or 'sign in to confirm' in error_str:
-                return None, 'LOGIN_REQUIRED'
-            elif 'age-restricted' in error_str:
-                return None, 'AGE_RESTRICTED'
-            elif 'private video' in error_str:
-                return None, 'PRIVATE_VIDEO'
-            elif 'video unavailable' in error_str:
-                return None, 'VIDEO_UNAVAILABLE'
-            elif 'player response' in error_str:
-                return None, 'PLAYER_RESPONSE_ERROR'
-            else:
-                return None, 'DOWNLOAD_FAILED'
-
+            return None, 'DOWNLOAD_FAILED'
         except Exception as e:
-            logger.error(f"General error during audio download: {e}", exc_info=True)
+            logger.error(f"An unexpected error occurred: {e}", exc_info=True)
             return None, 'GENERAL_ERROR'
-
         finally:
-            # Очищаем временный .tmp файл, если он остался
-            if os.path.exists(temp_audio_path):
-                try:
-                    os.remove(temp_audio_path)
-                except OSError:
-                    pass
+            # Очищаем временную папку со всеми скачанными файлами
+            if os.path.exists(temp_dir):
+                logger.info(f"Cleaning up temporary directory: {temp_dir}")
+                shutil.rmtree(temp_dir)
+
