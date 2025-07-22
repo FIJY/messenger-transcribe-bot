@@ -31,6 +31,7 @@ class YouTubeService:
             'retries': 5,
             'fragment_retries': 5,
             'extractor_retries': 5,
+            'cachedir': False,  # НОВАЯ ОПЦИЯ: отключаем кэширование, чтобы избежать устаревших данных
             'extractor_args': {
                 'youtube': {
                     'player_client': ['ios', 'android', 'web'],
@@ -114,4 +115,3 @@ class YouTubeService:
                 except OSError:
                     pass
             return None, 'GENERAL_ERROR'
-
