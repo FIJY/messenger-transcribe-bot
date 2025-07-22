@@ -13,18 +13,18 @@ class DownloaderService:
         """
         Инициализация сервиса загрузки.
         """
-        logger.info("DownloaderService initialized with simplified configuration.")
+        logger.info("DownloaderService initialized, targeting MP3 format.")
 
     def _get_ydl_options(self) -> dict:
         """
         Собирает и возвращает полный набор опций для yt-dlp.
-        Эта версия использует упрощенный набор опций для повышения стабильности.
+        Эта версия нацелена на скачивание и конвертацию в MP3 для большей стабильности.
         """
         opts = {
             'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
-            'forceipv4': True, # Принудительно используем IPv4 для стабильности
+            'forceipv4': True,
             'noplaylist': True,
             'nocheckcertificate': True,
             'socket_timeout': 60,
@@ -32,14 +32,13 @@ class DownloaderService:
             'fragment_retries': 5,
             'extractor_retries': 5,
             'cachedir': False,
-            # УБРАНЫ АГРЕССИВНЫЕ ОПЦИИ (extractor_args и http_headers)
+            # ИЗМЕНЕНИЕ: Конвертируем в MP3 вместо WAV
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'wav',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192', # Стандартное качество для MP3
             }],
-            'postprocessor_args': [
-                '-ar', '16000'
-            ],
+            # 'postprocessor_args' убран, т.к. для MP3 он не нужен
         }
         proxy_url = os.getenv('YT_DLP_PROXY')
         if proxy_url:
@@ -48,21 +47,23 @@ class DownloaderService:
 
     def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Скачивает и конвертирует аудио, используя все известные методы обхода блокировок
+        Скачивает и конвертирует аудио в MP3, используя все известные методы обхода блокировок
         и механизм отката при ошибке прокси.
         """
         logger.info(f"Starting audio download for URL: {url}")
 
+        # Создаем временный файл, куда yt-dlp сохранит результат
         temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix='.tmp')
         temp_audio_path = temp_audio_file.name
         temp_audio_file.close()
 
         ydl_opts = self._get_ydl_options()
+        # Указываем шаблон имени файла без расширения, yt-dlp добавит .mp3
         ydl_opts['outtmpl'] = temp_audio_path
 
         final_path = None
         try:
-            logger.info("Starting download process with yt-dlp (simplified configuration)...")
+            logger.info("Starting download process with yt-dlp (targeting MP3)...")
 
             # --- Блок с повторной попыткой без прокси ---
             try:
@@ -78,10 +79,10 @@ class DownloaderService:
                     raise e
             # --- Конец блока ---
 
-            final_path = temp_audio_path + '.wav'
+            # ИЗМЕНЕНИЕ: Ожидаем файл с расширением .mp3
+            final_path = temp_audio_path + '.mp3'
             if not os.path.exists(final_path) or os.path.getsize(final_path) == 0:
                 logger.error(f"Downloaded file not found or is empty. Expected at: {final_path}")
-                # Дополнительно логируем, что находится в папке, если файл не найден
                 files_in_dir = os.listdir(os.path.dirname(final_path))
                 logger.error(f"Files found in temp dir: {files_in_dir}")
                 return None, 'DOWNLOAD_FAILED'
@@ -111,6 +112,7 @@ class DownloaderService:
             return None, 'GENERAL_ERROR'
 
         finally:
+            # Очищаем временный .tmp файл, если он остался
             if os.path.exists(temp_audio_path):
                 try:
                     os.remove(temp_audio_path)
