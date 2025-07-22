@@ -13,54 +13,40 @@ class YouTubeService:
         """
         Инициализация сервиса для работы с YouTube.
         """
-        # Общие, самые надежные опции вынесены в отдельный метод,
-        # чтобы избежать дублирования кода.
-        pass
+        logger.info("YouTubeService initialized with resilient settings.")
 
-    def _get_enhanced_ydl_options(self) -> Dict:
+    def _get_ydl_options(self) -> dict:
         """
-        Возвращает словарь с расширенными опциями для yt-dlp,
-        включая прокси и заголовки для обхода блокировок.
+        Собирает опции для yt-dlp, нацеленные на отказоустойчивое скачивание через прокси.
         """
         opts = {
             'quiet': True,
             'no_warnings': True,
+            'forceipv4': True,
             'noplaylist': True,
             'nocheckcertificate': True,
-            'socket_timeout': 60,
-            'retries': 5,
-            'fragment_retries': 5,
-            'extractor_retries': 5,
-            'cachedir': False,  # НОВАЯ ОПЦИЯ: отключаем кэширование, чтобы избежать устаревших данных
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios', 'android', 'web'],
-                    'player_skip': ['webpage', 'configs'],
-                    'skip': ['dash', 'hls'],
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1',
-                'Accept-Language': 'en-US,en;q=0.9',
-            }
+            'socket_timeout': 20,  # Короткий таймаут для быстрого отбрасывания плохих IP
+            'retries': 10,  # Больше попыток для повышения шанса на успех
+            'cachedir': False,
         }
-
-        proxy_url = os.getenv('YT_DLP_PROXY')
-        if proxy_url:
-            opts['proxy'] = proxy_url
-        else:
-            # Эта проверка осталась, но теперь она не будет прерывать работу
-            logger.warning("YT_DLP_PROXY is not set. YouTube downloads may fail.")
-
+        # ВАЖНО: Эта функция не добавляет прокси. Прокси добавляется в вызывающем методе.
         return opts
 
     def get_info(self, url: str) -> Optional[Dict]:
         """
-        Извлекает информацию о видео, не скачивая его,
-        используя расширенные опции для обхода блокировок.
+        Извлекает информацию о видео, используя отказоустойчивые настройки и только прокси.
         """
-        logger.info(f"Извлекаем информацию для URL (с расширенными опциями): {url}")
-        ydl_opts = self._get_enhanced_ydl_options()
+        logger.info(f"Извлекаем информацию для URL (с отказоустойчивыми настройками): {url}")
+
+        ydl_opts = self._get_ydl_options()
+
+        proxy_url = os.getenv('YT_DLP_PROXY')
+        if not proxy_url:
+            logger.error("YT_DLP_PROXY environment variable is not set. Cannot get video info.")
+            return None
+
+        ydl_opts['proxy'] = proxy_url
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -70,20 +56,30 @@ class YouTubeService:
             return None
 
     def download_subtitles(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        """Скачивает готовые субтитры (если есть) в формате .srt."""
+        """
+        Скачивает готовые субтитры (если есть) в формате .srt.
+        """
         temp_srt_file = None
         try:
             temp_srt_file = tempfile.NamedTemporaryFile(delete=False, suffix=".srt", mode='w', encoding='utf-8')
             temp_srt_path = temp_srt_file.name
             temp_srt_file.close()
 
-            ydl_opts = self._get_enhanced_ydl_options()
+            # Используем те же отказоустойчивые настройки
+            ydl_opts = self._get_ydl_options()
             ydl_opts.update({
                 'writesubtitles': True,
                 'subtitleslangs': ['en', 'ru'],
                 'skip_download': True,
                 'outtmpl': temp_srt_path.replace('.srt', ''),
             })
+
+            proxy_url = os.getenv('YT_DLP_PROXY')
+            if not proxy_url:
+                logger.error("YT_DLP_PROXY environment variable is not set. Cannot download subtitles.")
+                return None, "PROXY_NOT_CONFIGURED"
+
+            ydl_opts['proxy'] = proxy_url
 
             logger.info(f"Начинаем скачивание субтитров с YouTube: {url}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -94,7 +90,6 @@ class YouTubeService:
                     return None, "NO_SUBTITLES"
 
             final_srt_path = None
-            # yt-dlp может добавить язык к имени файла, например, 'filename.en.srt'
             base_path = os.path.dirname(temp_srt_path)
             base_name = os.path.basename(temp_srt_path).replace('.srt', '')
             for file in os.listdir(base_path):
