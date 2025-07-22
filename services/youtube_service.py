@@ -25,8 +25,8 @@ class YouTubeService:
             'forceipv4': True,
             'noplaylist': True,
             'nocheckcertificate': True,
-            'socket_timeout': 20,  # Короткий таймаут для быстрого отбрасывания плохих IP
-            'retries': 10,  # Больше попыток для повышения шанса на успех
+            'socket_timeout': 15,  # ИЗМЕНЕНИЕ: Уменьшаем таймаут, чтобы быстрее отбрасывать плохие IP
+            'retries': 5,  # ИЗМЕНЕНИЕ: Уменьшаем кол-во попыток, чтобы не ждать слишком долго при проблемах с прокси
             'cachedir': False,
         }
         # ВАЖНО: Эта функция не добавляет прокси. Прокси добавляется в вызывающем методе.
@@ -52,7 +52,12 @@ class YouTubeService:
                 info = ydl.extract_info(url, download=False)
             return info
         except Exception as e:
-            logger.error(f"Не удалось извлечь информацию для {url}: {e}")
+            # ИЗМЕНЕНИЕ: Добавляем более конкретное сообщение об ошибке
+            error_message = str(e)
+            logger.error(f"Не удалось извлечь информацию для {url}: {error_message}")
+            if 'timed out' in error_message or 'ConnectTimeoutError' in error_message:
+                logger.error(
+                    "ОШИБКА: Тайм-аут при подключении к прокси-серверу. Проверьте настройки вашего прокси или выберите другой регион.")
             return None
 
     def download_subtitles(self, url: str) -> Tuple[Optional[str], Optional[str]]:
@@ -103,7 +108,12 @@ class YouTubeService:
                 return None, "NO_SUBTITLES"
 
         except Exception as e:
-            logger.error(f"Ошибка при скачивании субтитров из {url}: {e}")
+            # ИЗМЕНЕНИЕ: Добавляем более конкретное сообщение об ошибке
+            error_message = str(e)
+            logger.error(f"Ошибка при скачивании субтитров из {url}: {error_message}")
+            if 'timed out' in error_message or 'ConnectTimeoutError' in error_message:
+                logger.error(
+                    "ОШИБКА: Тайм-аут при подключении к прокси-серверу. Проверьте настройки вашего прокси или выберите другой регион.")
             if temp_srt_file and os.path.exists(temp_srt_file.name):
                 try:
                     os.remove(temp_srt_file.name)
