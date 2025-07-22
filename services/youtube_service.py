@@ -13,7 +13,7 @@ class YouTubeService:
         """
         Инициализация сервиса для работы с YouTube.
         """
-        logger.info("YouTubeService initialized with resilient settings.")
+        logger.info("YouTubeService initialized with resilient proxy-only settings.")
 
     def _get_ydl_options(self) -> dict:
         """
@@ -25,11 +25,10 @@ class YouTubeService:
             'forceipv4': True,
             'noplaylist': True,
             'nocheckcertificate': True,
-            'socket_timeout': 15,  # Уменьшаем таймаут, чтобы быстрее отбрасывать плохие IP
-            'retries': 2,  # ИЗМЕНЕНИЕ: Уменьшаем кол-во попыток, чтобы не ждать слишком долго при проблемах с прокси
+            'socket_timeout': 15,  # Короткий таймаут для быстрого отбрасывания плохих IP
+            'retries': 5,  # Умеренное кол-во попыток для баланса скорости и надежности
             'cachedir': False,
         }
-        # ВАЖНО: Эта функция не добавляет прокси. Прокси добавляется в вызывающем методе.
         return opts
 
     def get_info(self, url: str) -> Optional[Dict]:
@@ -52,7 +51,6 @@ class YouTubeService:
                 info = ydl.extract_info(url, download=False)
             return info
         except Exception as e:
-            # ИЗМЕНЕНИЕ: Добавляем более конкретное сообщение об ошибке
             error_message = str(e)
             logger.error(f"Не удалось извлечь информацию для {url}: {error_message}")
             if 'timed out' in error_message or 'ConnectTimeoutError' in error_message:
@@ -70,7 +68,6 @@ class YouTubeService:
             temp_srt_path = temp_srt_file.name
             temp_srt_file.close()
 
-            # Используем те же отказоустойчивые настройки
             ydl_opts = self._get_ydl_options()
             ydl_opts.update({
                 'writesubtitles': True,
@@ -108,7 +105,6 @@ class YouTubeService:
                 return None, "NO_SUBTITLES"
 
         except Exception as e:
-            # ИЗМЕНЕНИЕ: Добавляем более конкретное сообщение об ошибке
             error_message = str(e)
             logger.error(f"Ошибка при скачивании субтитров из {url}: {error_message}")
             if 'timed out' in error_message or 'ConnectTimeoutError' in error_message:
