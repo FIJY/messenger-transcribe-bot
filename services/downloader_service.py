@@ -13,18 +13,18 @@ class DownloaderService:
         """
         Инициализация сервиса загрузки.
         """
-        logger.info("DownloaderService initialized with enhanced configuration.")
+        logger.info("DownloaderService initialized with simplified configuration.")
 
     def _get_ydl_options(self) -> dict:
         """
         Собирает и возвращает полный набор опций для yt-dlp.
+        Эта версия использует упрощенный набор опций для повышения стабильности.
         """
         opts = {
             'format': 'bestaudio/best',
-            # 'quiet': True, # ВРЕМЕННО ОТКЛЮЧАЕМ для получения подробных логов
-            # 'no_warnings': True, # ВРЕМЕННО ОТКЛЮЧАЕМ для получения подробных логов
-            'verbose': True,  # НОВОЕ: Включаем максимальную детализацию логов
-            'forceipv4': True, # НОВОЕ: Принудительно используем IPv4 для стабильности
+            'quiet': True,
+            'no_warnings': True,
+            'forceipv4': True, # Принудительно используем IPv4 для стабильности
             'noplaylist': True,
             'nocheckcertificate': True,
             'socket_timeout': 60,
@@ -32,17 +32,7 @@ class DownloaderService:
             'fragment_retries': 5,
             'extractor_retries': 5,
             'cachedir': False,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios', 'android', 'web'],
-                    'player_skip': ['webpage', 'configs'],
-                    'skip': ['dash', 'hls'],
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1',
-                'Accept-Language': 'en-US,en;q=0.9',
-            },
+            # УБРАНЫ АГРЕССИВНЫЕ ОПЦИИ (extractor_args и http_headers)
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'wav',
@@ -72,7 +62,7 @@ class DownloaderService:
 
         final_path = None
         try:
-            logger.info("Starting download process with yt-dlp (enhanced configuration)...")
+            logger.info("Starting download process with yt-dlp (simplified configuration)...")
 
             # --- Блок с повторной попыткой без прокси ---
             try:
