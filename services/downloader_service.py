@@ -12,42 +12,24 @@ class DownloaderService:
     def __init__(self):
         """
         Инициализация сервиса загрузки.
-        Использует yt-dlp с расширенной конфигурацией и поддержкой прокси.
         """
         logger.info("DownloaderService initialized with enhanced configuration.")
 
-    def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+    def _get_ydl_options(self) -> dict:
         """
-        Скачивает и конвертирует аудио с YouTube, используя все известные методы обхода блокировок.
+        Собирает и возвращает полный набор опций для yt-dlp.
         """
-        logger.info(f"Starting audio download for URL: {url}")
-
-        # Создаем временный файл без расширения. yt-dlp добавит .wav после конвертации.
-        temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix='.tmp')
-        temp_audio_path = temp_audio_file.name
-        temp_audio_file.close()
-
-        # Расширенная конфигурация для максимальной надежности
-        ydl_opts = {
+        opts = {
             'format': 'bestaudio/best',
-            'outtmpl': temp_audio_path,  # Сохраняем во временный файл без расширения
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
             'nocheckcertificate': True,
             'socket_timeout': 60,
-            'retries': 5,  # Больше попыток
+            'retries': 5,
             'fragment_retries': 5,
             'extractor_retries': 5,
-
-            # Конвертируем аудио в WAV 16kHz - идеальный формат для Whisper
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'wav',
-                'preferredquality': '16000',
-            }],
-
-            # Самые продвинутые аргументы для обхода блокировок
+            'cachedir': False,
             'extractor_args': {
                 'youtube': {
                     'player_client': ['ios', 'android', 'web'],
@@ -55,32 +37,60 @@ class DownloaderService:
                     'skip': ['dash', 'hls'],
                 }
             },
-
-            # Детальные HTTP заголовки для имитации iPhone
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1',
                 'Accept-Language': 'en-US,en;q=0.9',
-            }
+            },
+            # ИСПРАВЛЕНИЕ: Правильная конфигурация для конвертации в WAV 16kHz
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'wav',
+            }],
+            # Используем postprocessor_args для точной настройки ffmpeg
+            'postprocessor_args': [
+                '-ar', '16000'  # Устанавливаем частоту дискретизации 16kHz
+            ],
         }
-
         proxy_url = os.getenv('YT_DLP_PROXY')
         if proxy_url:
-            logger.info(f"Using proxy for yt-dlp...")
-            ydl_opts['proxy'] = proxy_url
-        else:
-            logger.warning("YT_DLP_PROXY is not set. This may cause download failures.")
+            opts['proxy'] = proxy_url
+        return opts
 
+    def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Скачивает и конвертирует аудио, используя все известные методы обхода блокировок
+        и механизм отката при ошибке прокси.
+        """
+        logger.info(f"Starting audio download for URL: {url}")
+
+        temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix='.tmp')
+        temp_audio_path = temp_audio_file.name
+        temp_audio_file.close()
+
+        ydl_opts = self._get_ydl_options()
+        ydl_opts['outtmpl'] = temp_audio_path
+
+        final_path = None
         try:
             logger.info("Starting download process with yt-dlp (enhanced configuration)...")
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+            # --- Блок с повторной попыткой без прокси ---
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
+            except yt_dlp.utils.DownloadError as e:
+                if 'proxy' in str(e).lower() and 'proxy' in ydl_opts:
+                    logger.warning(f"Proxy error on audio download: {e}. Retrying without proxy...")
+                    del ydl_opts['proxy']
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+                else:
+                    raise e
+            # --- Конец блока ---
 
-            # yt-dlp должен был создать файл .wav
             final_path = temp_audio_path + '.wav'
-
-            if not os.path.exists(final_path):
-                logger.error(f"Downloaded file not found. Expected at: {final_path}")
+            if not os.path.exists(final_path) or os.path.getsize(final_path) == 0:
+                logger.error(f"Downloaded file not found or is empty. Expected at: {final_path}")
                 return None, 'DOWNLOAD_FAILED'
 
             logger.info(f"Audio successfully downloaded and converted to: {final_path}")
@@ -108,10 +118,8 @@ class DownloaderService:
             return None, 'GENERAL_ERROR'
 
         finally:
-            # Очищаем временный .tmp файл, если он остался
             if os.path.exists(temp_audio_path):
                 try:
                     os.remove(temp_audio_path)
                 except OSError:
                     pass
-
