@@ -21,8 +21,10 @@ class DownloaderService:
         """
         opts = {
             'format': 'bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
+            # 'quiet': True, # ВРЕМЕННО ОТКЛЮЧАЕМ для получения подробных логов
+            # 'no_warnings': True, # ВРЕМЕННО ОТКЛЮЧАЕМ для получения подробных логов
+            'verbose': True,  # НОВОЕ: Включаем максимальную детализацию логов
+            'forceipv4': True, # НОВОЕ: Принудительно используем IPv4 для стабильности
             'noplaylist': True,
             'nocheckcertificate': True,
             'socket_timeout': 60,
@@ -41,14 +43,12 @@ class DownloaderService:
                 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1',
                 'Accept-Language': 'en-US,en;q=0.9',
             },
-            # ИСПРАВЛЕНИЕ: Правильная конфигурация для конвертации в WAV 16kHz
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'wav',
             }],
-            # Используем postprocessor_args для точной настройки ffmpeg
             'postprocessor_args': [
-                '-ar', '16000'  # Устанавливаем частоту дискретизации 16kHz
+                '-ar', '16000'
             ],
         }
         proxy_url = os.getenv('YT_DLP_PROXY')
@@ -91,6 +91,9 @@ class DownloaderService:
             final_path = temp_audio_path + '.wav'
             if not os.path.exists(final_path) or os.path.getsize(final_path) == 0:
                 logger.error(f"Downloaded file not found or is empty. Expected at: {final_path}")
+                # Дополнительно логируем, что находится в папке, если файл не найден
+                files_in_dir = os.listdir(os.path.dirname(final_path))
+                logger.error(f"Files found in temp dir: {files_in_dir}")
                 return None, 'DOWNLOAD_FAILED'
 
             logger.info(f"Audio successfully downloaded and converted to: {final_path}")
