@@ -99,11 +99,13 @@ class TelegramHandler:
             return
 
         user_state = user.get('state')
-        if update.message and user_state and user_state.get('mode') == 'chatting':
+        # ИСПРАВЛЕНИЕ: Добавляем проверку, что user_state является словарем
+        if update.message and isinstance(user_state, dict) and user_state.get('mode') == 'chatting':
             await self._handle_chat_message(user_id, chat_id, update.message.text, user_state, user_lang)
             return
 
-        if update.message and update.message.photo and user_state and user_state.get(
+        # ИСПРАВЛЕНИЕ: Добавляем проверку, что user_state является словарем
+        if update.message and update.message.photo and isinstance(user_state, dict) and user_state.get(
                 'mode') == 'awaiting_payment_proof':
             await self.payment_service.handle_payment_proof(update.message)
             return
