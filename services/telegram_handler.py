@@ -99,12 +99,10 @@ class TelegramHandler:
             return
 
         user_state = user.get('state')
-        # ИСПРАВЛЕНИЕ: Добавляем проверку, что user_state является словарем
         if update.message and isinstance(user_state, dict) and user_state.get('mode') == 'chatting':
             await self._handle_chat_message(user_id, chat_id, update.message.text, user_state, user_lang)
             return
 
-        # ИСПРАВЛЕНИЕ: Добавляем проверку, что user_state является словарем
         if update.message and update.message.photo and isinstance(user_state, dict) and user_state.get(
                 'mode') == 'awaiting_payment_proof':
             await self.payment_service.handle_payment_proof(update.message)
@@ -166,6 +164,12 @@ class TelegramHandler:
                 await self.send_message(chat_id, "Usage: `/grant <user_id> <days>`")
 
     async def _handle_chat_message(self, user_id: str, chat_id: int, question: str, state: dict, lang_code: str):
+        # ИСПРАВЛЕНИЕ: Проверяем, что пользователь прислал именно текст
+        if not question:
+            await self.send_message(chat_id,
+                                    "Please send a text question. I can't process other message types in chat mode.")
+            return
+
         note_id_str = state.get('note_id')
         if not note_id_str:
             self.database.update_user(user_id, {'state': None})
