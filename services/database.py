@@ -41,10 +41,12 @@ class Database:
         user_count_doc = self.db.app_counters.find_one_and_update(
             {'name': 'total_users'}, {'$inc': {'count': 1}}, upsert=True, return_document=True)
         free_minutes = 10 if user_count_doc.get('count', 0) <= 50 else 5
+
         user_data = {
             "_id": str(user_id),
             "user_id": str(user_id),
             "username": kwargs.get('username'),
+            "language_code": kwargs.get('language_code', 'en'),  # Сохраняем язык пользователя
             "created_at": datetime.now(timezone.utc),
             "last_seen": datetime.now(timezone.utc),
             "plan": "free",
@@ -54,7 +56,7 @@ class Database:
             "state": None  # Поле для отслеживания режима чата
         }
         self.db.users.update_one({"_id": str(user_id)}, {"$setOnInsert": user_data}, upsert=True)
-        logger.info(f"Created or found user {user_id} with {free_minutes} free minutes.")
+        logger.info(f"Created or found user {user_id} with language '{user_data['language_code']}'.")
         return self.get_user(user_id)
 
     def save_raw_transcription(self, s3_key: str, **kwargs):
@@ -164,7 +166,8 @@ class Database:
                     f"Granted premium for {days} days to user {user_id}. New expiry: {new_expiry_date.isoformat()}")
                 return True
             else:
-                logger.warning(f"User {user_id} found, but subscription was not updated. Matched: {result.matched_count}")
+                logger.warning(
+                    f"User {user_id} found, but subscription was not updated. Matched: {result.matched_count}")
                 return False
         except Exception as e:
             logger.error(f"Failed to grant premium to user {user_id}: {e}", exc_info=True)

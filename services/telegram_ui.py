@@ -4,54 +4,54 @@ from typing import List, Dict, Any, Tuple
 from bson import ObjectId
 from datetime import datetime, timezone
 
+from .localization_service import LocalizationService
+
 
 class TelegramUI:
-    def get_welcome_message(self) -> str:
-        return (
-            "👋 *Welcome!*\n\n"
-            "I can transcribe audio and video, create summaries, and analyze content for you.\n\n"
-            "Just send me a file, a voice message, or a link to a video (like YouTube)."
-        )
+    def __init__(self, localizer: LocalizationService):
+        self.localizer = localizer
+
+    def get_welcome_message(self, lang_code: str) -> str:
+        return self.localizer.get_string(lang_code, 'welcome_message')
 
     def get_status_message(self, user: Dict[str, Any]) -> str:
+        lang_code = user.get('language_code', 'en')
         plan = user.get('plan', 'free').capitalize()
         minutes_used = round(user.get('minutes_used', 0), 2)
         minutes_limit = user.get('minutes_limit', 0)
 
+        header = self.localizer.get_string(lang_code, 'status_header')
+        plan_str = self.localizer.get_string(lang_code, 'status_plan', plan=plan)
+        minutes_str = self.localizer.get_string(lang_code, 'status_minutes_used', minutes_used=minutes_used,
+                                                minutes_limit=minutes_limit)
+
         expires_at = user.get('subscription_expires_at')
-        if expires_at and expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        expires_str = ""
+        if expires_at:
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            expires_date = expires_at.strftime('%Y-%m-%d %H:%M')
+            expires_str = self.localizer.get_string(lang_code, 'status_expires_on', expires_date=expires_date)
 
-        expires_str = f"_Expires on: {expires_at.strftime('%Y-%m-%d %H:%M')} UTC_" if expires_at else ""
+        return f"{header}\n\n{plan_str}\n{minutes_str}\n{expires_str}"
 
+    def get_help_message(self, lang_code: str, add_to_group_url: str) -> str:
         return (
-            f"📊 *Your Status*\n\n"
-            f"🔹 *Plan:* {plan}\n"
-            f"🔸 *Minutes Used:* {minutes_used} / {minutes_limit}\n"
-            f"{expires_str}"
+            f"{self.localizer.get_string(lang_code, 'help_header')}\n\n"
+            f"{self.localizer.get_string(lang_code, 'help_body')}\n\n"
+            f"{self.localizer.get_string(lang_code, 'help_commands_header')}\n"
+            f"{self.localizer.get_string(lang_code, 'help_command_start')}\n"
+            f"{self.localizer.get_string(lang_code, 'help_command_status')}\n"
+            f"{self.localizer.get_string(lang_code, 'help_command_search')}\n"
+            f"{self.localizer.get_string(lang_code, 'help_command_cancel')}\n\n"
+            f"{self.localizer.get_string(lang_code, 'help_add_to_group', add_to_group_url=add_to_group_url)}"
         )
 
-    def get_help_message(self, add_to_group_url: str) -> str:
-        return (
-            "🆘 *Help & Information*\n\n"
-            "I can process:\n"
-            "- Audio files (mp3, wav, ogg, etc.)\n"
-            "- Video files (mp4, mov, etc.)\n"
-            "- Voice messages & video notes\n"
-            "- Links to YouTube videos\n\n"
-            "*Commands:*\n"
-            "`/start` - Restart the bot\n"
-            "`/status` - Check your plan details\n"
-            "`/search <query>` - Search your notes\n"
-            "`/cancel` - Exit special modes (like chat)\n\n"
-            f"[Click here to add me to a group]({add_to_group_url})"
-        )
-
-    def format_search_results(self, notes: List[Dict[str, Any]], query: str) -> str:
+    def format_search_results(self, lang_code: str, notes: List[Dict[str, Any]], query: str) -> str:
         if not notes:
-            return f"No notes found matching your query: `{query}`"
+            return f"No notes found matching your query: `{query}`"  # Можно добавить в локализацию
 
-        header = f"🔍 *Search Results for:* `{query}`\n\n"
+        header = f"🔍 *Search Results for:* `{query}`\n\n"  # Можно добавить в локализацию
         results_list = []
         for note in notes:
             content_preview = note.get('content', '')[:100].replace('\n', ' ') + '...'
@@ -60,30 +60,34 @@ class TelegramUI:
 
         return header + "\n".join(results_list)
 
-    def get_main_actions_menu(self, note_id: ObjectId) -> Tuple[str, InlineKeyboardMarkup]:
-        """
-        Возвращает основное меню действий после транскрипции.
-        """
-        text = "What would you like to do with this transcription?"
+    def get_main_actions_menu(self, lang_code: str, note_id: ObjectId) -> Tuple[str, InlineKeyboardMarkup]:
+        text = self.localizer.get_string(lang_code, 'menu_main_prompt')
         keyboard = [
-            [InlineKeyboardButton("💬 Задать вопрос по тексту", callback_data=f"ACTION_CHAT_{note_id}")],
+            [InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_ask_question'),
+                                  callback_data=f"ACTION_CHAT_{note_id}")],
             [
-                InlineKeyboardButton("📊 Create Smart Report", callback_data=f"ACTION_REPORT_{note_id}"),
-                InlineKeyboardButton("🌐 Translate", callback_data=f"ACTION_TRANSLATE_{note_id}")
+                InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_smart_report'),
+                                     callback_data=f"ACTION_REPORT_{note_id}"),
+                InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_translate'),
+                                     callback_data=f"ACTION_TRANSLATE_{note_id}")
             ],
             [
-                InlineKeyboardButton("📝 Simple Summary", callback_data=f"ACTION_SUMMARIZE_{note_id}"),
-                InlineKeyboardButton("📜 Create Subtitles (.srt)", callback_data=f"ACTION_SUBTITLES_{note_id}")
+                InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_summary'),
+                                     callback_data=f"ACTION_SUMMARIZE_{note_id}"),
+                InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_subtitles'),
+                                     callback_data=f"ACTION_SUBTITLES_{note_id}")
             ],
             [
-                InlineKeyboardButton("💼 Business Analysis", callback_data=f"ACTION_BIZANALYSIS_{note_id}"),
-                InlineKeyboardButton("🗑️ Delete Note", callback_data=f"ACTION_DELETE_{note_id}")
+                InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_biz_analysis'),
+                                     callback_data=f"ACTION_BIZANALYSIS_{note_id}"),
+                InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_delete'),
+                                     callback_data=f"ACTION_DELETE_{note_id}")
             ]
         ]
         return text, InlineKeyboardMarkup(keyboard)
 
-    def get_delete_confirmation(self, note_id: ObjectId) -> Tuple[str, InlineKeyboardMarkup]:
-        text = "Are you sure you want to permanently delete this note?"
+    def get_delete_confirmation(self, lang_code: str, note_id: ObjectId) -> Tuple[str, InlineKeyboardMarkup]:
+        text = "Are you sure you want to permanently delete this note?"  # Можно добавить в локализацию
         keyboard = [
             [
                 InlineKeyboardButton("✅ Yes, delete it", callback_data=f"ACTION_DELETE_CONFIRM_{note_id}"),
@@ -91,5 +95,3 @@ class TelegramUI:
             ]
         ]
         return text, InlineKeyboardMarkup(keyboard)
-
-    # ... и другие UI-методы, если они у вас есть

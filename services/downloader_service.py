@@ -20,18 +20,19 @@ class DownloaderService:
 
     def _get_ydl_options(self, out_template: str) -> dict:
         """
-        Собирает опции для yt-dlp, нацеленные на отказоустойчивое скачивание через прокси.
+        Собирает опции для yt-dlp, нацеленные на отказоустойчивое скачивание ТОЛЬКО АУДИО.
         """
         opts = {
-            'format': 'bestaudio/best',
+            # ИЗМЕНЕНИЕ: Приоритет отдается аудио-форматам, чтобы не качать видео.
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
             'outtmpl': out_template,
             'quiet': True,
             'no_warnings': True,
             'forceipv4': True,
             'noplaylist': True,
             'nocheckcertificate': True,
-            'socket_timeout': 15,  # Короткий таймаут для быстрого отбрасывания плохих IP
-            'retries': 5,  # Умеренное кол-во попыток для баланса скорости и надежности
+            'socket_timeout': 15,
+            'retries': 5,
             'cachedir': False,
         }
         return opts
@@ -88,7 +89,6 @@ class DownloaderService:
             ydl_opts = self._get_ydl_options(out_template)
             info = None
 
-            # --- Логика "только прокси" ---
             proxy_url = os.getenv('YT_DLP_PROXY')
             if not proxy_url:
                 logger.error("YT_DLP_PROXY environment variable is not set. Cannot proceed.")
@@ -99,7 +99,6 @@ class DownloaderService:
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-            # --- Конец логики ---
 
             if info and 'requested_downloads' in info and info['requested_downloads']:
                 source_audio_path = info['requested_downloads'][0].get('filepath')
