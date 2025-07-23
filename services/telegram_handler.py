@@ -99,7 +99,9 @@ class TelegramHandler:
             return
 
         user_state = user.get('state')
-        if update.message and isinstance(user_state, dict) and user_state.get('mode') == 'chatting':
+        # ИСПРАВЛЕНИЕ: Добавляем проверку, что сообщение является текстовым, перед тем как входить в логику чата
+        if update.message and update.message.text and isinstance(user_state, dict) and user_state.get(
+                'mode') == 'chatting':
             await self._handle_chat_message(user_id, chat_id, update.message.text, user_state, user_lang)
             return
 
@@ -164,7 +166,6 @@ class TelegramHandler:
                 await self.send_message(chat_id, "Usage: `/grant <user_id> <days>`")
 
     async def _handle_chat_message(self, user_id: str, chat_id: int, question: str, state: dict, lang_code: str):
-        # ИСПРАВЛЕНИЕ: Проверяем, что пользователь прислал именно текст
         if not question:
             await self.send_message(chat_id,
                                     "Please send a text question. I can't process other message types in chat mode.")
