@@ -42,7 +42,7 @@ class Database:
             {'name': 'total_users'}, {'$inc': {'count': 1}}, upsert=True, return_document=True)
         free_minutes = 10 if user_count_doc.get('count', 0) <= 50 else 5
         user_data = {
-            "_id": str(user_id), # Используем Telegram ID как основной ключ
+            "_id": str(user_id),
             "user_id": str(user_id),
             "username": kwargs.get('username'),
             "created_at": datetime.now(timezone.utc),
@@ -51,9 +51,8 @@ class Database:
             "minutes_limit": free_minutes,
             "minutes_used": 0.0,
             "subscription_expires_at": None,
-            "state": None
+            "state": None  # Поле для отслеживания режима чата
         }
-        # Используем update_one с upsert=True для избежания дубликатов
         self.db.users.update_one({"_id": str(user_id)}, {"$setOnInsert": user_data}, upsert=True)
         logger.info(f"Created or found user {user_id} with {free_minutes} free minutes.")
         return self.get_user(user_id)
@@ -70,7 +69,7 @@ class Database:
             "user_id": user_id, "content": content, "created_at": datetime.now(timezone.utc),
             "type": "note", "tags": kwargs.get('tags', []), "s3_object_key": kwargs.get('s3_object_key'),
             "source_language": kwargs.get('detected_language'), "duration_minutes": kwargs.get('duration_minutes'),
-            "source_type": kwargs.get('source_type'), # Добавляем source_type
+            "source_type": kwargs.get('source_type'),
             "reports": {}
         }
         result = self.db.notes.insert_one(note_data)
@@ -134,9 +133,6 @@ class Database:
         return result.modified_count > 0
 
     def grant_premium_subscription(self, user_id: str, days: int) -> bool:
-        """
-        Выдает или продлевает премиум-подписку пользователю.
-        """
         user = self.get_user(user_id)
         if not user:
             logger.warning(f"Attempted to grant premium to non-existent user: {user_id}")
@@ -162,16 +158,12 @@ class Database:
         }
 
         try:
-            # ИСПРАВЛЕНИЕ: Используем правильное имя коллекции (self.db.users)
-            # и правильный фильтр для поиска ({"user_id": user_id})
             result = self.db.users.update_one({"user_id": user_id}, update_data)
             if result.modified_count > 0:
                 logger.info(
                     f"Granted premium for {days} days to user {user_id}. New expiry: {new_expiry_date.isoformat()}")
                 return True
             else:
-                # Эта ситуация может возникнуть, если пользователь не найден, хотя мы его проверили.
-                # Маловероятно, но лучше обработать.
                 logger.warning(f"User {user_id} found, but subscription was not updated. Matched: {result.matched_count}")
                 return False
         except Exception as e:
