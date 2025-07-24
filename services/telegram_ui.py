@@ -49,9 +49,9 @@ class TelegramUI:
 
     def format_search_results(self, lang_code: str, notes: List[Dict[str, Any]], query: str) -> str:
         if not notes:
-            return f"No notes found matching your query: `{query}`"  # Можно добавить в локализацию
+            return f"No notes found matching your query: `{query}`"
 
-        header = f"🔍 *Search Results for:* `{query}`\n\n"  # Можно добавить в локализацию
+        header = f"🔍 *Search Results for:* `{query}`\n\n"
         results_list = []
         for note in notes:
             content_preview = note.get('content', '')[:100].replace('\n', ' ') + '...'
@@ -82,12 +82,36 @@ class TelegramUI:
                                      callback_data=f"ACTION_BIZANALYSIS_{note_id}"),
                 InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_delete'),
                                      callback_data=f"ACTION_DELETE_{note_id}")
+            ],
+            # --- НОВАЯ КНОПКА ---
+            [
+                InlineKeyboardButton("📄 " + self.localizer.get_string(lang_code, 'button_export', default="Export"),
+                                     callback_data=f"ACTION_EXPORT_{note_id}")
+            ]
+        ]
+        return text, InlineKeyboardMarkup(keyboard)
+
+    # --- НОВЫЙ МЕТОД ---
+    def get_export_menu(self, lang_code: str, note_id: ObjectId) -> Tuple[str, InlineKeyboardMarkup]:
+        """Создает клавиатуру с выбором формата для экспорта."""
+        text = self.localizer.get_string(lang_code, 'export_prompt', default="Choose export format:")
+        keyboard = [
+            [
+                InlineKeyboardButton("Markdown (.md)", callback_data=f"EXPORT_MD_{note_id}"),
+                InlineKeyboardButton("Word (.docx)", callback_data=f"EXPORT_DOCX_{note_id}"),
+            ],
+            [
+                InlineKeyboardButton("PDF (.pdf)", callback_data=f"EXPORT_PDF_{note_id}")
+            ],
+            [
+                InlineKeyboardButton("⬅️ " + self.localizer.get_string(lang_code, 'button_back', default="Back"),
+                                     callback_data=f"ACTION_BACK_TO_MAIN_{note_id}")
             ]
         ]
         return text, InlineKeyboardMarkup(keyboard)
 
     def get_delete_confirmation(self, lang_code: str, note_id: ObjectId) -> Tuple[str, InlineKeyboardMarkup]:
-        text = "Are you sure you want to permanently delete this note?"  # Можно добавить в локализацию
+        text = "Are you sure you want to permanently delete this note?"
         keyboard = [
             [
                 InlineKeyboardButton("✅ Yes, delete it", callback_data=f"ACTION_DELETE_CONFIRM_{note_id}"),

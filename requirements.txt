@@ -17,3 +17,5 @@ hypercorn
 pycountry
 yt-dlp
 instaloader
+python-docx
+fpdf2
