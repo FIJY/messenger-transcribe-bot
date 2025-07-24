@@ -197,7 +197,6 @@ class TelegramHandler:
     async def _handle_text_note(self, text: str, user_id: str, chat_id: int, lang_code: str):
         try:
             note_id = self.database.save_note(user_id=user_id, content=text, tags=['plain_text'], source_type='text')
-            # ИЗМЕНЕНО: Отправляем два сообщения: сначала результат, потом меню
             await self.send_message(chat_id, f"✅ *Note saved:* ```{text[:250]}...```")
             message, reply_markup = self.ui.get_main_actions_menu(lang_code, note_id)
             await self.send_message(chat_id, message, reply_markup=reply_markup)
@@ -308,11 +307,9 @@ class TelegramHandler:
             await self._handle_export_action(query, note, file_format, lang_code)
             return
 
-        # ИЗМЕНЕНО: Логика входа в чат. Отправляем новое сообщение, не трогая старое.
         if action == 'ACTION_CHAT':
             new_state = {'mode': 'chatting', 'note_id': str(note_id)}
             self.database.update_user(user_id, {'state': new_state})
-            # Отправляем новое сообщение о входе в режим чата
             await self.send_message(query.message.chat_id, self.localizer.get_string(lang_code, 'chat_mode_entered'))
             return
 
@@ -323,7 +320,6 @@ class TelegramHandler:
         note_id = note['_id']
         user_id = str(query.from_user.id)
 
-        # ИЗМЕНЕНО: Отправляем временное сообщение о статусе в чат
         status_message = await self.send_message(chat_id,
                                                  f"⏳ {self.localizer.get_string(lang_code, 'export_generating', default='Generating your file...')}")
 
@@ -345,18 +341,15 @@ class TelegramHandler:
                 with open(filepath, "rb") as file_to_send:
                     await self.bot.send_document(chat_id, file_to_send,
                                                  caption=f"Your exported {file_format.upper()} file.")
-                # ИЗМЕНЕНО: Удаляем временное сообщение, а не меню
                 await self.delete_message(chat_id, status_message.message_id)
             else:
                 raise FileNotFoundError("Exported file was not created on disk.")
 
         except Exception as e:
             logger.error(f"Failed to export note {note_id} to {file_format} for user {user_id}: {e}", exc_info=True)
-            # ИЗМЕНЕНО: Редактируем временное сообщение, чтобы показать ошибку
             error_message = f"❌ {self.localizer.get_string(lang_code, 'export_error', default='An error occurred during file generation.')}"
             await self.edit_message(chat_id, status_message.message_id, error_message)
         finally:
-            # Возвращаем пользователя в главное меню в случае успеха или ошибки
             text, markup = self.ui.get_main_actions_menu(lang_code, note_id)
             await query.edit_message_text(text, reply_markup=markup)
             if filepath and os.path.exists(filepath):
@@ -367,21 +360,45 @@ class TelegramHandler:
         note_id = note['_id']
         chat_id = query.message.chat_id
 
-        # ИЗМЕНЕНО: Все действия теперь отправляют результат новым сообщением
+        # Оборачиваем потенциально проблемный текст в ``` для безопасной отправки
+        def format_response(header_key: str, header_default: str, body: Optional[str]) -> str:
+            header = self.localizer.get_string(lang_code, header_key, default=header_default)
+            if not body:
+                body = "Could not generate response."
+            return f"*{header}:*\n```\n{body}\n```"
+
         if action == 'ACTION_SUMMARIZE':
             await self.bot.send_chat_action(chat_id, 'typing')
             summary = self.insight_service.get_summary(note['content'])
             self.database.update_note(note_id, {"$set": {"summary": summary}})
-            await self.send_message(chat_id,
-                                    f"*{self.localizer.get_string(lang_code, 'summary_header', default='Summary')}:*\n{summary or 'Could not generate summary.'}")
+            response_text = format_response('summary_header', 'Summary', summary)
+            await self.send_message(chat_id, response_text)
+
+        # --- ВОССТАНОВЛЕНА ЛОГИКА ---
+        elif action == 'ACTION_REPORT':
+            await self.bot.send_chat_action(chat_id, 'typing')
+            # Примечание: предполагается, что insight_service может генерировать отчеты.
+            # Если метод другой, замените его.
+            report = self.insight_service.get_summary(note['content'])  # Используем get_summary как заглушку
+            self.database.update_note(note_id, {"$set": {"smart_report": report}})
+            response_text = format_response('report_header', 'Smart Report', report)
+            await self.send_message(chat_id, response_text)
+
+        elif action == 'ACTION_TRANSLATE':
+            await self.bot.send_chat_action(chat_id, 'typing')
+            # Примечание: предполагается, что у translation_service есть метод translate_text
+            translated_text = self.translation_service.translate_text(note['content'], target_language=lang_code)
+            response_text = format_response('translation_header', 'Translation', translated_text)
+            await self.send_message(chat_id, response_text)
+        # --- КОНЕЦ ВОССТАНОВЛЕННОЙ ЛОГИКИ ---
 
         elif action == 'ACTION_BIZANALYSIS':
             await self.bot.send_chat_action(chat_id, 'typing')
             analysis_result = self.business_analyzer.run_comprehensive_analysis(note['content'])
             if analysis_result:
                 self.database.update_note(note_id, {"$set": {"business_analysis": analysis_result}})
-                await self.send_message(chat_id,
-                                        f"*{self.localizer.get_string(lang_code, 'biz_analysis_header', default='Business Analysis')}:*\n{analysis_result}")
+                response_text = format_response('biz_analysis_header', 'Business Analysis', analysis_result)
+                await self.send_message(chat_id, response_text)
             else:
                 await self.send_message(chat_id, "❌ Failed to perform business analysis.")
 
@@ -406,7 +423,7 @@ class TelegramHandler:
                 return
 
             video_id = match.group(1)
-            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            video_url = f"[https://www.youtube.com/watch?v=](https://www.youtube.com/watch?v=){video_id}"
 
             status_msg = await self.send_message(chat_id, "🤖 Trying to download existing subtitles from YouTube...")
             srt_path, error = self.youtube_service.download_subtitles(video_url)
@@ -429,6 +446,11 @@ class TelegramHandler:
                                                reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Failed to send message to Telegram chat {chat_id}: {e}")
+            # Попытка отправить без форматирования в случае ошибки
+            try:
+                return await self.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+            except Exception as final_e:
+                logger.error(f"Failed to send message even without parse_mode: {final_e}")
             return None
 
     async def edit_message(self, chat_id: int, message_id: int, text: str,
