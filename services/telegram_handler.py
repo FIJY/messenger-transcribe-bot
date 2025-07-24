@@ -23,7 +23,6 @@ from .translation_service import TranslationService
 from .downloader_service import DownloaderService
 from .business_analyzer_service import BusinessAnalyzerService
 from .youtube_service import YouTubeService
-# --- НОВЫЙ ИМПОРТ ---
 from .export_service import ExportService
 
 logger = logging.getLogger(__name__)
@@ -198,6 +197,7 @@ class TelegramHandler:
     async def _handle_text_note(self, text: str, user_id: str, chat_id: int, lang_code: str):
         try:
             note_id = self.database.save_note(user_id=user_id, content=text, tags=['plain_text'], source_type='text')
+            # ИЗМЕНЕНО: Отправляем два сообщения: сначала результат, потом меню
             await self.send_message(chat_id, f"✅ *Note saved:* ```{text[:250]}...```")
             message, reply_markup = self.ui.get_main_actions_menu(lang_code, note_id)
             await self.send_message(chat_id, message, reply_markup=reply_markup)
@@ -293,52 +293,42 @@ class TelegramHandler:
             await query.edit_message_text("This menu is no longer active.", reply_markup=None)
             return
 
-        # --- НОВАЯ ЛОГИКА МАРШРУТИЗАЦИИ ---
-
-        # Показываем меню экспорта
         if action == 'ACTION_EXPORT':
             text, markup = self.ui.get_export_menu(lang_code, note_id)
             await query.edit_message_text(text, reply_markup=markup)
             return
 
-        # Возвращаемся в главное меню из меню экспорта
         if action == 'ACTION_BACK_TO_MAIN':
             text, markup = self.ui.get_main_actions_menu(lang_code, note_id)
             await query.edit_message_text(text, reply_markup=markup)
             return
 
-        # Запускаем генерацию файла
         if action.startswith('EXPORT'):
             file_format = action.split('_')[1].lower()
             await self._handle_export_action(query, note, file_format, lang_code)
             return
 
-        # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
-
+        # ИЗМЕНЕНО: Логика входа в чат. Отправляем новое сообщение, не трогая старое.
         if action == 'ACTION_CHAT':
             new_state = {'mode': 'chatting', 'note_id': str(note_id)}
             self.database.update_user(user_id, {'state': new_state})
-            await query.edit_message_text(self.localizer.get_string(lang_code, 'chat_mode_entered'), reply_markup=None)
+            # Отправляем новое сообщение о входе в режим чата
+            await self.send_message(query.message.chat_id, self.localizer.get_string(lang_code, 'chat_mode_entered'))
             return
 
         await self._handle_main_action(query, note, action, parts, lang_code)
 
-    # --- НОВЫЙ МЕТОД ДЛЯ ЭКСПОРТА ---
     async def _handle_export_action(self, query: Update.callback_query, note: dict, file_format: str, lang_code: str):
         chat_id = query.message.chat_id
         note_id = note['_id']
         user_id = str(query.from_user.id)
 
-        try:
-            await query.edit_message_text(
-                f"⏳ {self.localizer.get_string(lang_code, 'export_generating', default='Generating your file...')}",
-                reply_markup=None)
-        except BadRequest as e:
-            if "Message is not modified" not in str(e):
-                logger.warning(f"Could not edit message before export: {e}")
+        # ИЗМЕНЕНО: Отправляем временное сообщение о статусе в чат
+        status_message = await self.send_message(chat_id,
+                                                 f"⏳ {self.localizer.get_string(lang_code, 'export_generating', default='Generating your file...')}")
 
         transcription = note.get("content", "No transcription available.")
-        summary = note.get("summary")  # Получаем саммари, если оно есть
+        summary = note.get("summary")
 
         exporter = ExportService(transcription_text=transcription, report_text=summary, title=f"Note {note_id}")
 
@@ -355,18 +345,20 @@ class TelegramHandler:
                 with open(filepath, "rb") as file_to_send:
                     await self.bot.send_document(chat_id, file_to_send,
                                                  caption=f"Your exported {file_format.upper()} file.")
-                await query.delete_message()
+                # ИЗМЕНЕНО: Удаляем временное сообщение, а не меню
+                await self.delete_message(chat_id, status_message.message_id)
             else:
                 raise FileNotFoundError("Exported file was not created on disk.")
 
         except Exception as e:
             logger.error(f"Failed to export note {note_id} to {file_format} for user {user_id}: {e}", exc_info=True)
-            await query.delete_message()
+            # ИЗМЕНЕНО: Редактируем временное сообщение, чтобы показать ошибку
             error_message = f"❌ {self.localizer.get_string(lang_code, 'export_error', default='An error occurred during file generation.')}"
-            await self.send_message(chat_id, error_message)
-            text, markup = self.ui.get_main_actions_menu(lang_code, note_id)
-            await self.send_message(chat_id, text, reply_markup=markup)
+            await self.edit_message(chat_id, status_message.message_id, error_message)
         finally:
+            # Возвращаем пользователя в главное меню в случае успеха или ошибки
+            text, markup = self.ui.get_main_actions_menu(lang_code, note_id)
+            await query.edit_message_text(text, reply_markup=markup)
             if filepath and os.path.exists(filepath):
                 os.remove(filepath)
 
@@ -375,19 +367,21 @@ class TelegramHandler:
         note_id = note['_id']
         chat_id = query.message.chat_id
 
+        # ИЗМЕНЕНО: Все действия теперь отправляют результат новым сообщением
         if action == 'ACTION_SUMMARIZE':
             await self.bot.send_chat_action(chat_id, 'typing')
             summary = self.insight_service.get_summary(note['content'])
-            self.database.update_note(note_id, {"$set": {"summary": summary}})  # Сохраняем саммари в БД
-            await self.send_message(chat_id, f"*Summary:*\n{summary or 'Could not generate summary.'}")
+            self.database.update_note(note_id, {"$set": {"summary": summary}})
+            await self.send_message(chat_id,
+                                    f"*{self.localizer.get_string(lang_code, 'summary_header', default='Summary')}:*\n{summary or 'Could not generate summary.'}")
 
         elif action == 'ACTION_BIZANALYSIS':
-            await query.edit_message_text("🤖 Starting comprehensive business analysis...", reply_markup=None)
+            await self.bot.send_chat_action(chat_id, 'typing')
             analysis_result = self.business_analyzer.run_comprehensive_analysis(note['content'])
             if analysis_result:
                 self.database.update_note(note_id, {"$set": {"business_analysis": analysis_result}})
-                await self.send_message(chat_id, "Business analysis is complete.")
-                await query.delete_message()
+                await self.send_message(chat_id,
+                                        f"*{self.localizer.get_string(lang_code, 'biz_analysis_header', default='Business Analysis')}:*\n{analysis_result}")
             else:
                 await self.send_message(chat_id, "❌ Failed to perform business analysis.")
 
@@ -414,7 +408,7 @@ class TelegramHandler:
             video_id = match.group(1)
             video_url = f"https://www.youtube.com/watch?v={video_id}"
 
-            await self.send_message(chat_id, "🤖 Trying to download existing subtitles from YouTube...")
+            status_msg = await self.send_message(chat_id, "🤖 Trying to download existing subtitles from YouTube...")
             srt_path, error = self.youtube_service.download_subtitles(video_url)
 
             if srt_path:
@@ -422,10 +416,11 @@ class TelegramHandler:
                     with open(srt_path, 'rb') as srt_file:
                         await self.bot.send_document(chat_id=chat_id, document=srt_file, filename=f"{note_id}.srt",
                                                      caption="Here are the subtitles from YouTube.")
+                    await self.delete_message(chat_id, status_msg.message_id)
                 finally:
                     if os.path.exists(srt_path): os.remove(srt_path)
             else:
-                await self.send_message(chat_id, f"Could not download subtitles: {error}.")
+                await self.edit_message(chat_id, status_msg.message_id, f"Could not download subtitles: {error}.")
 
     async def send_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> \
             Optional[Message]:
