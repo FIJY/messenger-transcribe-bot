@@ -16,7 +16,7 @@ class InsightService:
         else:
             self.client = OpenAI(api_key=self.api_key)
 
-        # Пример структуры для хранения промптов
+        # Ваша существующая функция для отчетов
         self.REPORT_PROMPTS: Dict[str, Dict[str, str]] = {
             "MEETING_SUMMARY": {
                 "name": "Meeting Summary",
@@ -29,6 +29,7 @@ class InsightService:
             # ... другие шаблоны отчетов
         }
 
+    # Ваша существующая функция для простого саммари (без изменений)
     def get_summary(self, text: str) -> Optional[str]:
         if not self.client:
             return "Summary service is unavailable."
@@ -46,6 +47,7 @@ class InsightService:
             logger.error(f"Error getting summary from OpenAI: {e}")
             return None
 
+    # Ваша существующая функция для создания отчетов (без изменений)
     def create_report(self, text: str, template_key: str) -> Optional[str]:
         if not self.client:
             return "Report service is unavailable."
@@ -68,6 +70,7 @@ class InsightService:
             logger.error(f"Error creating report from OpenAI: {e}")
             return None
 
+    # ИСПРАВЛЕННАЯ функция для ответов на вопросы
     def get_answer_from_text(self, context: str, question: str) -> Optional[str]:
         """
         Отвечает на вопрос пользователя, основываясь на предоставленном тексте.
@@ -78,11 +81,17 @@ class InsightService:
         try:
             logger.info(f"Requesting answer from OpenAI. Question: {question[:50]}...")
 
-            system_prompt = "You are a helpful assistant. Your task is to answer the user's question based ONLY on the provided context. If the answer is not in the context, say that you cannot answer."
+            # Новый, более "умный" промпт
+            system_prompt = (
+                "You are a helpful and intelligent assistant. Your task is to answer the user's question based on the provided text. "
+                "Be comprehensive and use all relevant information from the text. "
+                "If the text lists items, try to extract all of them. "
+                "Answer in the same language as the user's question."
+            )
             user_prompt = f"Context:\n---\n{context}\n---\n\nQuestion: {question}"
 
             response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4-turbo", # Используем более умную модель для ответов на вопросы
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
