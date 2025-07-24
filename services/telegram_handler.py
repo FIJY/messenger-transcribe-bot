@@ -87,6 +87,11 @@ class TelegramHandler:
         user = self.database.get_user(user_id)
         if not user:
             user = self.database.create_user(user_id, username=username, language_code=lang_code)
+        else:
+            # ИСПРАВЛЕНИЕ: Обновляем язык для существующих пользователей, если он изменился или отсутствует
+            if user.get('language_code') != lang_code:
+                self.database.update_user(user_id, {'language_code': lang_code})
+                user['language_code'] = lang_code  # Обновляем локальную копию для текущего запроса
 
         user_lang = user.get('language_code', 'en')
 
@@ -99,7 +104,6 @@ class TelegramHandler:
             return
 
         user_state = user.get('state')
-        # ИСПРАВЛЕНИЕ: Добавляем проверку, что сообщение является текстовым, перед тем как входить в логику чата
         if update.message and update.message.text and isinstance(user_state, dict) and user_state.get(
                 'mode') == 'chatting':
             await self._handle_chat_message(user_id, chat_id, update.message.text, user_state, user_lang)
