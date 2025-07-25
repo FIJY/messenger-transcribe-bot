@@ -66,48 +66,92 @@ class TelegramUI:
             [InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_ask_question'),
                                   callback_data=f"ACTION_CHAT_{note_id}")],
             [
-                InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_smart_report'),
-                                     callback_data=f"ACTION_REPORT_{note_id}"),
-                InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_translate'),
-                                     callback_data=f"ACTION_TRANSLATE_{note_id}")
-            ],
-            [
                 InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_summary'),
                                      callback_data=f"ACTION_SUMMARIZE_{note_id}"),
+                InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_smart_report'),
+                                     callback_data=f"ACTION_REPORT_{note_id}")
+            ],
+            [
+                # --- ИЗМЕНЕНО: Кнопка "Перевести" теперь открывает меню языков ---
+                InlineKeyboardButton("🌐 " + self.localizer.get_string(lang_code, 'button_translate'),
+                                     callback_data=f"SHOW_LANG_MENU_TRANSLATE_1_{note_id}"),
+                # --- НОВАЯ КНОПКА ---
+                InlineKeyboardButton(
+                    "🗣️ " + self.localizer.get_string(lang_code, 'button_retranscribe', default="Уточнить язык"),
+                    callback_data=f"SHOW_LANG_MENU_RETRANSCRIBE_1_{note_id}")
+            ],
+            [
                 InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_subtitles'),
-                                     callback_data=f"ACTION_SUBTITLES_{note_id}")
-            ],
-            [
+                                     callback_data=f"ACTION_SUBTITLES_{note_id}"),
                 InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_biz_analysis'),
-                                     callback_data=f"ACTION_BIZANALYSIS_{note_id}"),
-                InlineKeyboardButton(self.localizer.get_string(lang_code, 'button_delete'),
-                                     callback_data=f"ACTION_DELETE_{note_id}")
+                                     callback_data=f"ACTION_BIZANALYSIS_{note_id}")
             ],
-            # --- НОВАЯ КНОПКА ---
             [
-                InlineKeyboardButton("📄 " + self.localizer.get_string(lang_code, 'button_export', default="Export"),
-                                     callback_data=f"ACTION_EXPORT_{note_id}")
+                InlineKeyboardButton(
+                    "📄 " + self.localizer.get_string(lang_code, 'button_export', default="Экспорт в файл"),
+                    callback_data=f"ACTION_EXPORT_{note_id}"),
+                InlineKeyboardButton("🗑️ " + self.localizer.get_string(lang_code, 'button_delete'),
+                                     callback_data=f"ACTION_DELETE_{note_id}")
             ]
         ]
         return text, InlineKeyboardMarkup(keyboard)
 
-    # --- НОВЫЙ МЕТОД ---
     def get_export_menu(self, lang_code: str, note_id: ObjectId) -> Tuple[str, InlineKeyboardMarkup]:
-        """Создает клавиатуру с выбором формата для экспорта."""
-        text = self.localizer.get_string(lang_code, 'export_prompt', default="Choose export format:")
+        text = self.localizer.get_string(lang_code, 'export_prompt', default="Выберите формат для экспорта:")
         keyboard = [
             [
                 InlineKeyboardButton("Markdown (.md)", callback_data=f"EXPORT_MD_{note_id}"),
                 InlineKeyboardButton("Word (.docx)", callback_data=f"EXPORT_DOCX_{note_id}"),
-            ],
-            [
                 InlineKeyboardButton("PDF (.pdf)", callback_data=f"EXPORT_PDF_{note_id}")
             ],
             [
-                InlineKeyboardButton("⬅️ " + self.localizer.get_string(lang_code, 'button_back', default="Back"),
+                InlineKeyboardButton("⬅️ " + self.localizer.get_string(lang_code, 'button_back', default="Назад"),
                                      callback_data=f"ACTION_BACK_TO_MAIN_{note_id}")
             ]
         ]
+        return text, InlineKeyboardMarkup(keyboard)
+
+    # --- НОВОЕ МЕНЮ ВЫБОРА ЯЗЫКА С ПАГИНАЦИЕЙ ---
+    def get_language_selection_menu(self, lang_code: str, note_id: ObjectId, action_prefix: str,
+                                    languages: Dict[str, str], page: int = 1) -> Tuple[str, InlineKeyboardMarkup]:
+        prompt_key = 'translate_prompt' if action_prefix == 'TRANSLATE' else 'retranscribe_prompt'
+        prompt_default = "Выберите язык для перевода:" if action_prefix == 'TRANSLATE' else "Выберите язык для транскрибации:"
+        text = self.localizer.get_string(lang_code, prompt_key, default=prompt_default)
+
+        items_per_page = 9
+        lang_items = list(languages.items())
+        start_index = (page - 1) * items_per_page
+        end_index = start_index + items_per_page
+        page_items = lang_items[start_index:end_index]
+
+        keyboard = []
+        row = []
+        for code, name in page_items:
+            row.append(InlineKeyboardButton(name, callback_data=f"{action_prefix}_{code}_{note_id}"))
+            if len(row) == 3:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+        # Пагинация
+        pagination_row = []
+        if page > 1:
+            pagination_row.append(
+                InlineKeyboardButton("⬅️", callback_data=f"SHOW_LANG_MENU_{action_prefix}_{page - 1}_{note_id}"))
+
+        total_pages = (len(lang_items) + items_per_page - 1) // items_per_page
+        if page < total_pages:
+            pagination_row.append(
+                InlineKeyboardButton("➡️", callback_data=f"SHOW_LANG_MENU_{action_prefix}_{page + 1}_{note_id}"))
+
+        if pagination_row:
+            keyboard.append(pagination_row)
+
+        keyboard.append(
+            [InlineKeyboardButton("⬅️ " + self.localizer.get_string(lang_code, 'button_back', default="Назад"),
+                                  callback_data=f"ACTION_BACK_TO_MAIN_{note_id}")])
+
         return text, InlineKeyboardMarkup(keyboard)
 
     def get_delete_confirmation(self, lang_code: str, note_id: ObjectId) -> Tuple[str, InlineKeyboardMarkup]:
