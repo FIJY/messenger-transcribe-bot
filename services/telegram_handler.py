@@ -15,7 +15,6 @@ from .downloader_service import DownloaderService
 from .business_analyzer_service import BusinessAnalyzerService
 from .youtube_service import YouTubeService
 from .export_service import ExportService
-
 from .command_handler import CommandHandler
 from .message_handler import MessageHandler
 from .callback_query_handler import CallbackQueryHandler
@@ -24,11 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramHandler:
-    SUPPORTED_LANGUAGES = {
-        'en': 'English', 'ru': 'Русский', 'uk': 'Українська', 'de': 'Deutsch',
-        'fr': 'Français', 'es': 'Español', 'it': 'Italiano', 'pl': 'Polski'
-    }
-
     def __init__(self, token: str, database: Database, s3_service: S3Service,
                  payment_service: PaymentService, insight_service: InsightService,
                  translation_service: TranslationService, downloader_service: DownloaderService,

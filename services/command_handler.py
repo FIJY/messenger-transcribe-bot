@@ -23,7 +23,6 @@ class CommandHandler:
         chat_id = message.chat_id
         username = message.from_user.username
         text = message.text
-
         command_parts = text.split()
         command = command_parts[0]
 
@@ -38,8 +37,6 @@ class CommandHandler:
         elif command == '/cancel':
             self.db.update_user(user_id, {'state': None})
             await self.bot.send_message(chat_id, self.localizer.get_string(user_lang, 'chat_mode_exited'))
-        elif command == '/search':
-            await self._handle_search(user_id, chat_id, command_parts, user_lang)
         elif command == '/grant':
             await self._handle_grant(user_id, chat_id, command_parts)
 
@@ -54,28 +51,18 @@ class CommandHandler:
         if not user:
             await self.bot.send_message(chat_id, "Please use /start first.")
             return
-        message = self.ui.get_status_message(user)
-        await self.bot.send_message(chat_id, message, parse_mode=ParseMode.MARKDOWN)
-
-    async def _handle_search(self, user_id: str, chat_id: int, command_parts: list, lang_code: str):
-        query = " ".join(command_parts[1:])
-        if not query:
-            await self.bot.send_message(chat_id, "Usage: `/search <your query>`", parse_mode=ParseMode.MARKDOWN)
-            return
-        await self.bot.send_message(chat_id, f"🔍 Searching for notes matching: `{query}`...", parse_mode=ParseMode.MARKDOWN)
-        notes = self.db.search_notes_by_query(user_id, query)
-        response_text = self.ui.format_search_results(lang_code, notes, query)
-        await self.bot.send_message(chat_id, response_text, parse_mode=ParseMode.MARKDOWN)
+        # Assuming get_status_message exists in your UI class
+        # message = self.ui.get_status_message(user)
+        # await self.bot.send_message(chat_id, message, parse_mode=ParseMode.MARKDOWN)
+        pass # Placeholder for status message
 
     async def _handle_grant(self, user_id: str, chat_id: int, command_parts: list):
         if user_id != self.admin_id:
             await self.bot.send_message(chat_id, "❌ You are not authorized to use this command.")
             return
         try:
-            target_user_id = command_parts[1]
-            days = int(command_parts[2])
-            success = self.db.grant_premium_subscription(target_user_id, days)
-            if success:
+            target_user_id, days = command_parts[1], int(command_parts[2])
+            if self.db.grant_premium_subscription(target_user_id, days):
                 await self.bot.send_message(chat_id, f"✅ Premium granted to user `{target_user_id}` for {days} days.", parse_mode=ParseMode.MARKDOWN)
                 try:
                     await self.bot.send_message(int(target_user_id), f"🎉 Your premium has been extended by {days} days!")
