@@ -5,7 +5,7 @@ import asyncio
 from dotenv import load_dotenv
 from bson import ObjectId
 
-# ИСПРАВЛЕНИЕ: Загружаем переменные окружения (например, MONGO_URI)
+# ИСПРАВЛЕНИЕ: Принудительно загружаем переменные окружения в самом начале
 load_dotenv()
 
 from services.celery_client import get_celery_app_client
@@ -14,7 +14,7 @@ from services.database import Database
 from services.s3_service import S3Service
 from services.insight_service import InsightService
 from services.business_analyzer_service import BusinessAnalyzerService
-from services.transcription_service import TranscriptionService  # Предполагаем, что у вас есть этот сервис
+from services.transcription_service import TranscriptionService
 from services.processing_config import CHECKBOX_CONFIG
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -30,14 +30,12 @@ try:
     business_analyzer = BusinessAnalyzerService()
     transcription_service = TranscriptionService()
 
-    # Инициализируем TelegramHandler для отправки сообщений
     telegram_handler = TelegramHandler(
         token=os.getenv('TELEGRAM_TOKEN'),
         database=db,
         s3_service=s3_service,
         insight_service=insight_service,
         business_analyzer=business_analyzer,
-        # Остальные сервисы не нужны для отправки сообщений, передаем None
         payment_service=None,
         translation_service=None,
         downloader_service=None,
@@ -55,7 +53,6 @@ def process_media_v2(user_id, s3_key, metadata, platform_payload, **kwargs):
         logger.error("Telegram handler not initialized. Aborting task.")
         return
 
-    # ИСПРАВЛЕНИЕ: Правильно получаем selected_options из kwargs
     selected_options = kwargs.get('selected_options', [])
     chat_id = platform_payload.get('chat_id')
     note_id_str = platform_payload.get('note_id')
@@ -74,7 +71,7 @@ def process_media_v2(user_id, s3_key, metadata, platform_payload, **kwargs):
             raise ValueError("Transcription returned empty text.")
 
         db.update_note(note_id, {"$set": {"content": full_text, "status": "processed"}})
-        asyncio.run(telegram_handler.bot.send_message(chat_id, f"� *Полная транскрипция:*\n```{full_text}```",
+        asyncio.run(telegram_handler.bot.send_message(chat_id, f"📝 *Полная транскрипция:*\n```{full_text}```",
                                                       parse_mode='Markdown'))
 
     except Exception as e:
@@ -106,4 +103,3 @@ def process_media_v2(user_id, s3_key, metadata, platform_payload, **kwargs):
 
     asyncio.run(run_all_options())
     logger.info(f"Finished V2 processing for user {user_id}")
-

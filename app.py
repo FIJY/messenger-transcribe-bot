@@ -5,7 +5,7 @@ import asyncio
 from quart import Quart, request, Response
 from dotenv import load_dotenv
 
-# Загружаем переменные окружения из .env файла
+# ИСПРАВЛЕНИЕ: Принудительно загружаем переменные окружения в самом начале
 load_dotenv()
 
 from services.telegram_handler import TelegramHandler
@@ -70,10 +70,6 @@ async def startup():
 async def handle_telegram_webhook():
     if telegram_handler:
         data = await request.get_json()
-        # ИСПРАВЛЕНИЕ: Убрано подробное логирование входящих данных
-        # logger.info("--- RAW TELEGRAM UPDATE RECEIVED ---")
-        # logger.info(json.dumps(data, indent=2, ensure_ascii=False))
-        # logger.info("------------------------------------")
         asyncio.create_task(telegram_handler.handle_update(data))
     else:
         logger.error("Telegram handler is not available.")
