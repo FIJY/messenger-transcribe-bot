@@ -25,15 +25,13 @@ class Database:
             'username': username,
             'language_code': language_code,
             'plan': 'free',
-            'minutes_used': 0,
-            'minutes_limit': 60,  # Example limit for free users
             'created_at': datetime.utcnow(),
             'state': None
         }
-        self.users.insert_one(user_data)
+        self.users.insert_one(user_data.copy())  # Use copy to avoid adding _id to local dict
         logger.info(f"New user created with ID: {user_id}")
-        # ИСПРАВЛЕНИЕ: Возвращаем полный документ пользователя, а не результат операции
-        return self.get_user(user_id)
+        # ИСПРАВЛЕНИЕ: Возвращаем созданный документ пользователя
+        return user_data
 
     def get_user(self, user_id: str):
         return self.users.find_one({'user_id': user_id})
@@ -41,10 +39,9 @@ class Database:
     def update_user(self, user_id: str, updates: dict):
         self.users.update_one({'user_id': user_id}, {'$set': updates})
 
-    def save_note(self, user_id: str, content: str, **kwargs):
+    def save_note(self, user_id: str, **kwargs):
         note_data = {
             'user_id': user_id,
-            'content': content,
             'created_at': datetime.utcnow(),
             **kwargs
         }
@@ -73,8 +70,7 @@ class Database:
         new_expires_at = expires_at + timedelta(days=days)
 
         self.update_user(user_id, {
-            'plan': 'pro',  # Example premium plan
-            'minutes_limit': 5000,  # Example limit for pro
+            'plan': 'pro',
             'subscription_expires_at': new_expires_at
         })
         return True
