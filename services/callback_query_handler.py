@@ -41,11 +41,9 @@ class CallbackQueryHandler:
         user = self.db.get_user(user_id)
         user_plan = user.get('plan', 'free')
 
-        # Get current selection state from DB or initialize it
         selection_state = note.get('selection_state', {'selected': []})
         selected_options = selection_state.get('selected', [])
 
-        # --- ROUTING LOGIC ---
         if action_type == "CHECKBOX":
             option_code = parts[1]
             await self._handle_checkbox_toggle(query, note_id, user_plan, selected_options, option_code, user_lang)
@@ -56,13 +54,13 @@ class CallbackQueryHandler:
             await self._handle_reset(query, note_id, user_plan, user_lang)
         elif action_type == "PROCESS":
             await self._handle_process_start(query, note, selected_options, user_lang)
+        elif action_type == "IGNORE":
+            pass  # Do nothing for separator buttons
         else:
-            # Fallback for other actions like delete, export after processing
-            pass
+            logger.info(f"Unhandled action: {payload}")
 
     async def _update_menu(self, query: Update.callback_query, note_id: ObjectId, user_plan: str,
                            selected_options: list, lang_code: str):
-        """Helper function to re-render the checkbox menu."""
         text, markup = self.ui.get_checkbox_selection_menu(lang_code, note_id, user_plan, selected_options)
         try:
             await query.edit_message_text(text, reply_markup=markup)
@@ -79,7 +77,9 @@ class CallbackQueryHandler:
             if len(selected) < limit:
                 selected.append(option_code)
             else:
-                await query.answer("Достигнут лимит по вашему тарифу!", show_alert=True)
+                await query.answer("Достигнут лимит по вашему тарифу! Повысьте тариф, чтобы выбрать больше.",
+                                   show_alert=True)
+                return
 
         self.db.update_note(note_id, {"$set": {"selection_state": {"selected": selected}}})
         await self._update_menu(query, note_id, user_plan, selected, lang_code)
@@ -105,20 +105,18 @@ class CallbackQueryHandler:
             await query.answer("Пожалуйста, выберите хотя бы одну опцию для обработки.", show_alert=True)
             return
 
-        await query.edit_message_text(f"🚀 Задание принято! Начинаем обработку {len(selected_options)} опций...")
+        await query.edit_message_text(
+            f"🚀 Задание принято! Начинаем обработку {len(selected_options)} опций...\n\nВы получите результаты в отдельных сообщениях, как только они будут готовы.")
 
-        # Send comprehensive task to Celery
         platform_payload = {
             'platform': 'telegram',
             'chat_id': query.message.chat_id,
             'lang_code': lang_code,
-            'message_id': query.message.message_id
+            'original_message_id': query.message.message_id
         }
-        task_kwargs = {
-            'selected_options': selected_options
-        }
+        task_kwargs = {'selected_options': selected_options}
         self.celery_app_client.send_task(
-            'tasks.process_media_v2',  # A new task for the new flow
+            'tasks.process_media_v2',  # IMPORTANT: This is a new Celery task!
             args=[note['user_id'], note.get('s3_object_key'), {}, platform_payload],
             kwargs=task_kwargs
         )

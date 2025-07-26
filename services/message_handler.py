@@ -40,7 +40,8 @@ class MessageHandler:
                                         "Пожалуйста, отправьте аудио/видео файл или ссылку для начала работы.")
 
     async def _handle_url(self, url: str, user: dict, lang_code: str):
-        user_id = str(user['_id'])
+        # ИСПРАВЛЕНО: Используем правильное поле 'user_id' вместо '_id'
+        user_id = user['user_id']
         chat_id = int(user_id)
 
         note_id = self.db.save_note(
@@ -55,7 +56,8 @@ class MessageHandler:
         await self.bot.send_message(chat_id, text, reply_markup=markup)
 
     async def _handle_file_upload(self, file_obj: Message, user: dict, lang_code: str):
-        user_id = str(user['_id'])
+        # ИСПРАВЛЕНО: Используем правильное поле 'user_id' вместо '_id'
+        user_id = user['user_id']
         chat_id = file_obj.chat_id
 
         status_message = await self.bot.send_message(chat_id, "Анализируем ваш файл...")
