@@ -32,7 +32,8 @@ class MessageHandler:
         url_match = re.search(r'https?://\S+', message.text or "")
 
         if file_to_process:
-            await self._handle_file_upload(file_to_process, user, user_lang)
+            # ИСПРАВЛЕНО: Передаем весь объект 'message', а не только 'file_to_process'
+            await self._handle_file_upload(message, user, user_lang)
         elif url_match:
             await self._handle_url(url_match.group(0), user, user_lang)
         else:
@@ -40,7 +41,6 @@ class MessageHandler:
                                         "Пожалуйста, отправьте аудио/видео файл или ссылку для начала работы.")
 
     async def _handle_url(self, url: str, user: dict, lang_code: str):
-        # ИСПРАВЛЕНО: Используем правильное поле 'user_id' вместо '_id'
         user_id = user['user_id']
         chat_id = int(user_id)
 
@@ -55,10 +55,13 @@ class MessageHandler:
         text, markup = self.ui.get_checkbox_selection_menu(lang_code, note_id, user_plan, [])
         await self.bot.send_message(chat_id, text, reply_markup=markup)
 
-    async def _handle_file_upload(self, file_obj: Message, user: dict, lang_code: str):
-        # ИСПРАВЛЕНО: Используем правильное поле 'user_id' вместо '_id'
+    async def _handle_file_upload(self, message: Message, user: dict, lang_code: str):
+        # ИСПРАВЛЕНО: Получаем chat_id и user_id из правильных объектов
         user_id = user['user_id']
-        chat_id = file_obj.chat_id
+        chat_id = message.chat_id
+
+        # ИСПРАВЛЕНО: Получаем сам объект файла (голосовое, аудио и т.д.) из сообщения
+        file_obj = message.document or message.audio or message.video or message.voice or message.video_note
 
         status_message = await self.bot.send_message(chat_id, "Анализируем ваш файл...")
         local_file_path = None
