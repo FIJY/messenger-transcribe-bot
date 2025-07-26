@@ -13,6 +13,7 @@ class Database:
         # ИСПРАВЛЕНО: Используем правильное имя переменной MONGODB_URI
         mongo_uri = os.getenv('MONGODB_URI')
         if not mongo_uri:
+            # ИСПРАВЛЕНО: Сообщение об ошибке тоже должно быть правильным
             raise ValueError("MONGODB_URI environment variable not set.")
         self.client = MongoClient(mongo_uri)
         self.db = self.client.get_default_database()
