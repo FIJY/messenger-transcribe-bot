@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramHandler:
+    SUPPORTED_LANGUAGES = {
+        'en': 'English', 'ru': 'Русский', 'uk': 'Українська', 'de': 'Deutsch',
+        'fr': 'Français', 'es': 'Español', 'it': 'Italiano', 'pl': 'Polski'
+    }
+
     def __init__(self, token: str, database: Database, s3_service: S3Service,
                  payment_service: PaymentService, insight_service: InsightService,
                  translation_service: TranslationService, downloader_service: DownloaderService,
@@ -46,8 +51,9 @@ class TelegramHandler:
 
         # Initialize sub-handlers
         self.command_handler = CommandHandler(self.bot, self.database, self.ui, self.localizer, self.admin_telegram_id)
+        # --- ИСПРАВЛЕНИЕ ЗДЕСЬ: убран лишний аргумент 'self.insight_service' ---
         self.message_handler = MessageHandler(self.bot, self.database, self.ui, self.localizer, self.s3_service,
-                                              self.celery_app_client, self.insight_service, self.payment_service)
+                                              self.celery_app_client, self.payment_service)
         self.callback_query_handler = CallbackQueryHandler(self)
 
     async def set_bot_commands(self):
