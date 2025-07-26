@@ -2,11 +2,9 @@
 import os
 import logging
 import asyncio
-import json
 from quart import Quart, request, Response
 from dotenv import load_dotenv
 
-# Принудительно загружаем переменные окружения в самом начале
 load_dotenv()
 
 from services.telegram_handler import TelegramHandler
@@ -19,7 +17,6 @@ from services.downloader_service import DownloaderService
 from services.business_analyzer_service import BusinessAnalyzerService
 from services.youtube_service import YouTubeService
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -38,9 +35,7 @@ async def startup():
         downloader_service = DownloaderService()
         business_analyzer = BusinessAnalyzerService()
         youtube_service = YouTubeService()
-        payment_service = PaymentService(
-            bot=None, db=database, ui=None, localizer=None
-        )
+        payment_service = PaymentService(bot=None, db=database, ui=None, localizer=None)
 
         telegram_handler = TelegramHandler(
             token=os.getenv('TELEGRAM_TOKEN'),
@@ -63,22 +58,24 @@ async def startup():
         logger.critical(f"❌ CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
     logger.info("✅ Web services initialized successfully.")
 
-# ИСПРАВЛЕНИЕ: Добавлена обертка для безопасной обработки обновлений
 async def safe_handle_update(data):
+    logger.info(">>> Entering safe_handle_update task.")
     try:
         await telegram_handler.handle_update(data)
+        logger.info("<<< Exiting safe_handle_update task successfully.")
     except Exception as e:
-        # Этот блок поймает любую ошибку и запишет ее в лог
         logger.error(f"!!! Unhandled exception in handle_update task: {e}", exc_info=True)
 
 @app.route('/telegram', methods=['POST'])
 async def handle_telegram_webhook():
+    logger.info("--> Received request on /telegram webhook.")
     if telegram_handler:
         data = await request.get_json()
-        # Используем безопасную обертку, чтобы не терять ошибки
+        logger.info("--> Creating background task for handle_update.")
         asyncio.create_task(safe_handle_update(data))
+        logger.info("--> Background task created. Returning 200 OK.")
     else:
-        logger.error("Telegram handler is not available.")
+        logger.error("Telegram handler is not available. Cannot process update.")
     return Response(status=200)
 
 @app.route('/health', methods=['GET'])
