@@ -2,57 +2,40 @@
 services:
   # 1. Веб-сервис (принимает сообщения от Telegram)
   - type: web
-    name: messenger-transcribe-bot # <-- Ваше имя
-    env: python # <-- Меняем на python, чтобы не использовать Dockerfile для простоты
+    name: messenger-transcribe-bot
+    env: python
     plan: standard
     buildCommand: "pip install --no-cache-dir -r requirements.txt"
     startCommand: "hypercorn app:app --bind 0.0.0.0:${PORT}"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11
-      - fromGroup: variables_bot # <-- Ваша группа секретов
+      - fromGroup: variables_bot
       - key: REDIS_URL
         fromService:
           type: redis
-          name: bot-redis # <-- Ваше имя redis
+          name: bot-redis
           property: connectionString
 
   # 2. Воркер Celery (выполняет задачи)
   - type: worker
-    name: celery-worker # <-- Ваше имя
-    env: python # <-- Меняем на python
+    name: celery-worker
+    env: python
     plan: standard
     buildCommand: "pip install --no-cache-dir -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11
-      - fromGroup: variables_bot # <-- Ваша группа секретов
+      - fromGroup: variables_bot
       - key: REDIS_URL
         fromService:
           type: redis
-          name: bot-redis # <-- Ваше имя redis
+          name: bot-redis
           property: connectionString
 
-  # 3. Планировщик Celery (если он вам нужен для периодических задач)
-  - type: worker
-    name: celery-beat # <-- Ваше имя
-    env: python # <-- Меняем на python
-    plan: standard
-    buildCommand: "pip install --no-cache-dir -r requirements.txt"
-    startCommand: "celery -A celery_worker.celery_app beat --loglevel=info"
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11
-      - fromGroup: variables_bot # <-- Ваша группа секретов
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: bot-redis # <-- Ваше имя redis
-          property: connectionString
-
-  # 4. Redis (брокер сообщений)
+  # 3. Redis (брокер сообщений)
   - type: redis
-    name: bot-redis # <-- Ваше имя
-    plan: free # <-- Оставляем free, если подходит
-    ipAllowList: [] # Разрешаем доступ для других ваших сервисов
+    name: bot-redis
+    plan: free
+    ipAllowList: []
