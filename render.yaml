@@ -1,57 +1,58 @@
+# render.yaml
 services:
-  # 1. Веб-сервис
+  # 1. Веб-сервис (принимает сообщения от Telegram)
   - type: web
-    name: messenger-transcribe-bot
-    env: docker
+    name: messenger-transcribe-bot # <-- Ваше имя
+    env: python # <-- Меняем на python, чтобы не использовать Dockerfile для простоты
     plan: standard
-    envVarGroups:
-      - name: variables_bot
-    # Явно подключаем REDIS_URL напрямую из сервиса Redis
+    buildCommand: "pip install --no-cache-dir -r requirements.txt"
+    startCommand: "hypercorn app:app --bind 0.0.0.0:${PORT}"
     envVars:
-      - key: PROCESS_TYPE
-        value: web
+      - key: PYTHON_VERSION
+        value: 3.11
+      - fromGroup: variables_bot # <-- Ваша группа секретов
       - key: REDIS_URL
         fromService:
           type: redis
-          name: bot-redis
+          name: bot-redis # <-- Ваше имя redis
           property: connectionString
 
-  # 2. Воркер Celery
+  # 2. Воркер Celery (выполняет задачи)
   - type: worker
-    name: celery-worker
-    env: docker
+    name: celery-worker # <-- Ваше имя
+    env: python # <-- Меняем на python
     plan: standard
-    envVarGroups:
-      - name: variables_bot
-    # Явно подключаем REDIS_URL напрямую из сервиса Redis
+    buildCommand: "pip install --no-cache-dir -r requirements.txt"
+    startCommand: "celery -A celery_worker.celery_app worker --loglevel=info"
     envVars:
-      - key: PROCESS_TYPE
-        value: worker
+      - key: PYTHON_VERSION
+        value: 3.11
+      - fromGroup: variables_bot # <-- Ваша группа секретов
       - key: REDIS_URL
         fromService:
           type: redis
-          name: bot-redis
+          name: bot-redis # <-- Ваше имя redis
           property: connectionString
 
-  # 3. Планировщик Celery
+  # 3. Планировщик Celery (если он вам нужен для периодических задач)
   - type: worker
-    name: celery-beat
-    env: docker
+    name: celery-beat # <-- Ваше имя
+    env: python # <-- Меняем на python
     plan: standard
-    envVarGroups:
-      - name: variables_bot
-    # Явно подключаем REDIS_URL напрямую из сервиса Redis
+    buildCommand: "pip install --no-cache-dir -r requirements.txt"
+    startCommand: "celery -A celery_worker.celery_app beat --loglevel=info"
     envVars:
-      - key: PROCESS_TYPE
-        value: beat
+      - key: PYTHON_VERSION
+        value: 3.11
+      - fromGroup: variables_bot # <-- Ваша группа секретов
       - key: REDIS_URL
         fromService:
           type: redis
-          name: bot-redis
+          name: bot-redis # <-- Ваше имя redis
           property: connectionString
 
-  # 4. Redis
+  # 4. Redis (брокер сообщений)
   - type: redis
-    name: bot-redis
-    plan: free
-    ipAllowList: []
+    name: bot-redis # <-- Ваше имя
+    plan: free # <-- Оставляем free, если подходит
+    ipAllowList: [] # Разрешаем доступ для других ваших сервисов
