@@ -2,10 +2,11 @@
 import os
 import logging
 import asyncio
+import json
 from quart import Quart, request, Response
 from dotenv import load_dotenv
 
-# ИСПРАВЛЕНИЕ: Принудительно загружаем переменные окружения в самом начале
+# Принудительно загружаем переменные окружения в самом начале
 load_dotenv()
 
 from services.telegram_handler import TelegramHandler
@@ -38,10 +39,7 @@ async def startup():
         business_analyzer = BusinessAnalyzerService()
         youtube_service = YouTubeService()
         payment_service = PaymentService(
-            bot=None, # Bot will be set inside TelegramHandler
-            db=database,
-            ui=None, # UI will be set inside TelegramHandler
-            localizer=None # Localizer will be set inside TelegramHandler
+            bot=None, db=database, ui=None, localizer=None
         )
 
         telegram_handler = TelegramHandler(
@@ -55,7 +53,6 @@ async def startup():
             business_analyzer=business_analyzer,
             youtube_service=youtube_service
         )
-        # Now set the bot instance for payment_service
         payment_service.bot = telegram_handler.bot
         payment_service.ui = telegram_handler.ui
         payment_service.localizer = telegram_handler.localizer
@@ -66,11 +63,20 @@ async def startup():
         logger.critical(f"❌ CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
     logger.info("✅ Web services initialized successfully.")
 
+# ИСПРАВЛЕНИЕ: Добавлена обертка для безопасной обработки обновлений
+async def safe_handle_update(data):
+    try:
+        await telegram_handler.handle_update(data)
+    except Exception as e:
+        # Этот блок поймает любую ошибку и запишет ее в лог
+        logger.error(f"!!! Unhandled exception in handle_update task: {e}", exc_info=True)
+
 @app.route('/telegram', methods=['POST'])
 async def handle_telegram_webhook():
     if telegram_handler:
         data = await request.get_json()
-        asyncio.create_task(telegram_handler.handle_update(data))
+        # Используем безопасную обертку, чтобы не терять ошибки
+        asyncio.create_task(safe_handle_update(data))
     else:
         logger.error("Telegram handler is not available.")
     return Response(status=200)
