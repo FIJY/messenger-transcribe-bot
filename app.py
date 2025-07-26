@@ -2,97 +2,86 @@
 import os
 import logging
 import asyncio
-import json
-from quart import Quart, request, jsonify
+from quart import Quart, request, Response
 from dotenv import load_dotenv
 
+# Загружаем переменные окружения из .env файла
+load_dotenv()
+
+from services.telegram_handler import TelegramHandler
 from services.database import Database
 from services.s3_service import S3Service
 from services.payment_service import PaymentService
-from services.telegram_handler import TelegramHandler
 from services.insight_service import InsightService
 from services.translation_service import TranslationService
-from services.business_analyzer_service import BusinessAnalyzerService
 from services.downloader_service import DownloaderService
+from services.business_analyzer_service import BusinessAnalyzerService
 from services.youtube_service import YouTubeService
-from telegram import Bot
 
-# Загружаем переменные окружения
-load_dotenv()
-
-# Настраиваем логирование
+# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Инициализация сервисов ---
-logger.info("Initializing services for web process...")
-try:
-    database = Database()
-    s3_service = S3Service()
-    insight_service = InsightService()
-    translation_service = TranslationService()
-    business_analyzer = BusinessAnalyzerService()
-    downloader_service = DownloaderService()
-    youtube_service = YouTubeService()
-
-    telegram_token = os.getenv('TELEGRAM_TOKEN')
-
-    if not telegram_token:
-        raise ValueError("TELEGRAM_TOKEN is not set. Web service cannot start.")
-
-    bot_instance = Bot(token=telegram_token)
-    payment_service = PaymentService(bot=bot_instance, database=database)
-
-    telegram_handler = TelegramHandler(
-        token=telegram_token,
-        database=database,
-        s3_service=s3_service,
-        payment_service=payment_service,
-        insight_service=insight_service,
-        translation_service=translation_service,
-        downloader_service=downloader_service,
-        business_analyzer=business_analyzer,
-        youtube_service=youtube_service
-    )
-    logger.info("✅ Telegram Handler and services initialized successfully.")
-except Exception as e:
-    logger.error(f"❌ CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
-    telegram_handler = None
-
-# Создаем экземпляр веб-приложения Quart
 app = Quart(__name__)
-
+telegram_handler = None
 
 @app.before_serving
 async def startup():
-    """Выполняется один раз перед запуском сервера."""
+    global telegram_handler
+    logger.info("Initializing services for web process...")
+    try:
+        database = Database()
+        s3_service = S3Service()
+        insight_service = InsightService()
+        translation_service = TranslationService()
+        downloader_service = DownloaderService()
+        business_analyzer = BusinessAnalyzerService()
+        youtube_service = YouTubeService()
+        payment_service = PaymentService(
+            bot=None, # Bot will be set inside TelegramHandler
+            db=database,
+            ui=None, # UI will be set inside TelegramHandler
+            localizer=None # Localizer will be set inside TelegramHandler
+        )
+
+        telegram_handler = TelegramHandler(
+            token=os.getenv('TELEGRAM_TOKEN'),
+            database=database,
+            s3_service=s3_service,
+            payment_service=payment_service,
+            insight_service=insight_service,
+            translation_service=translation_service,
+            downloader_service=downloader_service,
+            business_analyzer=business_analyzer,
+            youtube_service=youtube_service
+        )
+        # Now set the bot instance for payment_service
+        payment_service.bot = telegram_handler.bot
+        payment_service.ui = telegram_handler.ui
+        payment_service.localizer = telegram_handler.localizer
+
+        await telegram_handler.set_bot_commands()
+        logger.info("✅ Telegram Handler and services initialized successfully.")
+    except Exception as e:
+        logger.critical(f"❌ CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
+    logger.info("✅ Web services initialized successfully.")
+
+@app.route('/telegram', methods=['POST'])
+async def handle_telegram_webhook():
     if telegram_handler:
-        loop = asyncio.get_event_loop()
-        # Устанавливаем команды бота при старте
-        loop.create_task(telegram_handler.set_bot_commands())
-        logger.info("✅ Web services initialized successfully.")
+        data = await request.get_json()
+        # ИСПРАВЛЕНИЕ: Убрано подробное логирование входящих данных
+        # logger.info("--- RAW TELEGRAM UPDATE RECEIVED ---")
+        # logger.info(json.dumps(data, indent=2, ensure_ascii=False))
+        # logger.info("------------------------------------")
+        asyncio.create_task(telegram_handler.handle_update(data))
     else:
-        logger.error("❌ Web service started, but Telegram Handler is not available due to an initialization error.")
+        logger.error("Telegram handler is not available.")
+    return Response(status=200)
 
-
-@app.route('/')
+@app.route('/health', methods=['GET'])
 async def health_check():
-    """Простая проверка, что сервис жив."""
-    return jsonify({"status": "ok"}), 200
+    return Response("OK", status=200)
 
-
-@app.route('/webhook/telegram', methods=['POST'])
-async def telegram_webhook():
-    """Принимает обновления от Telegram."""
-    data = await request.get_json()
-
-    # НОВОЕ: Агрессивное логирование для отладки
-    logger.info("--- RAW TELEGRAM UPDATE RECEIVED ---")
-    logger.info(json.dumps(data, indent=2))
-    logger.info("------------------------------------")
-
-    if not telegram_handler:
-        return jsonify({"status": "error", "message": "Handler not initialized"}), 500
-
-    asyncio.create_task(telegram_handler.handle_update(data))
-    return jsonify({"status": "ok"})
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
