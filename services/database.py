@@ -10,9 +10,10 @@ logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
-        mongo_uri = os.getenv('MONGO_URI')
+        # ИСПРАВЛЕНО: Используем правильное имя переменной MONGODB_URI
+        mongo_uri = os.getenv('MONGODB_URI')
         if not mongo_uri:
-            raise ValueError("MONGO_URI environment variable not set.")
+            raise ValueError("MONGODB_URI environment variable not set.")
         self.client = MongoClient(mongo_uri)
         self.db = self.client.get_default_database()
         self.users = self.db.users
@@ -28,9 +29,8 @@ class Database:
             'created_at': datetime.utcnow(),
             'state': None
         }
-        self.users.insert_one(user_data.copy())  # Use copy to avoid adding _id to local dict
+        self.users.insert_one(user_data.copy())
         logger.info(f"New user created with ID: {user_id}")
-        # ИСПРАВЛЕНИЕ: Возвращаем созданный документ пользователя
         return user_data
 
     def get_user(self, user_id: str):
@@ -39,9 +39,8 @@ class Database:
     def update_user(self, user_id: str, updates: dict):
         self.users.update_one({'user_id': user_id}, {'$set': updates})
 
-    def save_note(self, user_id: str, **kwargs):
+    def save_note(self, **kwargs):
         note_data = {
-            'user_id': user_id,
             'created_at': datetime.utcnow(),
             **kwargs
         }
