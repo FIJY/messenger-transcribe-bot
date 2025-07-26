@@ -51,10 +51,8 @@ class CommandHandler:
         if not user:
             await self.bot.send_message(chat_id, "Please use /start first.")
             return
-        # Assuming get_status_message exists in your UI class
-        # message = self.ui.get_status_message(user)
-        # await self.bot.send_message(chat_id, message, parse_mode=ParseMode.MARKDOWN)
-        pass # Placeholder for status message
+        message = self.ui.get_status_message(user)
+        await self.bot.send_message(chat_id, message, parse_mode=ParseMode.MARKDOWN)
 
     async def _handle_grant(self, user_id: str, chat_id: int, command_parts: list):
         if user_id != self.admin_id:

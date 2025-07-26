@@ -32,7 +32,6 @@ class MessageHandler:
         url_match = re.search(r'https?://\S+', message.text or "")
 
         if file_to_process:
-            # ИСПРАВЛЕНО: Передаем весь объект 'message', а не только 'file_to_process'
             await self._handle_file_upload(message, user, user_lang)
         elif url_match:
             await self._handle_url(url_match.group(0), user, user_lang)
@@ -46,6 +45,7 @@ class MessageHandler:
 
         note_id = self.db.save_note(
             user_id=user_id,
+            content="",  # FIX: Provide empty content for initial save
             source_type='url',
             source_url=url,
             status='pending_selection',
@@ -56,11 +56,8 @@ class MessageHandler:
         await self.bot.send_message(chat_id, text, reply_markup=markup)
 
     async def _handle_file_upload(self, message: Message, user: dict, lang_code: str):
-        # ИСПРАВЛЕНО: Получаем chat_id и user_id из правильных объектов
         user_id = user['user_id']
         chat_id = message.chat_id
-
-        # ИСПРАВЛЕНО: Получаем сам объект файла (голосовое, аудио и т.д.) из сообщения
         file_obj = message.document or message.audio or message.video or message.voice or message.video_note
 
         status_message = await self.bot.send_message(chat_id, "Анализируем ваш файл...")
@@ -76,6 +73,7 @@ class MessageHandler:
 
             note_id = self.db.save_note(
                 user_id=user_id,
+                content="",  # FIX: Provide empty content for initial save
                 s3_object_key=s3_key,
                 source_type='upload',
                 status='pending_selection',
@@ -91,8 +89,11 @@ class MessageHandler:
         except Exception as e:
             logger.error(f"Error during file pre-processing: {e}", exc_info=True)
             if status_message:
-                await self.bot.edit_message_text(chat_id, status_message.message_id,
-                                                 "❌ Произошла ошибка при подготовке файла.")
+                try:
+                    await self.bot.edit_message_text("❌ Произошла ошибка при подготовке файла.", chat_id=chat_id,
+                                                     message_id=status_message.message_id)
+                except Exception as edit_e:
+                    logger.error(f"Could not edit status message: {edit_e}")
         finally:
             if local_file_path and os.path.exists(local_file_path):
                 os.remove(local_file_path)
