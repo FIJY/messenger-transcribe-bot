@@ -35,7 +35,7 @@ class TelegramUI:
         keyboard.append(pack_row)
 
         for category, options in CHECKBOX_CONFIG.items():
-            keyboard.append([InlineKeyboardButton(f"--- {category} ---", callback_data="IGNORE")])
+            keyboard.append([InlineKeyboardButton(f"--- {category} ---", callback_data=f"IGNORE_{note_id}")])
             row = []
             for option in options:
                 is_selected = option['code'] in selected_options
@@ -49,16 +49,14 @@ class TelegramUI:
             if row:
                 keyboard.append(row)
 
-        keyboard.append([InlineKeyboardButton("🔄 Сбросить выбор", callback_data=f"RESET_ALL_{note_id}")])
+        keyboard.append([InlineKeyboardButton("🔄 Сбросить выбор", callback_data=f"RESET_{note_id}")])
         if selected_count > 0:
             keyboard.append([InlineKeyboardButton(f"🚀 Начать обработку ({selected_count} опций)",
                                                   callback_data=f"PROCESS_{note_id}")])
 
         return header, InlineKeyboardMarkup(keyboard)
 
-    # --- ВОССТАНОВЛЕННЫЙ МЕТОД ---
     def get_status_message(self, user: Dict[str, Any]) -> str:
-        """Генерирует сообщение о статусе пользователя на основе текущего тарифа."""
         lang_code = user.get('language_code', 'en')
         plan_key = user.get('plan', 'free')
         plan_info = TARIFF_LIMITS.get(plan_key, TARIFF_LIMITS['free'])
