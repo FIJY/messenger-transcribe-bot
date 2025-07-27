@@ -40,7 +40,16 @@ class TelegramUI:
             for option in options:
                 is_selected = option['code'] in selected_options
                 is_locked = limit_reached and not is_selected
-                button_text = f"✅ {option['label']}" if is_selected else f"🔒 {option['label']}" if is_locked else f"☐ {option['label']}"
+
+                # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
+                # Заменяем символы на текстовые аналоги для корректной работы на всех платформах.
+                if is_selected:
+                    button_text = f"[✅] {option['label']}"
+                elif is_locked:
+                    button_text = f"🔒 {option['label']}"
+                else:
+                    button_text = f"[ ] {option['label']}"
+
                 callback_data = f"CHECKBOX_{option['code']}_{note_id}"
                 row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
                 if len(row) == 2:
