@@ -1,5 +1,6 @@
 # services/callback_query_handler.py
 import logging
+import random
 from typing import TYPE_CHECKING
 from telegram import Update
 from bson import ObjectId, errors as bson_errors
@@ -64,11 +65,16 @@ class CallbackQueryHandler:
     async def _update_menu(self, query: Update.callback_query, note_id: ObjectId, user_plan: str,
                            selected_options: list, lang_code: str):
         """
-        Надежно обновляет меню, всегда отправляя и текст, и клавиатуру.
+        Надежно обновляет меню, добавляя невидимый символ для обхода бага в Telegram Desktop.
         """
         text, markup = self.ui.get_checkbox_selection_menu(lang_code, note_id, user_plan, selected_options)
+
+        # Добавляем невидимый символ в конец текста, чтобы он всегда был уникальным
+        invisible_char = "\u200B"
+        text_with_salt = text + invisible_char
+
         try:
-            await query.edit_message_text(text=text, reply_markup=markup)
+            await query.edit_message_text(text=text_with_salt, reply_markup=markup)
         except Exception as e:
             if "Message is not modified" not in str(e):
                 logger.error(f"Не удалось обновить меню выбора: {e}", exc_info=True)
