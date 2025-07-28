@@ -54,41 +54,14 @@ class TranscriptionService:
     def _transcribe_sync(self, audio_path: str, language_hint: str = None) -> dict:
         try:
             with open(audio_path, "rb") as audio_file:
-                prompt_text = None
-                if language_hint == 'km':
-                    prompt_text = "សួស្តី, ជំរាបសួរ, អរគុណ, សូម, បាទ, ចាស, ខ្ញុំ"
-
-                if language_hint and len(language_hint) != 2:
-                    self.logger.warning(
-                        f"Получен некорректный language_hint: '{language_hint}'. Выполняем в режиме автоопределения.")
-                    language_hint = None
-
                 response = self.client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
                     language=language_hint,
-                    prompt=prompt_text,
                     response_format="verbose_json"
                 )
-
-                detected_language_name = response.language.lower()
                 transcribed_text = response.text.strip() if response.text else ''
-
-                if len(detected_language_name) > 15 or ' ' in detected_language_name:
-                    self.logger.warning(
-                        f"Whisper вернул невалидное имя языка: '{detected_language_name}'. Считаем язык неопределенным.")
-                    final_lang_code = 'unknown'
-                else:
-                    final_lang_code = SUPPORTED_LANGUAGES_MAP.get(detected_language_name, detected_language_name)
-
-                self.logger.info(f"OpenAI определил язык: {detected_language_name} (нормализован в {final_lang_code}).")
-
-                return {
-                    'success': True,
-                    'text': transcribed_text,
-                    'detected_language_code': final_lang_code,
-                    'detected_language_name': detected_language_name
-                }
+                return {'success': True, 'text': transcribed_text}
         except Exception as e:
             self.logger.error(f"Ошибка транскрипции в _transcribe_sync: {e}", exc_info=True)
             return {'success': False, 'text': '', 'error': e}

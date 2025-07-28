@@ -53,7 +53,13 @@ class CallbackQueryHandler:
             await self._handle_checkbox_toggle(query, note_id, user_plan, selected_options, option_code, user_lang)
         elif action_type == "PROCESS":
             await self._handle_process_start(query, note, selected_options, user_lang)
-        # Добавьте здесь обработку других action_type (PACK, RESET...)
+        elif action_type == "RESET":
+            await self._handle_reset(query, note_id, user_plan, user_lang)
+        elif action_type == "PACK":
+            pack_code = parts[1]
+            await self._handle_quick_pack(query, note_id, user_plan, pack_code, user_lang)
+        elif action_type == "IGNORE":
+            pass
 
     async def _update_menu(self, query: Update.callback_query, note_id: ObjectId, user_plan: str,
                            selected_options: list, lang_code: str):
@@ -64,7 +70,6 @@ class CallbackQueryHandler:
         try:
             await query.edit_message_text(text=text, reply_markup=markup)
         except Exception as e:
-            # Игнорируем ошибку "Message is not modified", так как это нормальное поведение
             if "Message is not modified" not in str(e):
                 logger.error(f"Не удалось обновить меню выбора: {e}", exc_info=True)
 
@@ -77,32 +82,45 @@ class CallbackQueryHandler:
             if len(selected) < limit:
                 selected.append(option_code)
             else:
-                await query.answer("Достигнут лимит по вашему тарифу! Повысьте тариф, чтобы выбрать больше.",
-                                   show_alert=True)
+                await query.answer("Достигнут лимит по вашему тарифу!", show_alert=True)
                 return
 
         self.db.update_note(note_id, {"$set": {"selection_state": {"selected": selected}}})
         await self._update_menu(query, note_id, user_plan, selected, lang_code)
 
-    async def _handle_process_start(self, query, note, selected_options, lang_code):
-        if not selected_options:
-            await query.answer("Пожалуйста, выберите хотя бы одну опцию для обработки.", show_alert=True)
+    async def _handle_quick_pack(self, query, note_id, user_plan, pack_code, lang_code):
+        limit = TARIFF_LIMITS.get(user_plan, TARIFF_LIMITS['free'])['checkboxes']
+        pack_options = QUICK_PACKS.get(pack_code, {}).get('options', [])
+
+        if len(pack_options) > limit:
+            await query.answer(f"Этот пакет требует {len(pack_options)} опции. Ваш лимит: {limit}.", show_alert=True)
             return
 
-        await query.edit_message_text(
-            f"🚀 Задание принято! Начинаем обработку {len(selected_options)} опций...")
+        self.db.update_note(note_id, {"$set": {"selection_state": {"selected": pack_options}}})
+        await self._update_menu(query, note_id, user_plan, pack_options, lang_code)
+
+    async def _handle_reset(self, query, note_id, user_plan, lang_code):
+        self.db.update_note(note_id, {"$set": {"selection_state": {"selected": []}}})
+        await self._update_menu(query, note_id, user_plan, [], lang_code)
+
+    async def _handle_process_start(self, query, note, selected_options, lang_code):
+        if not selected_options:
+            await query.answer("Пожалуйста, выберите хотя бы одну опцию.", show_alert=True)
+            return
+
+        await query.edit_message_text(f"🚀 Задание принято! Начинаем обработку...")
 
         platform_payload = {
             'platform': 'telegram',
             'chat_id': query.message.chat_id,
             'lang_code': lang_code,
-            'note_id': str(note['_id'])  # Передаем note_id в payload
+            'note_id': str(note['_id'])
         }
         task_kwargs = {'selected_options': selected_options}
 
         s3_key = note.get('s3_object_key') or note.get('s3_key')
         if not s3_key:
-            await query.edit_message_text("Ошибка: не удалось найти ключ файла в S3.")
+            await query.edit_message_text("Ошибка: не удалось найти ключ файла S3.")
             return
 
         self.celery_app_client.send_task(
