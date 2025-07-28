@@ -41,6 +41,12 @@ class CallbackQueryHandler:
         user = self.db.get_user(user_id)
         user_plan = user.get('plan', 'free')
 
+        # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
+        # Если это вы (администратор), устанавливаем вам самый лучший тариф.
+        ADMIN_ID = "588450053"  # ID пользователя из логов
+        if user_id == ADMIN_ID:
+            user_plan = 'pro'  # Убедитесь, что тариф 'pro' есть в вашем processing_config.py
+
         selection_state = note.get('selection_state', {'selected': []})
         selected_options = selection_state.get('selected', [])
 
@@ -61,6 +67,14 @@ class CallbackQueryHandler:
 
     async def _update_menu(self, query: Update.callback_query, note_id: ObjectId, user_plan: str,
                            selected_options: list, lang_code: str):
+
+        # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
+        # Проверка на админа, чтобы передать правильный тариф в UI
+        user_id = str(query.from_user.id)
+        ADMIN_ID = "588450053"
+        if user_id == ADMIN_ID:
+            user_plan = 'pro'
+
         text, markup = self.ui.get_checkbox_selection_menu(lang_code, note_id, user_plan, selected_options)
         try:
             await query.edit_message_text(text, reply_markup=markup)
@@ -116,7 +130,7 @@ class CallbackQueryHandler:
         }
         task_kwargs = {'selected_options': selected_options}
         self.celery_app_client.send_task(
-            'tasks.process_media_v2',  # IMPORTANT: This is a new Celery task!
+            'tasks.process_media_v2',
             args=[note['user_id'], note.get('s3_object_key'), {}, platform_payload],
             kwargs=task_kwargs
         )
