@@ -1,6 +1,7 @@
 # services/callback_query_handler.py
 import logging
 import random
+import asyncio
 from typing import TYPE_CHECKING
 from telegram import Update
 from bson import ObjectId, errors as bson_errors
