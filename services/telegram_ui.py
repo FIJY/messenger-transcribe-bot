@@ -1,9 +1,8 @@
-# services/telegram_ui.py
+# services/telegram_ui.py - Вариант с простыми кнопками
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from typing import List, Dict, Any, Tuple
 from bson import ObjectId
 import time
-import random
 import hashlib
 
 from .localization_service import LocalizationService
@@ -25,43 +24,48 @@ class TelegramUI:
         limit_reached = selected_count >= limit['checkboxes']
 
         # Создаем уникальный хэш для каждого состояния
-        state_string = f"{note_id}_{user_plan}_{sorted(selected_options)}_{time.time()}"
+        state_string = f"{note_id}_{user_plan}_{sorted(selected_options)}_{int(time.time())}"
         state_hash = hashlib.md5(state_string.encode()).hexdigest()[:8]
 
-        header = f"*Выберите форматы обработки*\n"
-        header += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        header += f"📋 Тариф: *{limit['name']}*\n"
-        header += f"📊 Выбрано: *{selected_count}* из *{limit['checkboxes']}*\n"
+        header = f"🎛 **ВЫБЕРИТЕ ОБРАБОТКУ**\n"
+        header += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        header += f"📋 План: **{limit['name']}** | Лимит: **{limit['checkboxes']}**\n"
+        header += f"📊 Выбрано: **{selected_count} из {limit['checkboxes']}**\n"
+
+        if selected_count > 0:
+            selected_names = []
+            all_options_map = {item['code']: item['label'] for category in CHECKBOX_CONFIG.values() for item in
+                               category}
+            for code in selected_options:
+                selected_names.append(all_options_map.get(code, code))
+            header += f"✅ Активные: {', '.join(selected_names[:3])}"
+            if len(selected_names) > 3:
+                header += f" и еще {len(selected_names) - 3}"
+            header += f"\n"
 
         if limit_reached:
-            header += f"⚠️ *Лимит достигнут!*\n"
+            header += f"⚠️ **ЛИМИТ ДОСТИГНУТ** - для большего выбора повысьте план\n"
 
-        header += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-
-        # Добавляем скрытый идентификатор состояния
-        header += f"```\nID: {state_hash}\n```"
+        header += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        header += f"`ID: {state_hash}`\n"
 
         keyboard = []
 
-        # Быстрые пакеты - делаем их более заметными
+        # Быстрые пакеты
         if QUICK_PACKS:
-            keyboard.append([InlineKeyboardButton("🎯 БЫСТРЫЙ ВЫБОР 🎯", callback_data=f"IGNORE_{note_id}")])
-            pack_row = []
+            keyboard.append([InlineKeyboardButton("⚡ БЫСТРЫЙ ВЫБОР", callback_data=f"IGNORE_{note_id}")])
             for code, pack in QUICK_PACKS.items():
-                pack_row.append(InlineKeyboardButton(f"⚡ {pack['label']}", callback_data=f"PACK_{code}_{note_id}"))
-                if len(pack_row) == 2:  # Максимум 2 в ряду
-                    keyboard.append(pack_row)
-                    pack_row = []
-            if pack_row:
-                keyboard.append(pack_row)
+                can_use = len(pack.get('options', [])) <= limit['checkboxes']
+                btn_text = f"{'📦' if can_use else '🔒'} {pack['label']}"
+                keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"PACK_{code}_{note_id}")])
 
-            keyboard.append([InlineKeyboardButton("─" * 30, callback_data=f"IGNORE_{note_id}")])
+            keyboard.append([InlineKeyboardButton("─" * 25, callback_data=f"IGNORE_{note_id}")])
 
-        # Опции по категориям
+        # Опции по категориям - БЕЗ checkbox стиля
         for category_idx, (category, options) in enumerate(CHECKBOX_CONFIG.items()):
-            # Заголовок категории с номером
+            # Заголовок категории
             keyboard.append([InlineKeyboardButton(
-                f"🔸 {category_idx + 1}. {category.upper()} 🔸",
+                f"🔹 {category.upper()}",
                 callback_data=f"IGNORE_{note_id}"
             )])
 
@@ -69,28 +73,29 @@ class TelegramUI:
                 is_selected = option['code'] in selected_options
                 is_locked = limit_reached and not is_selected
 
-                # Используем простые ASCII символы и префиксы
+                # Простые кнопки без checkbox-символов
                 if is_selected:
-                    button_text = f"✅ {option['label']}"
+                    # Активная опция - яркий эмодзи
+                    button_text = f"🟢 {option['label']}"
                 elif is_locked:
-                    button_text = f"🚫 {option['label']}"
+                    # Заблокированная опция
+                    button_text = f"🔒 {option['label']}"
                 else:
-                    button_text = f"⭕ {option['label']}"
+                    # Неактивная опция - нейтральный эмодзи
+                    button_text = f"⚪ {option['label']}"
 
-                callback_data = f"CHECKBOX_{option['code']}_{note_id}"
-
-                # Каждая опция на отдельной строке для лучшей видимости
+                callback_data = f"TOGGLE_{option['code']}_{note_id}"
                 keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
         # Управляющие кнопки
-        keyboard.append([InlineKeyboardButton("═" * 25, callback_data=f"IGNORE_{note_id}")])
+        keyboard.append([InlineKeyboardButton("═" * 20, callback_data=f"IGNORE_{note_id}")])
 
         control_row = []
-        control_row.append(InlineKeyboardButton("🔄 СБРОС", callback_data=f"RESET_{note_id}"))
+        control_row.append(InlineKeyboardButton("🗑 ОЧИСТИТЬ", callback_data=f"RESET_{note_id}"))
 
         if selected_count > 0:
             control_row.append(InlineKeyboardButton(
-                f"🚀 СТАРТ ({selected_count})",
+                f"🚀 ЗАПУСК ({selected_count})",
                 callback_data=f"PROCESS_{note_id}"
             ))
 
