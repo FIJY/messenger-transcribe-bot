@@ -41,43 +41,34 @@ class CallbackQueryHandler:
         user = self.db.get_user(user_id)
         user_plan = user.get('plan', 'free')
 
-        # Определяем тариф ОДИН РАЗ здесь
-        ADMIN_ID = "588450053"  # ID пользователя из логов
+        ADMIN_ID = "588450053"
         if user_id == ADMIN_ID:
-            user_plan = 'pro'  # Убедитесь, что тариф 'pro' есть в вашем processing_config.py
+            user_plan = 'pro'
 
         selection_state = note.get('selection_state', {'selected': []})
         selected_options = selection_state.get('selected', [])
 
         if action_type == "CHECKBOX":
             option_code = parts[1]
-            # Передаем уже определенный user_plan дальше
             await self._handle_checkbox_toggle(query, note_id, user_plan, selected_options, option_code, user_lang)
-        elif action_type == "PACK":
-            pack_code = parts[1]
-            await self._handle_quick_pack(query, note_id, user_plan, pack_code, user_lang)
-        elif action_type == "RESET":
-            await self._handle_reset(query, note_id, user_plan, user_lang)
         elif action_type == "PROCESS":
             await self._handle_process_start(query, note, selected_options, user_lang)
-        elif action_type == "IGNORE":
-            pass  # Do nothing for separator buttons
-        else:
-            logger.info(f"Unhandled action: {payload}")
+        # Добавьте здесь обработку других action_type (PACK, RESET...)
 
     async def _update_menu(self, query: Update.callback_query, note_id: ObjectId, user_plan: str,
                            selected_options: list, lang_code: str):
-
-        # Эта функция теперь просто использует переданный ей user_plan, ничего не вычисляя заново.
+        """
+        Надежно обновляет меню, всегда отправляя и текст, и клавиатуру.
+        """
         text, markup = self.ui.get_checkbox_selection_menu(lang_code, note_id, user_plan, selected_options)
         try:
-            await query.edit_message_text(text, reply_markup=markup)
+            await query.edit_message_text(text=text, reply_markup=markup)
         except Exception as e:
+            # Игнорируем ошибку "Message is not modified", так как это нормальное поведение
             if "Message is not modified" not in str(e):
-                logger.error(f"Failed to update checkbox menu: {e}")
+                logger.error(f"Не удалось обновить меню выбора: {e}", exc_info=True)
 
     async def _handle_checkbox_toggle(self, query, note_id, user_plan, selected, option_code, lang_code):
-        # Эта функция использует user_plan, который получила сверху.
         limit = TARIFF_LIMITS.get(user_plan, TARIFF_LIMITS['free'])['checkboxes']
 
         if option_code in selected:
@@ -91,24 +82,7 @@ class CallbackQueryHandler:
                 return
 
         self.db.update_note(note_id, {"$set": {"selection_state": {"selected": selected}}})
-        # И передает тот же самый user_plan дальше.
         await self._update_menu(query, note_id, user_plan, selected, lang_code)
-
-    async def _handle_quick_pack(self, query, note_id, user_plan, pack_code, lang_code):
-        limit = TARIFF_LIMITS.get(user_plan, TARIFF_LIMITS['free'])['checkboxes']
-        pack_options = QUICK_PACKS.get(pack_code, {}).get('options', [])
-
-        if len(pack_options) > limit:
-            await query.answer(f"Этот пакет требует {len(pack_options)} опции. Ваш лимит: {limit}. Повысьте тариф.",
-                               show_alert=True)
-            return
-
-        self.db.update_note(note_id, {"$set": {"selection_state": {"selected": pack_options}}})
-        await self._update_menu(query, note_id, user_plan, pack_options, lang_code)
-
-    async def _handle_reset(self, query, note_id, user_plan, lang_code):
-        self.db.update_note(note_id, {"$set": {"selection_state": {"selected": []}}})
-        await self._update_menu(query, note_id, user_plan, [], lang_code)
 
     async def _handle_process_start(self, query, note, selected_options, lang_code):
         if not selected_options:
@@ -116,17 +90,23 @@ class CallbackQueryHandler:
             return
 
         await query.edit_message_text(
-            f"🚀 Задание принято! Начинаем обработку {len(selected_options)} опций...\n\nВы получите результаты в отдельных сообщениях, как только они будут готовы.")
+            f"🚀 Задание принято! Начинаем обработку {len(selected_options)} опций...")
 
         platform_payload = {
             'platform': 'telegram',
             'chat_id': query.message.chat_id,
             'lang_code': lang_code,
-            'original_message_id': query.message.message_id
+            'note_id': str(note['_id'])  # Передаем note_id в payload
         }
         task_kwargs = {'selected_options': selected_options}
+
+        s3_key = note.get('s3_object_key') or note.get('s3_key')
+        if not s3_key:
+            await query.edit_message_text("Ошибка: не удалось найти ключ файла в S3.")
+            return
+
         self.celery_app_client.send_task(
             'tasks.process_media_v2',
-            args=[note['user_id'], note.get('s3_object_key'), {}, platform_payload],
+            args=[note['user_id'], s3_key, {}, platform_payload],
             kwargs=task_kwargs
         )
