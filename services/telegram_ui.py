@@ -1,9 +1,9 @@
-# services/telegram_ui.py - Вариант с простыми кнопками
+# services/telegram_ui.py - Исправленные галочки
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from typing import List, Dict, Any, Tuple
 from bson import ObjectId
 import time
-import hashlib
+import random
 
 from .localization_service import LocalizationService
 from .processing_config import CHECKBOX_CONFIG, QUICK_PACKS, TARIFF_LIMITS
@@ -23,83 +23,65 @@ class TelegramUI:
         selected_count = len(selected_options)
         limit_reached = selected_count >= limit['checkboxes']
 
-        # Создаем уникальный хэш для каждого состояния
-        state_string = f"{note_id}_{user_plan}_{sorted(selected_options)}_{int(time.time())}"
-        state_hash = hashlib.md5(state_string.encode()).hexdigest()[:8]
+        # Добавляем случайное число для уникальности
+        random_id = random.randint(1000, 9999)
 
-        header = f"🎛 **ВЫБЕРИТЕ ОБРАБОТКУ**\n"
-        header += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        header += f"📋 План: **{limit['name']}** | Лимит: **{limit['checkboxes']}**\n"
-        header += f"📊 Выбрано: **{selected_count} из {limit['checkboxes']}**\n"
-
-        if selected_count > 0:
-            selected_names = []
-            all_options_map = {item['code']: item['label'] for category in CHECKBOX_CONFIG.values() for item in
-                               category}
-            for code in selected_options:
-                selected_names.append(all_options_map.get(code, code))
-            header += f"✅ Активные: {', '.join(selected_names[:3])}"
-            if len(selected_names) > 3:
-                header += f" и еще {len(selected_names) - 3}"
-            header += f"\n"
-
+        header = f"✅ *Выберите форматы обработки*\n\n"
+        header += f"Тариф: *{limit['name']}*\n"
+        header += f"Выбрано: *{selected_count} из {limit['checkboxes']}*\n"
         if limit_reached:
-            header += f"⚠️ **ЛИМИТ ДОСТИГНУТ** - для большего выбора повысьте план\n"
+            header += "⚠️ Лимит достигнут. Чтобы выбрать больше, повысьте тариф.\n"
 
-        header += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        header += f"`ID: {state_hash}`\n"
+        # Уникальный ID сообщения
+        header += f"\n`#{random_id}`\n"
 
         keyboard = []
 
         # Быстрые пакеты
-        if QUICK_PACKS:
-            keyboard.append([InlineKeyboardButton("⚡ БЫСТРЫЙ ВЫБОР", callback_data=f"IGNORE_{note_id}")])
-            for code, pack in QUICK_PACKS.items():
-                can_use = len(pack.get('options', [])) <= limit['checkboxes']
-                btn_text = f"{'📦' if can_use else '🔒'} {pack['label']}"
-                keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"PACK_{code}_{note_id}")])
+        pack_row = []
+        for code, pack in QUICK_PACKS.items():
+            pack_row.append(InlineKeyboardButton(pack['label'], callback_data=f"PACK_{code}_{note_id}"))
+        if pack_row:
+            keyboard.append(pack_row)
 
-            keyboard.append([InlineKeyboardButton("─" * 25, callback_data=f"IGNORE_{note_id}")])
-
-        # Опции по категориям - БЕЗ checkbox стиля
-        for category_idx, (category, options) in enumerate(CHECKBOX_CONFIG.items()):
+        # Опции по категориям с ПРАВИЛЬНЫМИ галочками
+        for category, options in CHECKBOX_CONFIG.items():
             # Заголовок категории
-            keyboard.append([InlineKeyboardButton(
-                f"🔹 {category.upper()}",
-                callback_data=f"IGNORE_{note_id}"
-            )])
+            keyboard.append([InlineKeyboardButton(f"━━━ {category} ━━━", callback_data=f"IGNORE_{note_id}")])
 
+            row = []
             for option in options:
                 is_selected = option['code'] in selected_options
                 is_locked = limit_reached and not is_selected
 
-                # Простые кнопки без checkbox-символов
+                # ИСПРАВЛЕННЫЕ символы галочек - используем ТОЛЬКО эти!
                 if is_selected:
-                    # Активная опция - яркий эмодзи
-                    button_text = f"🟢 {option['label']}"
+                    # ✓ - простая галочка (U+2713) - работает везде
+                    button_text = f"✓ {option['label']}"
                 elif is_locked:
-                    # Заблокированная опция
+                    # 🔒 - замок (хорошо поддерживается)
                     button_text = f"🔒 {option['label']}"
                 else:
-                    # Неактивная опция - нейтральный эмодзи
-                    button_text = f"⚪ {option['label']}"
+                    # ☐ - пустой квадрат (U+2610) - универсальный
+                    button_text = f"☐ {option['label']}"
 
-                callback_data = f"TOGGLE_{option['code']}_{note_id}"
-                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+                callback_data = f"CHECKBOX_{option['code']}_{note_id}"
+                row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
+
+                # По 2 кнопки в ряд, но если название длинное - отдельно
+                if len(row) == 2 or len(option['label']) > 15:
+                    keyboard.append(row)
+                    row = []
+
+            # Добавляем оставшиеся кнопки
+            if row:
+                keyboard.append(row)
 
         # Управляющие кнопки
-        keyboard.append([InlineKeyboardButton("═" * 20, callback_data=f"IGNORE_{note_id}")])
-
-        control_row = []
-        control_row.append(InlineKeyboardButton("🗑 ОЧИСТИТЬ", callback_data=f"RESET_{note_id}"))
-
+        keyboard.append([InlineKeyboardButton("🔄 Сбросить выбор", callback_data=f"RESET_{note_id}")])
         if selected_count > 0:
-            control_row.append(InlineKeyboardButton(
-                f"🚀 ЗАПУСК ({selected_count})",
-                callback_data=f"PROCESS_{note_id}"
-            ))
-
-        keyboard.append(control_row)
+            keyboard.append([InlineKeyboardButton(f"🚀 Начать обработку ({selected_count} опций)",
+                                                  callback_data=f"PROCESS_{note_id}")])
 
         return header, InlineKeyboardMarkup(keyboard)
 
