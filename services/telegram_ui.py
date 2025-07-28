@@ -1,4 +1,4 @@
-# services/telegram_ui.py - Исправленные галочки
+# services/telegram_ui.py
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from typing import List, Dict, Any, Tuple
 from bson import ObjectId
@@ -23,8 +23,9 @@ class TelegramUI:
         selected_count = len(selected_options)
         limit_reached = selected_count >= limit['checkboxes']
 
-        # Добавляем случайное число для уникальности
-        random_id = random.randint(1000, 9999)
+        # Добавляем временную метку и случайное число для гарантированной уникальности
+        timestamp = int(time.time()) % 1000
+        random_num = random.randint(1, 999)
 
         header = f"✅ *Выберите форматы обработки*\n\n"
         header += f"Тариф: *{limit['name']}*\n"
@@ -32,8 +33,8 @@ class TelegramUI:
         if limit_reached:
             header += "⚠️ Лимит достигнут. Чтобы выбрать больше, повысьте тариф.\n"
 
-        # Уникальный ID сообщения
-        header += f"\n`#{random_id}`\n"
+        # Добавляем множественные невидимые символы для уникальности
+        header += f"\n`#{timestamp}.{random_num}`"  # Видимая метка времени в моноширинном шрифте
 
         keyboard = []
 
@@ -44,7 +45,7 @@ class TelegramUI:
         if pack_row:
             keyboard.append(pack_row)
 
-        # Опции по категориям с ПРАВИЛЬНЫМИ галочками
+        # Опции по категориям
         for category, options in CHECKBOX_CONFIG.items():
             # Заголовок категории
             keyboard.append([InlineKeyboardButton(f"━━━ {category} ━━━", callback_data=f"IGNORE_{note_id}")])
@@ -54,21 +55,19 @@ class TelegramUI:
                 is_selected = option['code'] in selected_options
                 is_locked = limit_reached and not is_selected
 
-                # ИСПРАВЛЕННЫЕ символы галочек - используем ТОЛЬКО эти!
+                # Используем более совместимые символы для разных платформ
                 if is_selected:
-                    # ✓ - простая галочка (U+2713) - работает везде
-                    button_text = f"✓ {option['label']}"
+                    # Используем стандартные ASCII символы вместо эмодзи
+                    button_text = f"✓ {option['label']}"  # Простая галочка
                 elif is_locked:
-                    # 🔒 - замок (хорошо поддерживается)
-                    button_text = f"🔒 {option['label']}"
+                    button_text = f"🔒 {option['label']}"  # Замок остается, он хорошо поддерживается
                 else:
-                    # ☐ - пустой квадрат (U+2610) - универсальный
-                    button_text = f"☐ {option['label']}"
+                    button_text = f"○ {option['label']}"  # Пустой кружок вместо квадратных скобок
 
                 callback_data = f"CHECKBOX_{option['code']}_{note_id}"
                 row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
 
-                # По 2 кнопки в ряд, но если название длинное - отдельно
+                # Создаем ряды по 2 кнопки или по 1 для длинных названий
                 if len(row) == 2 or len(option['label']) > 15:
                     keyboard.append(row)
                     row = []
@@ -78,10 +77,16 @@ class TelegramUI:
                 keyboard.append(row)
 
         # Управляющие кнопки
-        keyboard.append([InlineKeyboardButton("🔄 Сбросить выбор", callback_data=f"RESET_{note_id}")])
+        control_buttons = []
+        control_buttons.append(InlineKeyboardButton("🔄 Сбросить", callback_data=f"RESET_{note_id}"))
+
         if selected_count > 0:
-            keyboard.append([InlineKeyboardButton(f"🚀 Начать обработку ({selected_count} опций)",
-                                                  callback_data=f"PROCESS_{note_id}")])
+            control_buttons.append(InlineKeyboardButton(
+                f"🚀 Обработать ({selected_count})",
+                callback_data=f"PROCESS_{note_id}"
+            ))
+
+        keyboard.append(control_buttons)
 
         return header, InlineKeyboardMarkup(keyboard)
 
