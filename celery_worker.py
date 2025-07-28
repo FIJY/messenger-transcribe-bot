@@ -30,7 +30,7 @@ try:
     s3_service = S3Service()
     insight_service = InsightService()
     business_analyzer = BusinessAnalyzerService()
-    transcription_service = TranscriptionService()
+    transcription_service = TranscriptionService(s3_service=s3_service)
     # Инициализируем TelegramHandler только для отправки сообщений, без полной логики
     telegram_bot = TelegramHandler(token=os.getenv('TELEGRAM_TOKEN'), database=db, s3_service=None,
                                    payment_service=None, insight_service=None, translation_service=None,

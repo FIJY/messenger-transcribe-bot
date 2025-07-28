@@ -2,14 +2,17 @@
 import openai
 import os
 import logging
+import tempfile
 from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_MAP
+from .s3_service import S3Service
 
 logger = logging.getLogger(__name__)
 
 
 class TranscriptionService:
-    def __init__(self):
+    def __init__(self, s3_service: S3Service):
         self.logger = logging.getLogger(__name__)
+        self.s3_service = s3_service
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
             raise ValueError("OPENAI_API_KEY не найден в переменных окружения")
@@ -20,30 +23,35 @@ class TranscriptionService:
             self.logger.error(f"Ошибка инициализации OpenAI: {e}")
             raise
 
-    def detect_language(self, audio_file_path: str) -> tuple[str, str]:
-        """
-        Определяет язык аудиофайла, не выполняя полной транскрипции.
-        Возвращает кортеж (код_языка, полное_имя_языка).
-        """
+    def transcribe_audio_from_s3(self, s3_key: str, language_hint: str = None) -> str:
+        self.logger.info(f"Начинаем транскрибацию из S3 для ключа: {s3_key}")
+        file_suffix = os.path.splitext(s3_key)[1] or '.tmp'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as temp_audio_file:
+            local_path = temp_audio_file.name
+
         try:
-            self.logger.info(f"Запускаем определение языка для файла: {audio_file_path}")
-            result = self._transcribe_sync(audio_file_path, language_hint=None)
+            self.logger.info(f"Скачиваем {s3_key} в {local_path}")
+            download_success = self.s3_service.download_file(s3_key, local_path)
+            if not download_success:
+                raise Exception(f"Не удалось скачать файл из S3: {s3_key}")
+            self.logger.info("Скачивание завершено.")
 
-            if result['success']:
-                code = result.get('detected_language_code', 'unknown')
-                name = result.get('detected_language_name', 'unknown')
-                return code, name
+            result = self._transcribe_sync(local_path, language_hint=language_hint)
+            if not result['success']:
+                raise result.get('error', Exception("Неизвестная ошибка транскрипции"))
 
-            raise result.get('error', Exception('Unknown language detection error'))
+            self.logger.info(f"Транскрибация для {s3_key} успешно завершена.")
+            return result.get('text', '')
 
         except Exception as e:
-            self.logger.error(f"Критическая ошибка в detect_language: {e}", exc_info=True)
-            return 'unknown', 'unknown'
+            self.logger.error(f"Произошла ошибка во время транскрипции из S3: {e}", exc_info=True)
+            return ""
+        finally:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+                self.logger.info(f"Временный файл {local_path} удален.")
 
     def _transcribe_sync(self, audio_path: str, language_hint: str = None) -> dict:
-        """
-        Синхронно транскрибирует аудиофайл.
-        """
         try:
             with open(audio_path, "rb") as audio_file:
                 prompt_text = None
@@ -67,7 +75,7 @@ class TranscriptionService:
                 transcribed_text = response.text.strip() if response.text else ''
 
                 if len(detected_language_name) > 15 or ' ' in detected_language_name:
-                    logger.warning(
+                    self.logger.warning(
                         f"Whisper вернул невалидное имя языка: '{detected_language_name}'. Считаем язык неопределенным.")
                     final_lang_code = 'unknown'
                 else:
