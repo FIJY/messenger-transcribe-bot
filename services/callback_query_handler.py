@@ -41,8 +41,7 @@ class CallbackQueryHandler:
         user = self.db.get_user(user_id)
         user_plan = user.get('plan', 'free')
 
-        # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
-        # Если это вы (администратор), устанавливаем вам самый лучший тариф.
+        # Определяем тариф ОДИН РАЗ здесь
         ADMIN_ID = "588450053"  # ID пользователя из логов
         if user_id == ADMIN_ID:
             user_plan = 'pro'  # Убедитесь, что тариф 'pro' есть в вашем processing_config.py
@@ -52,6 +51,7 @@ class CallbackQueryHandler:
 
         if action_type == "CHECKBOX":
             option_code = parts[1]
+            # Передаем уже определенный user_plan дальше
             await self._handle_checkbox_toggle(query, note_id, user_plan, selected_options, option_code, user_lang)
         elif action_type == "PACK":
             pack_code = parts[1]
@@ -68,13 +68,7 @@ class CallbackQueryHandler:
     async def _update_menu(self, query: Update.callback_query, note_id: ObjectId, user_plan: str,
                            selected_options: list, lang_code: str):
 
-        # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
-        # Проверка на админа, чтобы передать правильный тариф в UI
-        user_id = str(query.from_user.id)
-        ADMIN_ID = "588450053"
-        if user_id == ADMIN_ID:
-            user_plan = 'pro'
-
+        # Эта функция теперь просто использует переданный ей user_plan, ничего не вычисляя заново.
         text, markup = self.ui.get_checkbox_selection_menu(lang_code, note_id, user_plan, selected_options)
         try:
             await query.edit_message_text(text, reply_markup=markup)
@@ -83,6 +77,7 @@ class CallbackQueryHandler:
                 logger.error(f"Failed to update checkbox menu: {e}")
 
     async def _handle_checkbox_toggle(self, query, note_id, user_plan, selected, option_code, lang_code):
+        # Эта функция использует user_plan, который получила сверху.
         limit = TARIFF_LIMITS.get(user_plan, TARIFF_LIMITS['free'])['checkboxes']
 
         if option_code in selected:
@@ -96,6 +91,7 @@ class CallbackQueryHandler:
                 return
 
         self.db.update_note(note_id, {"$set": {"selection_state": {"selected": selected}}})
+        # И передает тот же самый user_plan дальше.
         await self._update_menu(query, note_id, user_plan, selected, lang_code)
 
     async def _handle_quick_pack(self, query, note_id, user_plan, pack_code, lang_code):
