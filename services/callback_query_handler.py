@@ -3,6 +3,7 @@ import logging
 import random
 from typing import TYPE_CHECKING
 from telegram import Update
+import asyncio
 from bson import ObjectId, errors as bson_errors
 
 from .processing_config import TARIFF_LIMITS, QUICK_PACKS
@@ -65,44 +66,64 @@ class CallbackQueryHandler:
     async def _update_menu(self, query: Update.callback_query, note_id: ObjectId, user_plan: str,
                            selected_options: list, lang_code: str):
         """
-        Надежно обновляет меню с улучшенной защитой от кэширования Telegram Desktop.
+        Радикально обновляет меню с принудительным изменением контента.
         """
+        import time
+
         text, markup = self.ui.get_checkbox_selection_menu(lang_code, note_id, user_plan, selected_options)
 
-        # Многослойная защита от кэширования
-        import time
-        import random
+        max_attempts = 3
+        attempt = 0
 
-        # Комбинация невидимых символов Unicode
-        invisible_chars = [
-            "\u200B",  # Zero Width Space
-            "\u200C",  # Zero Width Non-Joiner
-            "\u200D",  # Zero Width Joiner
-            "\u2060",  # Word Joiner
-        ]
+        while attempt < max_attempts:
+            try:
+                # Попытка обновления
+                await query.edit_message_text(
+                    text=text,
+                    reply_markup=markup,
+                    parse_mode='Markdown'
+                )
+                logger.info(f"Меню успешно обновлено для заметки {note_id} (попытка {attempt + 1})")
+                return
 
-        # Создаем уникальную комбинацию
-        unique_suffix = ''.join(random.choices(invisible_chars, k=3))
-        text_with_uniqueness = text + unique_suffix
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    attempt += 1
+                    logger.warning(f"Сообщение не изменилось, попытка {attempt}/{max_attempts}")
 
-        try:
-            await query.edit_message_text(text=text_with_uniqueness, reply_markup=markup, parse_mode='Markdown')
-            logger.info(f"Меню успешно обновлено для заметки {note_id}")
-        except Exception as e:
-            if "Message is not modified" in str(e):
-                # Если сообщение не изменилось, пробуем с дополнительным символом
-                additional_unique = f"{unique_suffix}\u2063"  # Invisible Separator
-                try:
-                    await query.edit_message_text(
-                        text=text + additional_unique,
-                        reply_markup=markup,
-                        parse_mode='Markdown'
-                    )
-                    logger.info(f"Меню обновлено с дополнительным символом для заметки {note_id}")
-                except Exception as e2:
-                    logger.warning(f"Не удалось обновить меню даже с дополнительным символом: {e2}")
-            else:
-                logger.error(f"Ошибка при обновлении меню для заметки {note_id}: {e}", exc_info=True)
+                    if attempt < max_attempts:
+                        # Добавляем случайные символы и пробуем снова
+                        import random
+                        random_suffix = ''.join([
+                                                    '\u200B',  # Zero Width Space
+                                                    '\u200C',  # Zero Width Non-Joiner
+                                                    '\u200D',  # Zero Width Joiner
+                                                ][random.randint(0, 2)] for _ in range(random.randint(1, 4)))
+
+                        text = text + random_suffix
+                        # Небольшая задержка перед повторной попыткой
+                        await asyncio.sleep(0.1)
+                    else:
+                        # Последняя попытка - полная замена сообщения
+                        try:
+                            await query.delete_message()
+                            await asyncio.sleep(0.2)
+
+                            # Отправляем новое сообщение
+                            new_message = await query.message.reply_text(
+                                text=text,
+                                reply_markup=markup,
+                                parse_mode='Markdown'
+                            )
+                            logger.info(f"Меню пересоздано для заметки {note_id}")
+                            return
+
+                        except Exception as delete_error:
+                            logger.error(f"Не удалось пересоздать сообщение: {delete_error}")
+
+                else:
+                    logger.error(f"Ошибка при обновлении меню для заметки {note_id}: {e}", exc_info=True)
+                    return
 
     async def _handle_checkbox_toggle(self, query, note_id, user_plan, selected, option_code, lang_code):
         limit = TARIFF_LIMITS.get(user_plan, TARIFF_LIMITS['free'])['checkboxes']
