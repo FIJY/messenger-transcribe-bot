@@ -3,6 +3,7 @@ import os
 import logging
 import asyncio
 import httpx
+import requests  # Для резервной отправки
 from dotenv import load_dotenv
 from bson import ObjectId
 
