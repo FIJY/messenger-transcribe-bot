@@ -2,6 +2,8 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from typing import List, Dict, Any, Tuple
 from bson import ObjectId
+import time
+import random
 
 from .localization_service import LocalizationService
 from .processing_config import CHECKBOX_CONFIG, QUICK_PACKS, TARIFF_LIMITS
@@ -21,47 +23,70 @@ class TelegramUI:
         selected_count = len(selected_options)
         limit_reached = selected_count >= limit['checkboxes']
 
+        # Добавляем временную метку и случайное число для гарантированной уникальности
+        timestamp = int(time.time()) % 1000
+        random_num = random.randint(1, 999)
+
         header = f"✅ *Выберите форматы обработки*\n\n"
         header += f"Тариф: *{limit['name']}*\n"
         header += f"Выбрано: *{selected_count} из {limit['checkboxes']}*\n"
         if limit_reached:
-            header += "Лимит достигнут. Чтобы выбрать больше, повысьте тариф.\n"
+            header += "⚠️ Лимит достигнут. Чтобы выбрать больше, повысьте тариф.\n"
+
+        # Добавляем множественные невидимые символы для уникальности
+        header += f"\n`#{timestamp}.{random_num}`"  # Видимая метка времени в моноширинном шрифте
 
         keyboard = []
 
+        # Быстрые пакеты
         pack_row = []
         for code, pack in QUICK_PACKS.items():
             pack_row.append(InlineKeyboardButton(pack['label'], callback_data=f"PACK_{code}_{note_id}"))
-        keyboard.append(pack_row)
+        if pack_row:
+            keyboard.append(pack_row)
 
+        # Опции по категориям
         for category, options in CHECKBOX_CONFIG.items():
-            keyboard.append([InlineKeyboardButton(f"--- {category} ---", callback_data=f"IGNORE_{note_id}")])
+            # Заголовок категории
+            keyboard.append([InlineKeyboardButton(f"━━━ {category} ━━━", callback_data=f"IGNORE_{note_id}")])
+
             row = []
             for option in options:
                 is_selected = option['code'] in selected_options
                 is_locked = limit_reached and not is_selected
 
-                # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
-                # Заменяем символы на текстовые аналоги для корректной работы на всех платформах.
+                # Используем более совместимые символы для разных платформ
                 if is_selected:
-                    button_text = f"[✅] {option['label']}"
+                    # Используем стандартные ASCII символы вместо эмодзи
+                    button_text = f"✓ {option['label']}"  # Простая галочка
                 elif is_locked:
-                    button_text = f"🔒 {option['label']}"
+                    button_text = f"🔒 {option['label']}"  # Замок остается, он хорошо поддерживается
                 else:
-                    button_text = f"[ ] {option['label']}"
+                    button_text = f"○ {option['label']}"  # Пустой кружок вместо квадратных скобок
 
                 callback_data = f"CHECKBOX_{option['code']}_{note_id}"
                 row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
-                if len(row) == 2:
+
+                # Создаем ряды по 2 кнопки или по 1 для длинных названий
+                if len(row) == 2 or len(option['label']) > 15:
                     keyboard.append(row)
                     row = []
+
+            # Добавляем оставшиеся кнопки
             if row:
                 keyboard.append(row)
 
-        keyboard.append([InlineKeyboardButton("🔄 Сбросить выбор", callback_data=f"RESET_{note_id}")])
+        # Управляющие кнопки
+        control_buttons = []
+        control_buttons.append(InlineKeyboardButton("🔄 Сбросить", callback_data=f"RESET_{note_id}"))
+
         if selected_count > 0:
-            keyboard.append([InlineKeyboardButton(f"🚀 Начать обработку ({selected_count} опций)",
-                                                  callback_data=f"PROCESS_{note_id}")])
+            control_buttons.append(InlineKeyboardButton(
+                f"🚀 Обработать ({selected_count})",
+                callback_data=f"PROCESS_{note_id}"
+            ))
+
+        keyboard.append(control_buttons)
 
         return header, InlineKeyboardMarkup(keyboard)
 
