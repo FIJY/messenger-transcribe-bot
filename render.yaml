@@ -1,12 +1,13 @@
 # render.yaml
 services:
-  # 1. Веб-сервис для обработки веб-хуков Telegram
+  # 1. Веб-сервис
   - type: web
     name: messenger-transcribe-bot
     env: python
-    plan: starter # Ваш тариф, $7/месяц
+    plan: starter
     buildCommand: "pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt"
-    startCommand: "hypercorn app:app --bind 0.0.0.0:${PORT}"
+    # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Новая команда запуска ---
+    startCommand: "gunicorn --worker-class uvicorn.workers.UvicornWorker app:app"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
@@ -17,11 +18,11 @@ services:
           name: bot-redis
           property: connectionString
 
-  # 2. Воркер Celery для фоновых задач
+  # 2. Воркер Celery (остается без изменений)
   - type: worker
     name: celery-worker
     env: python
-    plan: starter # Ваш тариф, $7/месяц
+    plan: starter
     buildCommand: "pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt"
     startCommand: "celery -A celery_worker.celery_app worker --loglevel=info"
     envVars:
@@ -34,8 +35,8 @@ services:
           name: bot-redis
           property: connectionString
 
-  # 3. Redis для очереди задач Celery
+  # 3. Redis (остается без изменений)
   - type: redis
     name: bot-redis
-    plan: free # Redis остается бесплатным
-    ipAllowList: [] # Разрешить доступ отовсюду (или настроить для безопасности)
+    plan: free
+    ipAllowList: []

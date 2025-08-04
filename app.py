@@ -1,43 +1,27 @@
 # app.py
 import logging
-import asyncio
-from quart import Quart, Response
-from hypercorn.config import Config
-from hypercorn.asyncio import serve
 import sys
+from quart import Quart, Response
 
-# Add the project root to the Python path
+# Добавляем корень проекта в пути, чтобы Python находил наши модули
 sys.path.insert(0, '.')
 
-from config.settings import settings
-from config.constants import START_MESSAGE
+from config import settings, START_MESSAGE
 
+# Создаем приложение
 app = Quart(__name__)
 
-# Remove the problematic config line - Quart handles OPTIONS automatically
-# app.config["PROVIDE_AUTOMATIC_OPTIONS"] = False  # <-- Remove this line
-
-# Webhook URL secured by the bot token
+# URL для вебхука
 WEBHOOK_URL_PATH = f"/{settings.TELEGRAM_TOKEN}"
-
 
 @app.route(WEBHOOK_URL_PATH, methods=['POST'])
 async def webhook():
     logging.info("Webhook received!")
     return Response(status=200)
 
-
 @app.route("/health")
 async def health_check():
-    logging.info(f"Health check OK. Start message is: {START_MESSAGE}")
     return Response("OK", status=200)
 
-
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logging.info("Starting application...")
-
-    hypercorn_config = Config()
-    hypercorn_config.bind = ["0.0.0.0:8000"]
-
-    asyncio.run(serve(app, hypercorn_config))
+# Блок if __name__ == '__main__' больше не нужен,
+# так как Gunicorn сам импортирует и запускает объект 'app'.
