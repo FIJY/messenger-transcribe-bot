@@ -1,17 +1,15 @@
 # containers.py
 from dependency_injector import containers, providers
 
-# Правильные импорты из файлов и пакетов
+# Импортируем все необходимое
 from config import settings
 from services.database import Database
 from services.telegram_service import TelegramService
-from telegram_handler import TelegramHandler
-
+from telegram_handler import TelegramHandler  # <-- Вот этот импорт
 
 class Container(containers.DeclarativeContainer):
     """Контейнер зависимостей."""
 
-    # Чтобы IDE понимала типы, добавим type_hint
     config = providers.Object(settings)
 
     db_service = providers.Singleton(
@@ -26,6 +24,6 @@ class Container(containers.DeclarativeContainer):
 
     telegram_handler = providers.Factory(
         TelegramHandler,
-        telegram_service=telegram_service,
         db_service=db_service,
+        telegram_service=telegram_service,
     )
