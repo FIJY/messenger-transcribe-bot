@@ -9,10 +9,16 @@ import sys
 # Добавляем корень проекта в пути, чтобы Python находил наши модули
 sys.path.insert(0, '.')
 
-# Теперь импорты выглядят чисто и работают правильно
 from config import settings, START_MESSAGE
 
 app = Quart(__name__)
+
+# --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+# Эта строка решает ошибку KeyError: 'PROVIDE_AUTOMATIC_OPTIONS'.
+# Мы явно отключаем опцию, которую Hypercorn не поддерживает.
+app.config["PROVIDE_AUTOMATIC_OPTIONS"] = False
+# --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
 
 # URL для вебхука, защищенный токеном
 WEBHOOK_URL_PATH = f"/{settings.TELEGRAM_TOKEN}"
