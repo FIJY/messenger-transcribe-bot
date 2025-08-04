@@ -1,21 +1,13 @@
-flask
-openai
-pymongo
-python-dotenv
-requests
-langdetect
-httpx
-gunicorn
-dnspython
-celery
-redis
-boto3
-python-telegram-bot
-google-cloud-speech
+# requirements.txt
+
+# --- Базовые веб-сервисы и утилиты ---
 quart
 hypercorn
-pycountry
-yt-dlp
-instaloader
-python-docx
-fpdf2
+httpx
+pymongo
+openai
+boto3
+pydantic==1.10.15
+pydantic-settings
+dependency-injector
+python-dotenv

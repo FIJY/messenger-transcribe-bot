@@ -1,39 +1,35 @@
+# Dockerfile
+
 # Используем официальный образ Python
-FROM python:3.11-slim
+FROM python:3.11.4-slim
+
+# Устанавливаем рабочую директорию в контейнере
+WORKDIR /app
 
 # Устанавливаем переменные окружения
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
+
+# Устанавливаем системные зависимости, необходимые для сборки некоторых пакетов
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создаем виртуальное окружение
+RUN python -m venv .venv
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Устанавливаем системные зависимости
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg build-essential && \
-    rm -rf /var/lib/apt/lists/*
+# Копируем файл с зависимостями
+COPY requirements.txt .
 
-# Создаем рабочую директорию
-WORKDIR /app
-
-# Копируем все файлы проекта
-COPY . .
-
-# !!! --- ВАЖНОЕ ИЗМЕНЕНИЕ --- !!!
-# Делаем скрипт исполняемым, ПОКА МЫ ЕЩЕ ROOT
-RUN chmod +x entrypoint.sh
-
-# Создаем пользователя без root-прав и делаем его владельцем файлов
-RUN adduser --system --group appuser
-RUN chown -R appuser:appuser /app
-
-# Теперь переключаемся на пользователя без прав root
-USER appuser
-
-# Создаем виртуальное окружение и устанавливаем зависимости
-RUN python -m venv /app/.venv
-# Обратите внимание, что requirements.txt уже скопирован вместе со всем остальным
-RUN . /app/.venv/bin/activate && \
-    pip install --no-cache-dir --upgrade pip && \
+# Устанавливаем зависимости в виртуальное окружение
+# Правильный способ вызова pip из venv
+RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Указываем, что все команды должны запускаться через этот скрипт
-ENTRYPOINT ["./entrypoint.sh"]
+# Копируем все файлы проекта в рабочую директорию
+COPY . .
+
+# Команда для запуска приложения (может быть переопределена в render.yaml)
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--worker-class", "uvicorn.workers.UvicornWorker", "app:app"]

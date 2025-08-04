@@ -1,94 +1,54 @@
-# app.py
-import os
+# app.py (или main.py, как вам удобнее)
 import logging
-import asyncio
-import json
 from quart import Quart, request, Response
-from dotenv import load_dotenv
+import sys
 
-# Принудительно загружаем переменные окружения в самом начале
-load_dotenv()
+# Это решает все проблемы с импортами для IDE и для запуска
+sys.path.append('.')
 
-from services.telegram_handler import TelegramHandler
-from services.database import Database
-from services.s3_service import S3Service
-from services.payment_service import PaymentService
-from services.insight_service import InsightService
-from services.translation_service import TranslationService
-from services.downloader_service import DownloaderService
-from services.business_analyzer_service import BusinessAnalyzerService
-from services.youtube_service import YouTubeService
+from containers import Container
+from config import settings
+from telegram_handler import TelegramHandler
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
-app = Quart(__name__)
-telegram_handler = None
+def create_app() -> Quart:
+    """Фабрика для создания Quart приложения."""
 
-@app.before_serving
-async def startup():
-    global telegram_handler
-    logger.info("Initializing services for web process...")
-    try:
-        database = Database()
-        s3_service = S3Service()
-        insight_service = InsightService()
-        translation_service = TranslationService()
-        downloader_service = DownloaderService()
-        business_analyzer = BusinessAnalyzerService()
-        youtube_service = YouTubeService()
-        payment_service = PaymentService(
-            bot=None, db=database, ui=None, localizer=None
-        )
+    app_container = Container()
+    # "Связываем" контейнер с модулями, где есть @inject
+    app_container.wire(modules=[__name__, "celery_worker"])
 
-        telegram_handler = TelegramHandler(
-            token=os.getenv('TELEGRAM_TOKEN'),
-            database=database,
-            s3_service=s3_service,
-            payment_service=payment_service,
-            insight_service=insight_service,
-            translation_service=translation_service,
-            downloader_service=downloader_service,
-            business_analyzer=business_analyzer,
-            youtube_service=youtube_service
-        )
-        payment_service.bot = telegram_handler.bot
-        payment_service.ui = telegram_handler.ui
-        payment_service.localizer = telegram_handler.localizer
+    app = Quart(__name__)
+    app.container = app_container
 
-        await telegram_handler.set_bot_commands()
-        logger.info("✅ Telegram Handler and services initialized successfully.")
-    except Exception as e:
-        logger.critical(f"❌ CRITICAL INITIALIZATION ERROR: {e}", exc_info=True)
-    logger.info("✅ Web services initialized successfully.")
+    # Получаем обработчик из контейнера
+    telegram_handler: TelegramHandler = app.container.telegram_handler()
 
-# ИСПРАВЛЕНИЕ: Добавлена обертка для безопасной обработки обновлений
-async def safe_handle_update(data):
-    logger.info(">>> [safe_handle_update] Task started.")
-    try:
-        await telegram_handler.handle_update(data)
-        logger.info("<<< [safe_handle_update] Task finished successfully.")
-    except Exception as e:
-        # Этот блок поймает любую ошибку и запишет ее в лог
-        logger.error(f"!!! [safe_handle_update] Unhandled exception in handle_update task: {e}", exc_info=True)
+    WEBHOOK_URL_PATH = f"/{settings.TELEGRAM_TOKEN}"
 
-@app.route('/telegram', methods=['POST'])
-async def handle_telegram_webhook():
-    logger.info("--> [/telegram] Webhook received a request.")
-    if telegram_handler:
+    @app.post(WEBHOOK_URL_PATH)
+    async def webhook():
         data = await request.get_json()
-        logger.info("--> [/telegram] JSON payload parsed. Creating background task for safe_handle_update.")
-        # Используем безопасную обертку, чтобы не терять ошибки
-        asyncio.create_task(safe_handle_update(data))
-        logger.info("--> [/telegram] Background task created. Returning 200 OK to Telegram.")
-    else:
-        logger.error("!!! [/telegram] Telegram handler is not available. Cannot process update.")
-    return Response(status=200)
+        await telegram_handler.handle_update(data)
+        return Response(status=200)
 
-@app.route('/health', methods=['GET'])
-async def health_check():
-    return Response("OK", status=200)
+    @app.get("/health")
+    async def health_check():
+        return Response("OK", status=200)
+
+    return app
+
+
+app = create_app()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+    logging.basicConfig(level=logging.INFO)
+    # Используем Hypercorn для запуска, как и было в вашем проекте
+    from hypercorn.config import Config
+    from hypercorn.asyncio import serve
+    import asyncio
+
+    hypercorn_config = Config()
+    hypercorn_config.bind = ["0.0.0.0:8000"]
+
+    asyncio.run(serve(app, hypercorn_config))
