@@ -1,54 +1,38 @@
-# app.py (или main.py, как вам удобнее)
+# app.py
 import logging
-from quart import Quart, request, Response
-import sys
+from quart import Quart, Response
+import asyncio
+from hypercorn.config import Config
+from hypercorn.asyncio import serve
 
-# Это решает все проблемы с импортами для IDE и для запуска
-sys.path.append('.')
+# Импортируем наши базовые файлы из правильных мест
+from config.settings import settings
+from config.constants import START_MESSAGE  # <--- ИЗМЕНЕНИЕ ЗДЕСЬ
 
-from containers import Container
-from config import settings
-from telegram_handler import TelegramHandler
+app = Quart(__name__)
 
-
-def create_app() -> Quart:
-    """Фабрика для создания Quart приложения."""
-
-    app_container = Container()
-    # "Связываем" контейнер с модулями, где есть @inject
-    app_container.wire(modules=[__name__, "celery_worker"])
-
-    app = Quart(__name__)
-    app.container = app_container
-
-    # Получаем обработчик из контейнера
-    telegram_handler: TelegramHandler = app.container.telegram_handler()
-
-    WEBHOOK_URL_PATH = f"/{settings.TELEGRAM_TOKEN}"
-
-    @app.post(WEBHOOK_URL_PATH)
-    async def webhook():
-        data = await request.get_json()
-        await telegram_handler.handle_update(data)
-        return Response(status=200)
-
-    @app.get("/health")
-    async def health_check():
-        return Response("OK", status=200)
-
-    return app
+# URL для вебхука, защищенный токеном
+WEBHOOK_URL_PATH = f"/{settings.TELEGRAM_TOKEN}"
 
 
-app = create_app()
+@app.route(WEBHOOK_URL_PATH, methods=['POST'])
+async def webhook():
+    logging.info("Webhook received!")
+    return Response(status=200)
+
+
+@app.route("/health")
+async def health_check():
+    logging.info(f"Health check OK. Start message is: {START_MESSAGE}")
+    return Response("OK", status=200)
+
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-    # Используем Hypercorn для запуска, как и было в вашем проекте
-    from hypercorn.config import Config
-    from hypercorn.asyncio import serve
-    import asyncio
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.info("Starting application...")
 
     hypercorn_config = Config()
     hypercorn_config.bind = ["0.0.0.0:8000"]
 
+    # Запускаем сервер
     asyncio.run(serve(app, hypercorn_config))
