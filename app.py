@@ -6,32 +6,32 @@ from hypercorn.config import Config
 from hypercorn.asyncio import serve
 import sys
 
-# Добавляем корень проекта в пути, чтобы Python находил наши модули
+# Add the project root to the Python path
 sys.path.insert(0, '.')
 
-from config import settings, START_MESSAGE
+from config.settings import settings
+from config.constants import START_MESSAGE
 
 app = Quart(__name__)
 
-# --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
-# Эта строка решает ошибку KeyError: 'PROVIDE_AUTOMATIC_OPTIONS'.
-# Мы явно отключаем опцию, которую Hypercorn не поддерживает.
+# Fix for the KeyError: 'PROVIDE_AUTOMATIC_OPTIONS'
 app.config["PROVIDE_AUTOMATIC_OPTIONS"] = False
-# --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
-
-# URL для вебхука, защищенный токеном
+# Webhook URL secured by the bot token
 WEBHOOK_URL_PATH = f"/{settings.TELEGRAM_TOKEN}"
+
 
 @app.route(WEBHOOK_URL_PATH, methods=['POST'])
 async def webhook():
     logging.info("Webhook received!")
     return Response(status=200)
 
+
 @app.route("/health")
 async def health_check():
     logging.info(f"Health check OK. Start message is: {START_MESSAGE}")
     return Response("OK", status=200)
+
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -40,5 +40,4 @@ if __name__ == '__main__':
     hypercorn_config = Config()
     hypercorn_config.bind = ["0.0.0.0:8000"]
 
-    # Запускаем сервер
     asyncio.run(serve(app, hypercorn_config))
