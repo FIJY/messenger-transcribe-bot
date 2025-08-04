@@ -14,8 +14,8 @@ from config.constants import START_MESSAGE
 
 app = Quart(__name__)
 
-# Fix for the KeyError: 'PROVIDE_AUTOMATIC_OPTIONS'
-app.config["PROVIDE_AUTOMATIC_OPTIONS"] = False
+# Remove the problematic config line - Quart handles OPTIONS automatically
+# app.config["PROVIDE_AUTOMATIC_OPTIONS"] = False  # <-- Remove this line
 
 # Webhook URL secured by the bot token
 WEBHOOK_URL_PATH = f"/{settings.TELEGRAM_TOKEN}"
