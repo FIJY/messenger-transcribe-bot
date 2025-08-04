@@ -3,22 +3,22 @@ import boto3
 from botocore.client import Config
 import logging
 
-# Импортируем наш новый объект настроек и константы
-from config import settings
-from constants import S3_URL_EXPIRATION_SECONDS
+# --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+# Заменяем неправильный импорт на правильный, из нашего пакета 'config'
+from config import settings, S3_URL_EXPIRATION_SECONDS
+# --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
 class S3Service:
     def __init__(self):
-        # Используем настройки из config.py
         self.s3_client = boto3.client(
             "s3",
-            endpoint_url=settings.s3.r2_endpoint_url,
-            aws_access_key_id=settings.s3.r2_access_key_id,
-            aws_secret_access_key=settings.s3.r2_secret_access_key,
+            endpoint_url=settings.R2_ENDPOINT_URL,
+            aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
             config=Config(signature_version="s3v4"),
             region_name="auto",
         )
-        self.bucket_name = settings.s3.r2_bucket_name
+        self.bucket_name = settings.R2_BUCKET_NAME
         logging.info("S3 Service initialized.")
 
     def upload_file(self, file_path, object_name):
