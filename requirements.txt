@@ -1,16 +1,11 @@
-# requirements.txt - Исправленные зависимости
+# requirements.txt - Минимум зависимостей без pydantic
 
 # Веб фреймворк
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
-# HTTP клиент для Telegram API
+# HTTP клиент
 httpx==0.25.2
 
-# Конфигурация - ИСПРАВЛЕНО
-pydantic==2.5.0
-pydantic-settings==2.1.0
+# Конфигурация - УБРАЛИ PYDANTIC
 python-dotenv==1.0.1
-
-# Логирование
-structlog==23.2.0

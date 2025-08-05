@@ -1,47 +1,47 @@
-# config.py - Исправленная конфигурация
+# config.py - Простейшая конфигурация без pydantic
 import os
+from dotenv import load_dotenv
 
-# ИСПРАВЛЕНИЕ: Используем pydantic-settings вместо pydantic
-try:
-    from pydantic_settings import BaseSettings
-except ImportError:
-    # Fallback for older pydantic versions
-    from pydantic import BaseSettings
+# Загружаем переменные из .env файла
+load_dotenv()
 
 
-class Settings(BaseSettings):
-    """Минимальные настройки для запуска бота"""
+class Settings:
+    """Простые настройки без pydantic"""
 
-    # Обязательные для работы
-    TELEGRAM_TOKEN: str
-    OPENAI_API_KEY: str = ""
+    def __init__(self):
+        # Обязательные переменные
+        self.TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+        self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 
-    # Опциональные (с дефолтными значениями)
-    WEBHOOK_URL: str = "https://your-app.onrender.com"
-    DEBUG: bool = False
+        # Опциональные
+        self.WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://your-app.onrender.com')
+        self.DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
-    # База данных (опционально)
-    MONGODB_URI: str = "mongodb://localhost:27017/transcribe_bot"
-    DATABASE_NAME: str = "transcribe_bot"
+        # База данных
+        self.MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/transcribe_bot')
+        self.DATABASE_NAME = os.getenv('DATABASE_NAME', 'transcribe_bot')
 
-    # S3 Storage (опционально)
-    S3_ENDPOINT_URL: str = ""
-    S3_ACCESS_KEY_ID: str = ""
-    S3_SECRET_ACCESS_KEY: str = ""
-    S3_BUCKET_NAME: str = ""
+        # S3 Storage
+        self.S3_ENDPOINT_URL = os.getenv('S3_ENDPOINT_URL', '')
+        self.S3_ACCESS_KEY_ID = os.getenv('S3_ACCESS_KEY_ID', '')
+        self.S3_SECRET_ACCESS_KEY = os.getenv('S3_SECRET_ACCESS_KEY', '')
+        self.S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME', '')
 
-    # Redis (опционально)
-    REDIS_URL: str = "redis://localhost:6379/0"
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+        # Redis
+        self.REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 
 
 # Создаем экземпляр настроек
 settings = Settings()
 
-# Дополнительные константы (пока заглушки)
+# Проверяем обязательные переменные
+if not settings.TELEGRAM_TOKEN:
+    raise ValueError("❌ TELEGRAM_TOKEN не установлен! Создайте .env файл с токеном бота.")
+
+print(f"✅ Конфигурация загружена. Токен бота: {'*' * 10 + settings.TELEGRAM_TOKEN[-10:]}")
+
+# Дополнительные константы
 PLANS = {
     "free": {
         "name": "Бесплатный",
