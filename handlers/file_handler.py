@@ -1,0 +1,92 @@
+# utils/file_handler.py - Утилиты для работы с файлами
+import os
+import tempfile
+import logging
+from typing import List, Tuple, Dict, Any
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def get_file_info(file_path: str) -> Dict[str, Any]:
+    """Получает информацию о файле"""
+    if not os.path.exists(file_path):
+        return {}
+
+    stat = os.stat(file_path)
+    return {
+        'size': stat.st_size,
+        'extension': Path(file_path).suffix.lower(),
+        'name': Path(file_path).name
+    }
+
+
+def validate_media_file(media_info: Dict[str, Any], user_plan: str) -> Dict[str, Any]:
+    """Валидирует медиа файл согласно тарифному плану"""
+    from config import FILE_LIMITS
+
+    limits = FILE_LIMITS.get(user_plan, FILE_LIMITS['free'])
+
+    # Проверка размера
+    size_mb = media_info['size'] / (1024 * 1024)
+    if size_mb > limits['max_size_mb']:
+        return {
+            'valid': False,
+            'error': f"Размер файла {size_mb:.1f}MB превышает лимит {limits['max_size_mb']}MB"
+        }
+
+    # Проверка длительности
+    duration_minutes = media_info['duration'] / 60
+    if duration_minutes > limits['max_duration_minutes']:
+        return {
+            'valid': False,
+            'error': f"Длительность {duration_minutes:.1f}мин превышает лимит {limits['max_duration_minutes']}мин"
+        }
+
+    # Проверка формата
+    file_ext = media_info.get('mime_type', '').split('/')[-1].lower()
+    if file_ext not in limits['supported_formats']:
+        return {
+            'valid': False,
+            'error': f"Формат {file_ext} не поддерживается для вашего тарифа"
+        }
+
+    return {'valid': True}
+
+
+async def create_export_files(content: str, title: str = "export") -> List[Tuple[str, str]]:
+    """Создает файлы для экспорта (TXT, DOCX)"""
+    files = []
+
+    try:
+        # TXT файл
+        txt_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
+        txt_file.write(content)
+        txt_file.close()
+        files.append((txt_file.name, 'TXT'))
+
+        # DOCX файл (простая реализация)
+        try:
+            from docx import Document
+
+            doc = Document()
+            doc.add_heading(title, 0)
+
+            # Разбиваем текст на абзацы
+            paragraphs = content.split('\n\n')
+            for paragraph in paragraphs:
+                if paragraph.strip():
+                    doc.add_paragraph(paragraph.strip())
+
+            docx_file = tempfile.NamedTemporaryFile(suffix='.docx', delete=False)
+            doc.save(docx_file.name)
+            docx_file.close()
+            files.append((docx_file.name, 'DOCX'))
+
+        except ImportError:
+            logger.warning("python-docx не установлен, пропускаем создание DOCX")
+
+    except Exception as e:
+        logger.error(f"Ошибка создания файлов экспорта: {e}")
+
+    return files
