@@ -1,6 +1,6 @@
-# render.yaml
+# render.yaml - ИСПРАВЛЕНО: только веб-сервис без Celery
 services:
-  # 1. Веб-сервис для обработки веб-хуков Telegram
+  # Только основной веб-сервис (без Celery worker пока)
   - type: web
     name: messenger-transcribe-bot
     env: python
@@ -10,32 +10,6 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: PORT
+        value: 10000
       - fromGroup: variables_bot
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: bot-redis
-          property: connectionString
-
-  # 2. Celery Worker - ИСПРАВЛЕНО
-  - type: worker
-    name: celery-worker
-    env: python
-    plan: starter
-    buildCommand: "pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt"
-    startCommand: "celery -A tasks.transcription.celery_app worker --loglevel=info"
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
-      - fromGroup: variables_bot
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: bot-redis
-          property: connectionString
-
-  # 3. Redis для очереди задач Celery
-  - type: redis
-    name: bot-redis
-    plan: free
-    ipAllowList: []

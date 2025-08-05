@@ -1,6 +1,12 @@
-# config.py - Минимальная конфигурация для запуска
+# config.py - Исправленная конфигурация
 import os
-from pydantic import BaseSettings
+
+# ИСПРАВЛЕНИЕ: Используем pydantic-settings вместо pydantic
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    # Fallback for older pydantic versions
+    from pydantic import BaseSettings
 
 
 class Settings(BaseSettings):
