@@ -1,10 +1,10 @@
 # services/command_handler.py
 import logging
 from typing import Optional
-from telegram import Message, Bot, BotCommand
+from telegram import Message, Bot
 from telegram.constants import ParseMode
 
-from .database import Database
+from infrastructure.database import Database
 from .telegram_ui import TelegramUI
 from .localization_service import LocalizationService
 

@@ -7,7 +7,7 @@ import re
 from telegram import Message, Bot
 from celery import Celery
 
-from .database import Database
+from infrastructure.database import Database
 from .telegram_ui import TelegramUI
 from .localization_service import LocalizationService
 from .s3_service import S3Service

@@ -1,0 +1,304 @@
+# handlers/callback_handler.py - Обработчик inline кнопок
+import logging
+from typing import Dict, Any, List
+import json
+
+from services.telegram_client import TelegramClient
+from services.database import DatabaseService
+from ui.localization import LocalizationService
+from ui.keyboards import create_processing_menu_keyboard, create_language_selection_keyboard
+from tasks.ai_processing import process_transcription_task
+from config import PROCESSING_CATEGORIES, PLANS
+
+logger = logging.getLogger(__name__)
+
+
+class CallbackHandler:
+    """Обработчик нажатий на inline кнопки"""
+
+    def __init__(self, telegram: TelegramClient, db: DatabaseService, localization: LocalizationService):
+        self.telegram = telegram
+        self.db = db
+        self.localization = localization
+
+    async def handle_callback(self, callback_data: Dict[str, Any], user: Dict[str, Any]):
+        """Основная обработка callback запросов"""
+        chat_id = callback_data['message']['chat']['id']
+        message_id = callback_data['message']['message_id']
+        data = callback_data['data']
+        lang = user['language']
+
+        try:
+            # Подтверждаем получение callback
+            await self.telegram.answer_callback_query(callback_data['id'])
+
+            # Парсим данные callback
+            callback_parts = data.split(':')
+            action = callback_parts[0]
+
+            # Маршрутизация по типу действия
+            if action == 'main_menu':
+                await self._handle_main_menu(chat_id, message_id, user)
+
+            elif action == 'settings':
+                await self._handle_settings_action(chat_id, message_id, callback_parts[1], user)
+
+            elif action == 'language':
+                await self._handle_language_action(chat_id, message_id, callback_parts[1], user)
+
+            elif action == 'processing':
+                await self._handle_processing_action(chat_id, message_id, callback_parts, user)
+
+            elif action == 'process_start':
+                await self._handle_process_start(chat_id, message_id, callback_parts[1], user)
+
+            elif action == 'balance':
+                await self._handle_balance_action(chat_id, message_id, callback_parts[1], user)
+
+            elif action == 'subscription':
+                await self._handle_subscription_action(chat_id, message_id, callback_parts[1], user)
+
+            else:
+                logger.warning(f"⚠️ Неизвестный callback action: {action}")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки callback: {e}", exc_info=True)
+            await self.telegram.answer_callback_query(
+                callback_data['id'],
+                text=self.localization.get_text("callback_error", lang),
+                show_alert=True
+            )
+
+    async def _handle_processing_action(self, chat_id: int, message_id: int,
+                                        callback_parts: List[str], user: Dict[str, Any]):
+        """Обработка действий с меню обработки файла"""
+        action_type = callback_parts[1]  # toggle, quick_pack, reset
+        audio_file_id = callback_parts[2]
+        lang = user['language']
+
+        # Получаем информацию о файле
+        audio_file = await self.db.get_audio_file(audio_file_id)
+        if not audio_file:
+            await self.telegram.answer_callback_query(
+                callback_data['id'],
+                text=self.localization.get_text("file_not_found", lang),
+                show_alert=True
+            )
+            return
+
+        # Получаем текущие выбранные опции
+        current_options = audio_file.get('processing_options', [])
+
+        if action_type == 'toggle':
+            # Переключение отдельной опции
+            option_code = callback_parts[3]
+            current_options = await self._toggle_processing_option(
+                audio_file_id, option_code, current_options, user['plan']
+            )
+
+        elif action_type == 'quick_pack':
+            # Быстрый выбор пакета опций
+            pack_code = callback_parts[3]
+            current_options = await self._apply_quick_pack(
+                audio_file_id, pack_code, user['plan']
+            )
+
+        elif action_type == 'reset':
+            # Сброс всех опций
+            current_options = []
+            await self.db.update_audio_file(audio_file_id, {'processing_options': []})
+
+        # Обновляем меню с новыми опциями
+        keyboard = create_processing_menu_keyboard(audio_file_id, user['plan'], lang, current_options)
+
+        menu_text = self.localization.get_text("processing_menu", lang).format(
+            plan_name=PLANS[user['plan']]['name'],
+            processing_limit=PLANS[user['plan']]['processing_options'],
+            selected_count=len(current_options)
+        )
+
+        await self.telegram.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=menu_text,
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+    async def _toggle_processing_option(self, audio_file_id: str, option_code: str,
+                                        current_options: List[str], user_plan: str) -> List[str]:
+        """Переключает отдельную опцию обработки"""
+        plan_limit = PLANS[user_plan]['processing_options']
+
+        if option_code in current_options:
+            # Убираем опцию
+            current_options.remove(option_code)
+        else:
+            # Добавляем опцию, если не превышен лимит
+            if len(current_options) < plan_limit:
+                current_options.append(option_code)
+
+        # Обновляем в БД
+        await self.db.update_audio_file(audio_file_id, {'processing_options': current_options})
+
+        return current_options
+
+    async def _apply_quick_pack(self, audio_file_id: str, pack_code: str, user_plan: str) -> List[str]:
+        """Применяет быстрый пакет опций"""
+        from config import QUICK_PACKS
+
+        pack_options = QUICK_PACKS.get(pack_code, {}).get('options', [])
+        plan_limit = PLANS[user_plan]['processing_options']
+
+        # Ограничиваем количество опций лимитом тарифа
+        selected_options = pack_options[:plan_limit]
+
+        # Обновляем в БД
+        await self.db.update_audio_file(audio_file_id, {'processing_options': selected_options})
+
+        return selected_options
+
+    async def _handle_process_start(self, chat_id: int, message_id: int,
+                                    audio_file_id: str, user: Dict[str, Any]):
+        """Запуск обработки файла с выбранными опциями"""
+        lang = user['language']
+
+        # Получаем файл и проверяем опции
+        audio_file = await self.db.get_audio_file(audio_file_id)
+        if not audio_file:
+            return
+
+        processing_options = audio_file.get('processing_options', [])
+        if not processing_options:
+            await self.telegram.answer_callback_query(
+                callback_data['id'],
+                text=self.localization.get_text("no_options_selected", lang),
+                show_alert=True
+            )
+            return
+
+        # Обновляем статус файла
+        await self.db.update_audio_file(audio_file_id, {'status': 'processing'})
+
+        # Показываем сообщение о начале обработки
+        processing_text = self.localization.get_text("processing_started", lang).format(
+            options_count=len(processing_options)
+        )
+
+        await self.telegram.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=processing_text
+        )
+
+        # Запускаем асинхронную задачу обработки
+        process_transcription_task.delay(
+            audio_file_id=audio_file_id,
+            user_id=user['telegram_id'],
+            processing_options=processing_options,
+            language=lang
+        )
+
+        logger.info(f"🚀 Запущена обработка файла {audio_file_id} с опциями: {processing_options}")
+
+    async def _handle_settings_action(self, chat_id: int, message_id: int,
+                                      action: str, user: Dict[str, Any]):
+        """Обработка действий в настройках"""
+        lang = user['language']
+
+        if action == 'language':
+            # Показываем меню выбора языка
+            keyboard = create_language_selection_keyboard()
+            language_text = self.localization.get_text("select_language", lang)
+
+            await self.telegram.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=language_text,
+                reply_markup=keyboard
+            )
+
+    async def _handle_language_action(self, chat_id: int, message_id: int,
+                                      language_code: str, user: Dict[str, Any]):
+        """Обработка смены языка"""
+        if language_code == 'select':
+            # Показать меню выбора языка
+            keyboard = create_language_selection_keyboard()
+            text = self.localization.get_text("select_language", user['language'])
+
+            await self.telegram.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=keyboard
+            )
+        else:
+            # Сменить язык
+            await self.db.update_user(user['telegram_id'], {'language': language_code})
+
+            success_text = self.localization.get_text("language_changed", language_code)
+
+            keyboard = {
+                "inline_keyboard": [
+                    [{"text": "🔙 " + self.localization.get_text("back_to_main", language_code),
+                      "callback_data": "main_menu"}]
+                ]
+            }
+
+            await self.telegram.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=success_text,
+                reply_markup=keyboard
+            )
+
+    async def _handle_main_menu(self, chat_id: int, message_id: int, user: Dict[str, Any]):
+        """Возврат к главному меню"""
+        from handlers.start_handler import StartHandler
+        from ui.keyboards import create_main_menu_keyboard
+
+        lang = user['language']
+        plan_info = PLANS.get(user['plan'], PLANS['free'])
+
+        welcome_text = self.localization.get_text("welcome_message", lang).format(
+            username=user.get('username', 'Пользователь'),
+            plan_name=plan_info['name'],
+            balance_hours=user['balance_minutes'] // 60,
+            balance_minutes=user['balance_minutes'] % 60,
+            language_name=self.localization.get_language_name(lang)
+        )
+
+        keyboard = create_main_menu_keyboard(lang)
+
+        await self.telegram.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=welcome_text,
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+    async def _handle_balance_action(self, chat_id: int, message_id: int,
+                                     action: str, user: Dict[str, Any]):
+        """Обработка действий с балансом"""
+        lang = user['language']
+
+        if action == 'topup':
+            # Показать варианты пополнения
+            topup_text = self.localization.get_text("topup_options", lang)
+
+            keyboard = {
+                "inline_keyboard": [
+                    [{"text": "💎 5 часов - $9.99", "callback_data": "payment:topup:5h"}],
+                    [{"text": "💎 15 часов - $19.99", "callback_data": "payment:topup:15h"}],
+                    [{"text": "💎 50 часов - $49.99", "callback_data": "payment:topup:50h"}],
+                    [{"text": "🔙 Назад", "callback_data": "main_menu"}]
+                ]
+            }
+
+            await self.telegram.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=topup_text,
+                reply_markup=keyboard
+            )

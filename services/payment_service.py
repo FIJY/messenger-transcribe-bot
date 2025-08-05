@@ -4,7 +4,7 @@ import logging
 from telegram import Bot, Message
 
 # ИСПРАВЛЕНО: Убран импорт 'PLANS', который вызывал ошибку
-from .database import Database
+from infrastructure.database import Database
 from .telegram_ui import TelegramUI
 from .localization_service import LocalizationService
 
