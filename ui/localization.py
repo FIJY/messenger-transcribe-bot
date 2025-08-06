@@ -1,7 +1,7 @@
 # ui/localization.py - Сервис локализации
 import logging
 from typing import Dict, Any
-from config import SUPPORTED_LANGUAGES
+from config_del import SUPPORTED_LANGUAGES
 
 logger = logging.getLogger(__name__)
 

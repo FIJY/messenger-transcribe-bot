@@ -6,7 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 import asyncio
 
-from config import settings
+from config_del import settings
 
 logger = logging.getLogger(__name__)
 

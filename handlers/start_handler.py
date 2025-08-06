@@ -6,7 +6,7 @@ from services.telegram_client import TelegramClient
 from services.database import DatabaseService
 from ui.localization import LocalizationService
 from ui.keyboards import create_main_menu_keyboard, create_language_selection_keyboard, create_subscription_keyboard
-from config import PLANS
+from config_del import PLANS
 
 logger = logging.getLogger(__name__)
 

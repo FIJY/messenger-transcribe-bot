@@ -5,7 +5,7 @@ import logging
 
 # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
 # Заменяем неправильный импорт на правильный, из нашего пакета 'config'
-from config import settings, S3_URL_EXPIRATION_SECONDS
+from config_del import settings, S3_URL_EXPIRATION_SECONDS
 # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
 class S3Service:

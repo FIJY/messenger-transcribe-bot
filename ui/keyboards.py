@@ -1,6 +1,6 @@
 # ui/keyboards.py - UI компоненты клавиатур
 from typing import Dict, List, Optional
-from config import PROCESSING_CATEGORIES, QUICK_PACKS, PLANS
+from config_del import PROCESSING_CATEGORIES, QUICK_PACKS, PLANS
 
 
 def create_main_menu_keyboard(lang: str) -> Dict:

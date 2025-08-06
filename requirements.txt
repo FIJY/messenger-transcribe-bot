@@ -1,4 +1,4 @@
-# requirements.txt - Минимум зависимостей без pydantic
+# requirements.txt - Добавлена поддержка OpenAI и файлов
 
 # Веб фреймворк
 fastapi==0.104.1
@@ -7,5 +7,11 @@ uvicorn[standard]==0.24.0
 # HTTP клиент
 httpx==0.25.2
 
-# Конфигурация - УБРАЛИ PYDANTIC
+# Конфигурация
 python-dotenv==1.0.1
+
+# OpenAI для транскрипции
+openai==1.54.3
+
+# Работа с файлами
+aiofiles==24.1.0

@@ -8,7 +8,7 @@ from services.database import DatabaseService
 from ui.localization import LocalizationService
 from ui.keyboards import create_processing_menu_keyboard, create_language_selection_keyboard
 from tasks.ai_processing import process_transcription_task
-from config import PROCESSING_CATEGORIES, PLANS
+from config_del import PROCESSING_CATEGORIES, PLANS
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ class CallbackHandler:
 
     async def _apply_quick_pack(self, audio_file_id: str, pack_code: str, user_plan: str) -> List[str]:
         """Применяет быстрый пакет опций"""
-        from config import QUICK_PACKS
+        from config_del import QUICK_PACKS
 
         pack_options = QUICK_PACKS.get(pack_code, {}).get('options', [])
         plan_limit = PLANS[user_plan]['processing_options']

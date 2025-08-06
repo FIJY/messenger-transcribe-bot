@@ -3,7 +3,7 @@ import logging
 from typing import Dict, Any, Optional
 import httpx
 
-from config import settings
+from config_del import settings
 from services.database import DatabaseService
 from services.telegram_client import TelegramClient
 from handlers.start_handler import StartHandler

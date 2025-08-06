@@ -23,7 +23,7 @@ def get_file_info(file_path: str) -> Dict[str, Any]:
 
 def validate_media_file(media_info: Dict[str, Any], user_plan: str) -> Dict[str, Any]:
     """Валидирует медиа файл согласно тарифному плану"""
-    from config import FILE_LIMITS
+    from config_del import FILE_LIMITS
 
     limits = FILE_LIMITS.get(user_plan, FILE_LIMITS['free'])
 

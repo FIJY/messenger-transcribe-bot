@@ -7,7 +7,7 @@ from typing import Dict, Any, List
 from celery import Celery
 from celery.exceptions import Retry
 
-from config import settings
+from config_del import settings
 from services.database import DatabaseService
 from services.storage import StorageService
 from services.transcription import TranscriptionService

@@ -3,7 +3,7 @@ import openai
 import os
 import logging
 import tempfile
-from config.transcrib_suggestion_config import SUPPORTED_LANGUAGES_MAP
+from config_del.transcrib_suggestion_config import SUPPORTED_LANGUAGES_MAP
 from .s3_service import S3Service
 
 logger = logging.getLogger(__name__)
