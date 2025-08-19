@@ -72,7 +72,21 @@ R2_PUBLIC_BASEURL = os.getenv("R2_PUBLIC_BASEURL", "")
 
 # ==== YouTube окружение / настройки ====
 YT_PROXY = os.getenv("YT_PROXY", "").strip()
-YT_COOKIES_FILE = os.getenv("YT_COOKIES_FILE", "cookies.txt")
+# Умная логика с поддержкой переменных окружения
+YT_COOKIES_FILE = ""
+cookies_data = os.getenv("YT_COOKIES_DATA", "")
+use_cookies = os.getenv("USE_COOKIES", "true").lower() == "true"
+
+if cookies_data and use_cookies:
+    # Создаем временный файл из переменной
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write(cookies_data)
+        YT_COOKIES_FILE = f.name
+else:
+    # Fallback на локальный файл для разработки
+    local_cookies = os.getenv("YT_COOKIES_FILE", "cookies.txt")
+    if os.path.exists(local_cookies):
+        YT_COOKIES_FILE = local_cookies
 YT_DLP_UA = os.getenv("YT_DLP_UA", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
 # ==== Tor настройки ====
