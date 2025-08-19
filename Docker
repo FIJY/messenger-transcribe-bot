@@ -1,15 +1,13 @@
-# Dockerfile - Исправленная и упрощенная версия для Render
-FROM python:3.11-slim
+# Dockerfile - Последняя попытка с другим базовым образом
+FROM python:3.11-bullseye
 
 # Устанавливаем системные зависимости
-# Используем стандартный и надежный способ установки
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     tor \
     ffmpeg \
     curl \
     build-essential \
-    # Очищаем кеш apt для уменьшения размера образа
     && rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем рабочую директорию
