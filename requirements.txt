@@ -1,0 +1,66 @@
+# Веб фреймворк
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+watchfiles
+
+# HTTP клиент для Telegram API
+httpx==0.25.2
+
+# Конфигурация из .env файлов
+python-dotenv==1.0.1
+
+# OpenAI для транскрипции и AI-обработки
+openai==1.54.3
+tiktoken
+
+# Работа с асинхронными файлами
+aiofiles==24.1.0
+
+# Асинхронный драйвер для MongoDB
+pymongo==4.7.2
+motor==3.4.0
+
+# Celery для фоновых задач и Redis
+celery==5.4.0
+redis==5.0.5
+
+# Мониторинг системных ресурсов
+psutil==5.9.6
+
+# Flower для мониторинга Celery
+flower==2.0.1
+
+# Обработка аудио
+mutagen==1.47.0
+
+# Для работы с временными зонами
+pytz==2023.3
+
+# Для валидации данных
+pydantic==2.5.0
+
+# Для работы с JSON логами (опционально)
+python-json-logger==2.0.7
+
+# Для мониторинга производительности
+prometheus-client==0.19.0
+
+# Дополнительные утилиты
+click==8.1.7
+passlib
+bcrypt
+
+# Для экспорта в Word (.docx)
+python-docx==0.8.11
+
+# Для экспорта в PDF
+reportlab==4.0.4
+
+# Для работы с медиа
+yt-dlp==2023.12.30
+youtube-transcript-api==0.6.2
+ffmpeg-python
+# Tor поддержка
+requests[socks]==2.31.0
+PySocks==1.7.1
+stem==1.8.2

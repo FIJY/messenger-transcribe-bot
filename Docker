@@ -1,0 +1,60 @@
+# Dockerfile - Многоэтапная сборка для оптимизации размера
+FROM python:3.11-slim as builder
+
+# Устанавливаем системные зависимости
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создаем виртуальное окружение
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Копируем и устанавливаем зависимости
+COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Основной образ
+FROM python:3.11-slim
+
+# Устанавливаем только необходимые runtime зависимости
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Копируем виртуальное окружение из builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Создаем пользователя для безопасности
+RUN useradd --create-home --shell /bin/bash transcribe
+USER transcribe
+WORKDIR /home/transcribe/app
+
+# Копируем код приложения
+COPY --chown=transcribe:transcribe . .
+
+# Создаем директории для логов и временных файлов
+RUN mkdir -p /home/transcribe/app/logs /home/transcribe/app/temp
+
+# Переменные окружения для Python
+ENV PYTHONPATH=/home/transcribe/app
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Переменные для оптимизации памяти Python
+ENV PYTHONOPTIMIZE=1
+ENV MALLOC_TRIM_THRESHOLD_=100000
+ENV MALLOC_MMAP_THRESHOLD_=100000
+
+# Healthcheck для контейнера
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/ || exit 1
+
+# Дефолтная команда (можно переопределить в docker-compose)
+CMD ["python", "main.py"]

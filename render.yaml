@@ -1,0 +1,36 @@
+# render.yaml - Минимальная версия (планы управляются через веб-интерфейс)
+services:
+  # 1. Веб-сервис
+  - type: web
+    name: messenger-transcribe-bot
+    env: python
+    buildCommand: "pip install --no-cache-dir -r requirements.txt"
+    startCommand: "python main.py"
+    envVars:
+      - key: PYTHONPATH
+        value: /opt/render/project/src
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bot-redis
+          property: connectionString
+
+  # 2. Celery воркер
+  - type: worker
+    name: celery-worker
+    env: python
+    buildCommand: "pip install --no-cache-dir -r requirements.txt"
+    startCommand: "celery -A services.transcription.celery_app worker --loglevel=info --concurrency=1"
+    envVars:
+      - key: PYTHONPATH
+        value: /opt/render/project/src
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bot-redis
+          property: connectionString
+
+  # 3. Redis
+  - type: redis
+    name: bot-redis
+    maxmemoryPolicy: allkeys-lru
