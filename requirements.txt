@@ -57,7 +57,7 @@ python-docx==0.8.11
 reportlab==4.0.4
 
 # Для работы с медиа
-yt-dlp==2023.12.30
+
 youtube-transcript-api==0.6.2
 ffmpeg-python
 # Tor поддержка
