@@ -1,43 +1,39 @@
-# Dockerfile - Многоэтапная сборка для оптимизации размера
-# Этап 1: Сборщик зависимостей
-FROM python:3.11-slim as builder
-
-# Устанавливаем системные зависимости, необходимые для сборки Python-пакетов
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Создаем виртуальное окружение
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Копируем и устанавливаем зависимости
-COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
-
-# Этап 2: Основной образ приложения
+# Dockerfile - Упрощенная одноэтапная сборка для Render
 FROM python:3.11-slim
 
-# Устанавливаем только необходимые для работы приложения зависимости
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    tor \
-    curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+# Устанавливаем рабочую директорию
+WORKDIR /app
 
-# Копируем виртуальное окружение из сборщика
-COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# Выполняем установку системных зависимостей одной надежной командой
+# apt-get clean - очищает кеш
+# rm -rf /var/lib/apt/lists/* - принудительно удаляет списки пакетов
+# apt-get update --fix-missing - обновляет списки, исправляя возможные ошибки
+# --no-install-recommends - устанавливает только основные пакеты без лишних рекомендаций
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends \
+    tor \
+    ffmpeg \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Копируем файл с зависимостями
+COPY requirements.txt .
+
+# Устанавливаем Python-зависимости
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем остальной код приложения
+COPY . .
 
 # Создаем непривилегированного пользователя для безопасности
 RUN useradd --create-home --shell /bin/bash appuser
 USER appuser
 WORKDIR /home/appuser/app
 
-# Копируем код приложения и меняем владельца
+# Копируем код еще раз, чтобы установить правильного владельца
 COPY --chown=appuser:appuser . .
 
 # Устанавливаем переменную окружения PYTHONPATH
