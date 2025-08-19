@@ -34,3 +34,6 @@ services:
   - type: redis
     name: bot-redis
     maxmemoryPolicy: allkeys-lru
+    ipAllowList:
+      - cidr: 0.0.0.0/0
+        description: Allow all connections
