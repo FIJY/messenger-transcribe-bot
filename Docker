@@ -1,10 +1,10 @@
 # Dockerfile - Многоэтапная сборка для оптимизации размера
+# Этап 1: Сборщик зависимостей
 FROM python:3.11-slim as builder
 
-# Устанавливаем системные зависимости
+# Устанавливаем системные зависимости, необходимые для сборки Python-пакетов
 RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
+    build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -17,47 +17,34 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Основной образ
+# Этап 2: Основной образ приложения
 FROM python:3.11-slim
 
-# Устанавливаем только необходимые runtime зависимости
+# Устанавливаем только необходимые для работы приложения зависимости
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    tor \
     curl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Копируем виртуальное окружение из builder
+# Копируем виртуальное окружение из сборщика
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Создаем пользователя для безопасности
-RUN useradd --create-home --shell /bin/bash transcribe
-USER transcribe
-WORKDIR /home/transcribe/app
+# Создаем непривилегированного пользователя для безопасности
+RUN useradd --create-home --shell /bin/bash appuser
+USER appuser
+WORKDIR /home/appuser/app
 
-# Копируем код приложения
-COPY --chown=transcribe:transcribe . .
+# Копируем код приложения и меняем владельца
+COPY --chown=appuser:appuser . .
 
-# Создаем директории для логов и временных файлов
-RUN mkdir -p /home/transcribe/app/logs /home/transcribe/app/temp
+# Устанавливаем переменную окружения PYTHONPATH
+ENV PYTHONPATH /home/appuser/app
 
-# Переменные окружения для Python
-ENV PYTHONPATH=/home/transcribe/app
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+# Открываем порт 10000 для доступа извне
+EXPOSE 10000
 
-# Переменные для оптимизации памяти Python
-ENV PYTHONOPTIMIZE=1
-ENV MALLOC_TRIM_THRESHOLD_=100000
-ENV MALLOC_MMAP_THRESHOLD_=100000
-
-# Healthcheck для контейнера
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/ || exit 1
-
-# Дефолтная команда (можно переопределить в docker-compose)
+# Команда для запуска веб-сервера при старте контейнера
 CMD ["python", "main.py"]
-
-# В вашем Dockerfile
-RUN apt-get update && apt-get install -y tor
