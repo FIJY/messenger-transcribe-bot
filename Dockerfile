@@ -1,7 +1,7 @@
 # Dockerfile - Финальная, надежная версия для Render
 FROM python:3.11-bullseye
 
-# Устанавливаем системные зависимости в одной команде, чтобы избежать проблем с кешем и правами
+# Устанавливаем системные зависимости
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     tor \
@@ -32,5 +32,9 @@ ENV PYTHONPATH /app
 # Открываем порт 10000 для доступа извне
 EXPOSE 10000
 
-# Команда для запуска веб-сервера при старте контейнера
-CMD ["python", "main.py"]
+# Копируем стартовый скрипт и делаем его исполняемым
+COPY --chown=appuser:appuser entrypoint.sh .
+RUN chmod +x ./entrypoint.sh
+
+# Указываем, что контейнер должен запускаться с помощью нашего скрипта
+ENTRYPOINT ["./entrypoint.sh"]
