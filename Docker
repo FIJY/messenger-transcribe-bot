@@ -1,43 +1,35 @@
-# Dockerfile - Упрощенная одноэтапная сборка для Render
+# Dockerfile - Исправленная и упрощенная версия для Render
 FROM python:3.11-slim
 
-# Устанавливаем рабочую директорию
-WORKDIR /app
-
-# Выполняем установку системных зависимостей одной надежной командой
-# apt-get clean - очищает кеш
-# rm -rf /var/lib/apt/lists/* - принудительно удаляет списки пакетов
-# apt-get update --fix-missing - обновляет списки, исправляя возможные ошибки
-# --no-install-recommends - устанавливает только основные пакеты без лишних рекомендаций
-RUN apt-get clean && \
-    rm -rf /var/lib/apt/lists/* && \
-    apt-get update --fix-missing && \
+# Устанавливаем системные зависимости
+# Используем стандартный и надежный способ установки
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     tor \
     ffmpeg \
     curl \
     build-essential \
+    # Очищаем кеш apt для уменьшения размера образа
     && rm -rf /var/lib/apt/lists/*
 
-# Копируем файл с зависимостями
+# Устанавливаем рабочую директорию
+WORKDIR /app
+
+# Копируем файл с зависимостями и устанавливаем их
 COPY requirements.txt .
-
-# Устанавливаем Python-зависимости
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Копируем остальной код приложения
-COPY . .
 
 # Создаем непривилегированного пользователя для безопасности
 RUN useradd --create-home --shell /bin/bash appuser
-USER appuser
-WORKDIR /home/appuser/app
 
-# Копируем код еще раз, чтобы установить правильного владельца
+# Копируем код приложения и устанавливаем правильного владельца
 COPY --chown=appuser:appuser . .
 
+# Переключаемся на непривилегированного пользователя
+USER appuser
+
 # Устанавливаем переменную окружения PYTHONPATH
-ENV PYTHONPATH /home/appuser/app
+ENV PYTHONPATH /app
 
 # Открываем порт 10000 для доступа извне
 EXPOSE 10000
