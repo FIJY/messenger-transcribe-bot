@@ -32,9 +32,6 @@ ENV PYTHONPATH /app
 # Открываем порт 10000 для доступа извне
 EXPOSE 10000
 
-# Копируем стартовый скрипт и делаем его исполняемым
-COPY --chown=appuser:appuser entrypoint.sh .
-RUN chmod +x ./entrypoint.sh
-
-# Указываем, что контейнер должен запускаться с помощью нашего скрипта
-ENTRYPOINT ["./entrypoint.sh"]
+# Запускаем Tor в фоновом режиме, ждем 5 секунд и затем запускаем основное приложение.
+# 'exec' гарантирует, что Python-процесс станет главным и будет корректно получать сигналы от Render.
+CMD ["sh", "-c", "tor & sleep 5 && exec python main.py"]
