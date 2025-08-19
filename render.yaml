@@ -1,10 +1,10 @@
-# render.yaml - Минимальная версия (планы управляются через веб-интерфейс)
+# render.yaml - Исправленная версия с установкой tor и ffmpeg
 services:
   # 1. Веб-сервис
   - type: web
     name: messenger-transcribe-bot
     env: python
-    buildCommand: "pip install --no-cache-dir -r requirements.txt"
+    buildCommand: "pip install --no-cache-dir -r requirements.txt && apt-get update && apt-get install -y tor ffmpeg"
     startCommand: "python main.py"
     envVars:
       - key: PYTHONPATH
@@ -19,7 +19,7 @@ services:
   - type: worker
     name: celery-worker
     env: python
-    buildCommand: "pip install --no-cache-dir -r requirements.txt"
+    buildCommand: "pip install --no-cache-dir -r requirements.txt && apt-get update && apt-get install -y tor ffmpeg"
     startCommand: "celery -A services.transcription.celery_app worker --loglevel=info --concurrency=1"
     envVars:
       - key: PYTHONPATH
