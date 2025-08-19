@@ -3,12 +3,15 @@ import logging
 import os
 import sys
 import asyncio
+import json
+from datetime import datetime
 
 # Проверяем и импортируем зависимости
 try:
     import httpx
     from fastapi import FastAPI, Request, Response, status
     from contextlib import asynccontextmanager
+    import uvicorn
 except ImportError as e:
     print(f"❌ Ошибка импорта: {e}")
     print("💡 Установите зависимости: pip install -r requirements.txt")
@@ -16,6 +19,7 @@ except ImportError as e:
 
 from config import settings
 from bot import TranscribeBot
+from services.telegram_client import TelegramClient
 
 # Настройка логирования
 logging.basicConfig(
@@ -47,6 +51,39 @@ async def setup_webhook():
         logger.error(f"❌ Не удалось установить webhook.")
 
     return success
+
+
+async def simple_health_check():
+    """Простая проверка здоровья системы"""
+    try:
+        from services.smart_video_service import get_system_status
+
+        system_status = await get_system_status()
+        bot_healthy = bot_instance is not None
+
+        overall_healthy = (
+                bot_healthy and
+                system_status.get("components", {}).get("yt_dlp", False)
+        )
+
+        return {
+            "overall_status": "healthy" if overall_healthy else "degraded",
+            "timestamp": datetime.now().isoformat(),
+            "bot_initialized": bot_healthy,
+            "services": {
+                "telegram_bot": bot_healthy,
+                "smart_video": system_status.get("components", {}),
+                "tor": system_status.get("tor", {}),
+                "r2": system_status.get("r2", {}),
+            }
+        }
+    except Exception as e:
+        return {
+            "overall_status": "error",
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e),
+            "bot_initialized": bot_instance is not None
+        }
 
 
 @asynccontextmanager
@@ -86,7 +123,7 @@ async def lifespan(app: FastAPI):
 # Создание FastAPI приложения
 app = FastAPI(
     title="TranscribeBot API",
-    description="AI-powered transcription bot",
+    description="AI-powered transcription bot with Tor support",
     version="2.0.0",
     lifespan=lifespan
 )
@@ -100,7 +137,21 @@ async def root():
         "version": "2.0.0",
         "status": "healthy" if bot_instance else "degraded",
         "bot_initialized": bot_instance is not None,
+        "features": [
+            "YouTube transcription",
+            "Tor proxy support",
+            "Invidious fallback",
+            "R2 cloud storage",
+            "Auto subtitles extraction"
+        ],
+        "timestamp": datetime.now().isoformat()
     }
+
+
+@app.head("/")
+async def root_head():
+    """HEAD endpoint для health checks"""
+    return Response(status_code=200)
 
 
 @app.post(f"/webhook/{settings.TELEGRAM_TOKEN}")
@@ -121,14 +172,10 @@ async def telegram_webhook(request: Request):
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# Добавить в main.py после создания app
-from health_check import run_health_checks
-
-
 @app.get("/health")
 async def health_check():
     """Endpoint для проверки здоровья всех сервисов"""
-    health_status = await run_health_checks()
+    health_status = await simple_health_check()
     status_code = 200 if health_status["overall_status"] == "healthy" else 503
     return Response(
         content=json.dumps(health_status, indent=2),
@@ -137,31 +184,68 @@ async def health_check():
     )
 
 
+@app.get("/status")
+async def detailed_status():
+    """Подробный статус всех сервисов"""
+    try:
+        from services.smart_video_service import get_system_status
+
+        system_status = await get_system_status()
+        return {
+            "bot_status": "running" if bot_instance else "stopped",
+            "system_status": system_status,
+            "timestamp": datetime.now().isoformat(),
+            "environment": {
+                "use_tor": os.getenv("USE_TOR", "false"),
+                "use_cookies": os.getenv("USE_COOKIES", "false"),
+                "r2_configured": bool(os.getenv("R2_ACCOUNT_ID")),
+                "webhook_url": bool(os.getenv("WEBHOOK_URL"))
+            }
+        }
+    except Exception as e:
+        return {
+            "bot_status": "running" if bot_instance else "stopped",
+            "system_status": {"error": str(e)},
+            "timestamp": datetime.now().isoformat()
+        }
+
+
 @app.get("/metrics")
 async def metrics():
     """Базовые метрики для мониторинга"""
-    from monitoring import MonitoringService
-    monitor = MonitoringService()
+    try:
+        import psutil
 
-    system_stats = monitor.resource_monitor.get_system_stats()
-    celery_stats = monitor.celery_monitor.get_worker_stats()
+        # Системные метрики
+        system_stats = {
+            "cpu_percent": psutil.cpu_percent(),
+            "memory_percent": psutil.virtual_memory().percent,
+            "disk_percent": psutil.disk_usage('/').percent,
+            "uptime_seconds": psutil.boot_time()
+        }
 
-    return {
-        "system": system_stats,
-        "celery": celery_stats,
-        "bot_status": "running" if bot_instance else "stopped"
-    }
+        return {
+            "system": system_stats,
+            "bot_status": "running" if bot_instance else "stopped",
+            "timestamp": datetime.now().isoformat()
+        }
+    except ImportError:
+        # Если psutil недоступен
+        return {
+            "system": {"error": "psutil not available"},
+            "bot_status": "running" if bot_instance else "stopped",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "bot_status": "running" if bot_instance else "stopped",
+            "timestamp": datetime.now().isoformat()
+        }
+
 
 # Запуск сервера для локального тестирования
 if __name__ == "__main__":
-    try:
-        import uvicorn
-        from services.telegram_client import TelegramClient
-    except ImportError:
-        print("❌ uvicorn или другие компоненты не установлены")
-        print("💡 Установите: pip install uvicorn")
-        sys.exit(1)
-
     port = int(os.getenv("PORT", 8000))
     host = "0.0.0.0"
 
@@ -194,6 +278,6 @@ if __name__ == "__main__":
         "main:app",
         host=host,
         port=port,
-        reload=True,  # Включаем автоперезагрузку для удобства разработки
+        reload=False,  # Отключаем reload для production
         log_level="info",
     )
