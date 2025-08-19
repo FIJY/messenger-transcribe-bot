@@ -6,6 +6,17 @@ import asyncio
 import json
 from datetime import datetime
 
+
+# Настройте базовое логгирование, если его еще нет
+logging.basicConfig(level=logging.INFO)
+
+logging.info("================== DIAGNOSTICS ==================")
+logging.info(f"USE_TOR: {os.getenv('USE_TOR')}")
+logging.info(f"YT_PROXY: {os.getenv('YT_PROXY')}")
+logging.info(f"YT_INVIDIOUS_INSTANCES: {os.getenv('YT_INVIDIOUS_INSTANCES')}")
+logging.info(f"USE_COOKIES: {os.getenv('USE_COOKIES', 'false')}")
+logging.info("=================================================")
+
 # Проверяем и импортируем зависимости
 try:
     import httpx

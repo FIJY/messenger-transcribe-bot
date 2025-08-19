@@ -58,3 +58,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 
 # Дефолтная команда (можно переопределить в docker-compose)
 CMD ["python", "main.py"]
+
+# В вашем Dockerfile
+RUN apt-get update && apt-get install -y tor
