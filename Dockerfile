@@ -1,7 +1,7 @@
-# Dockerfile - Последняя попытка с другим базовым образом
+# Dockerfile - Финальная, надежная версия для Render
 FROM python:3.11-bullseye
 
-# Устанавливаем системные зависимости
+# Устанавливаем системные зависимости в одной команде, чтобы избежать проблем с кешем и правами
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     tor \
