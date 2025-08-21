@@ -4,8 +4,8 @@ services:
   - type: web
     name: messenger-transcribe-bot
     env: docker
-    # Явно указываем команду запуска, чтобы удовлетворить требование Render
-    startCommand: "sh -c 'tor & sleep 5 && exec python main.py'"
+    # Указываем полный путь к tor для надежности
+    startCommand: "sh -c '/usr/bin/tor & sleep 5 && exec python main.py'"
     envVars:
       - key: REDIS_URL
         fromService:
@@ -17,7 +17,6 @@ services:
   - type: worker
     name: celery-worker
     env: docker
-    # startCommand здесь остается, так как он отличается от веб-сервиса
     startCommand: "celery -A services.transcription.celery_app worker --loglevel=info --concurrency=1"
     envVars:
       - key: REDIS_URL
