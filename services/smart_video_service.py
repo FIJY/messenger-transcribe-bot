@@ -137,41 +137,68 @@ class TorService:
         self.last_ip_change = 0
         self.current_ip = None
         self.is_enabled = USE_TOR and _tor_ok
+        self.is_connected_to_existing = False # <-- ИЗМЕНЕНИЕ: Флаг для подключения к существующему Tor
 
+    # <-- ИЗМЕНЕНИЕ: Новый асинхронный метод для проверки существующего Tor
+    async def _connect_to_existing_tor(self) -> bool:
+        """Проверяет, запущен ли Tor на нужном порту, и подключается к нему."""
+        if not self.is_enabled:
+            return False
+        try:
+            # Проверяем, открыт ли порт
+            reader, writer = await asyncio.open_connection('127.0.0.1', self.tor_port)
+            writer.close()
+            await writer.wait_closed()
+            logger.info(f"✅ Обнаружен открытый порт {self.tor_port}. Проверяем, является ли он Tor...")
+
+            # Тестируем соединение, чтобы убедиться, что это рабочий Tor-прокси
+            if await self._test_tor_connection():
+                logger.info(f"✅ Успешно подключились к существующему Tor. IP: {self.current_ip}")
+                self.is_connected_to_existing = True
+                return True
+            else:
+                logger.warning(f"⚠️ Порт {self.tor_port} открыт, но это не рабочий Tor-прокси.")
+                return False
+        except ConnectionRefusedError:
+            return False # Порт закрыт, это нормально
+        except Exception as e:
+            logger.warning(f"Ошибка при проверке существующего Tor: {e}")
+            return False
+
+    # <-- ИЗМЕНЕНИЕ: Логика запуска теперь сначала проверяет существующий Tor
     async def start_tor(self) -> bool:
-        """Запускает Tor daemon"""
+        """Запускает Tor или подключается к существующему"""
         if not self.is_enabled:
             return False
 
+        # 1. Попытка подключиться к уже запущенному Tor
+        if await self._connect_to_existing_tor():
+            logger.info("🧅 Используем уже запущенный Tor")
+            return True
+
+        # 2. Если не удалось, запускаем свой собственный процесс
+        logger.info("🔍 Существующий Tor не найден, запускаем свой процесс...")
         try:
-            # Проверяем, установлен ли Tor
             result = subprocess.run(['which', 'tor'], capture_output=True)
             if result.returncode != 0:
                 logger.error("❌ Tor не установлен. Установите: apt-get install tor")
                 return False
 
-            # Создаем конфиг Tor
             await self._create_tor_config()
-
-            # Запускаем Tor
             logger.info(f"🧅 Запускаем Tor на портах {self.tor_port}/{self.control_port}")
-            self.tor_process = subprocess.Popen([
-                'tor',
-                '-f', '/tmp/torrc',
-                '--quiet'
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            # Ждем запуска
+            self.tor_process = subprocess.Popen(
+                ['tor', '-f', '/tmp/torrc', '--quiet'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
             await asyncio.sleep(15)
 
-            # Проверяем соединение
             if await self._test_tor_connection():
                 logger.info(f"✅ Tor запущен успешно, IP: {self.current_ip}")
                 return True
             else:
                 logger.error("❌ Tor запустился, но соединение не работает")
+                self.stop()
                 return False
-
         except Exception as e:
             logger.error(f"❌ Ошибка запуска Tor: {e}")
             return False
@@ -179,7 +206,6 @@ class TorService:
     async def _create_tor_config(self):
         """Создает конфигурацию Tor"""
         config = f"""
-# Tor configuration for YouTube bot
 SocksPort {self.tor_port}
 ControlPort {self.control_port}
 DataDirectory /tmp/tor_data
@@ -190,31 +216,29 @@ MaxCircuitDirtiness 300
 CircuitBuildTimeout 10
 LearnCircuitBuildTimeout 0
 """
-
         os.makedirs('/tmp/tor_data', exist_ok=True, mode=0o700)
         with open('/tmp/torrc', 'w') as f:
             f.write(config)
 
+    # <-- ИЗМЕНЕНИЕ: Метод сделан асинхронным для корректной работы
     async def _test_tor_connection(self) -> bool:
-        """Тестирует Tor соединение"""
+        """Тестирует Tor соединение асинхронно"""
         try:
+            loop = asyncio.get_event_loop()
             proxies = {
                 'http': f'socks5://127.0.0.1:{self.tor_port}',
                 'https': f'socks5://127.0.0.1:{self.tor_port}'
             }
-
-            response = requests.get(
-                'https://httpbin.org/ip',
-                proxies=proxies,
-                timeout=30
+            # Выполняем синхронный requests в отдельном потоке, чтобы не блокировать asyncio
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.get('https://httpbin.org/ip', proxies=proxies, timeout=30)
             )
-
             if response.status_code == 200:
                 ip_data = response.json()
                 self.current_ip = ip_data.get('origin', 'unknown')
                 return True
             return False
-
         except Exception as e:
             logger.warning(f"Ошибка тестирования Tor: {e}")
             return False
@@ -223,18 +247,12 @@ LearnCircuitBuildTimeout 0
         """Принудительно меняет IP через Tor"""
         if not self.is_running():
             return False
-
         try:
             logger.info("🔄 Меняем IP через Tor...")
-
             with Controller.from_port(port=self.control_port) as controller:
                 controller.authenticate()
                 controller.signal(Signal.NEWNYM)
-
-            # Ждем смены IP
             await asyncio.sleep(10)
-
-            # Проверяем новый IP
             old_ip = self.current_ip
             if await self._test_tor_connection():
                 if self.current_ip != old_ip:
@@ -245,7 +263,6 @@ LearnCircuitBuildTimeout 0
                     logger.warning("⚠️ IP не изменился, повторяем...")
                     return False
             return False
-
         except Exception as e:
             logger.error(f"❌ Ошибка смены IP: {e}")
             return False
@@ -273,10 +290,17 @@ LearnCircuitBuildTimeout 0
             self.tor_process.wait()
             self.tor_process = None
 
+    # <-- ИЗМЕНЕНИЕ: Логика проверки теперь учитывает оба сценария
     def is_running(self) -> bool:
-        """Проверяет, запущен ли Tor"""
-        return self.tor_process is not None and self.tor_process.poll() is None
+        """Проверяет, запущен ли Tor или мы к нему подключены"""
+        is_process_running = self.tor_process is not None and self.tor_process.poll() is None
+        return self.is_connected_to_existing or is_process_running
 
+# ... остальная часть файла без изменений ...
+# (Код ниже этой строки остается прежним)
+# ...
+# ...
+# ...
 
 def _r2_enabled() -> bool:
     return all([_boto_ok, R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY])
