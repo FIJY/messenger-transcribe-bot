@@ -1,7 +1,8 @@
-FROM python:3.11-slim
+# Dockerfile - Упрощенная и надежная версия для Render
+FROM python:3.11-bullseye
 
-# Устанавливаем рабочую директорию
-WORKDIR /app
+# Явно переключаемся на root для выполнения системных команд
+USER root
 
 # Устанавливаем системные зависимости из стандартных репозиториев
 RUN apt-get update && \
@@ -11,22 +12,27 @@ RUN apt-get update && \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Копируем файлы проекта
+# Устанавливаем рабочую директорию
+WORKDIR /app
+
+# Копируем файл с зависимостями и устанавливаем их
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем весь проект
-COPY . .
+# Создаем непривилегированного пользователя для безопасности
+RUN useradd --create-home --shell /bin/bash appuser
 
-# Проверяем, какие файлы скопировались (для отладки)
-RUN ls -la /app/
+# Копируем код приложения и устанавливаем правильного владельца
+COPY --chown=appuser:appuser . .
 
-# Создаем пользователя для безопасности
-RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
+# Переключаемся на непривилегированного пользователя для запуска приложения
 USER appuser
 
-# Открываем порт
-EXPOSE 8000
+# Устанавливаем переменную окружения PYTHONPATH
+ENV PYTHONPATH /app
 
-# Команда запуска (измените app.py на ваше имя файла)
-CMD ["python", "main.py"]
+# Открываем порт 10000 для доступа извне
+EXPOSE 10000
+
+# Команда для запуска. Используем полный путь к tor.
+CMD ["sh", "-c", "/usr/bin/tor & sleep 15 && exec python main.py"]
