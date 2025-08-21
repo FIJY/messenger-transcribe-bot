@@ -1,12 +1,10 @@
-# render.yaml - Обновленная версия с правильной командой запуска
 services:
-  # 1. Веб-сервис
   - type: web
     name: messenger-transcribe-bot
     env: docker
-    # УБИРАЕМ startCommand чтобы использовать CMD из Dockerfile
-    # Или явно указываем правильную команду:
-    # startCommand: "/app/start.sh"
+    region: oregon
+    buildCommand: "apt-get update && apt-get install -y tor ffmpeg curl && pip install -r requirements.txt"
+    startCommand: "bash -c 'echo Starting Tor... && tor --RunAsDaemon 1 --SocksPort 9050 --Log notice stdout && sleep 15 && echo Starting app... && python main.py'"
     envVars:
       - key: REDIS_URL
         fromService:
@@ -17,11 +15,13 @@ services:
         value: "true"
       - key: YT_PROXY
         value: "socks5://127.0.0.1:9050"
+      - key: PYTHONPATH
+        value: "/opt/render/project/src"
 
-  # 2. Celery воркер
   - type: worker
-    name: celery-worker
-    env: docker
+    name: celery-worker  
+    env: python3
+    buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A services.transcription.celery_app worker --loglevel=info --concurrency=1"
     envVars:
       - key: REDIS_URL
@@ -29,11 +29,9 @@ services:
           type: redis
           name: bot-redis
           property: connectionString
+      - key: PYTHONPATH
+        value: "/opt/render/project/src"
 
-  # 3. Redis
   - type: redis
     name: bot-redis
     maxmemoryPolicy: allkeys-lru
-    ipAllowList:
-      - source: 0.0.0.0/0
-        description: Allow all connections
