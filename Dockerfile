@@ -1,8 +1,5 @@
-# Dockerfile - Финальная, самая надежная версия для Render
+# Dockerfile - Последняя попытка с другим базовым образом
 FROM python:3.11-bullseye
-
-# Явно переключаемся на root для выполнения системных команд
-USER root
 
 # Устанавливаем системные зависимости
 RUN apt-get update && \
@@ -11,8 +8,7 @@ RUN apt-get update && \
     ffmpeg \
     curl \
     build-essential \
-    && apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем рабочую директорию
 WORKDIR /app
@@ -27,7 +23,7 @@ RUN useradd --create-home --shell /bin/bash appuser
 # Копируем код приложения и устанавливаем правильного владельца
 COPY --chown=appuser:appuser . .
 
-# Переключаемся на непривилегированного пользователя для запуска приложения
+# Переключаемся на непривилегированного пользователя
 USER appuser
 
 # Устанавливаем переменную окружения PYTHONPATH
@@ -35,3 +31,6 @@ ENV PYTHONPATH /app
 
 # Открываем порт 10000 для доступа извне
 EXPOSE 10000
+
+# Команда для запуска веб-сервера при старте контейнера
+CMD ["python", "main.py"]
