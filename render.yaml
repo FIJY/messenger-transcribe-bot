@@ -5,7 +5,7 @@ services:
     name: messenger-transcribe-bot
     env: docker
     # Исправляем кавычки, чтобы избежать ошибок парсинга
-    startCommand: "sh -c \"/usr/bin/tor & sleep 5 && exec python main.py\""
+    startCommand: "sh -c '/usr/bin/tor & sleep 5 && exec python main.py'"
     envVars:
       - key: REDIS_URL
         fromService:
