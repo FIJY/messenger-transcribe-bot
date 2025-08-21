@@ -1,16 +1,22 @@
-# render.yaml - Финальная версия, полагающаяся только на Dockerfile
+# render.yaml - Обновленная версия с правильной командой запуска
 services:
   # 1. Веб-сервис
   - type: web
     name: messenger-transcribe-bot
     env: docker
-    # startCommand удален, чтобы использовалась команда CMD из Dockerfile
+    # УБИРАЕМ startCommand чтобы использовать CMD из Dockerfile
+    # Или явно указываем правильную команду:
+    # startCommand: "/app/start.sh"
     envVars:
       - key: REDIS_URL
         fromService:
           type: redis
           name: bot-redis
           property: connectionString
+      - key: USE_TOR
+        value: "true"
+      - key: YT_PROXY
+        value: "socks5://127.0.0.1:9050"
 
   # 2. Celery воркер
   - type: worker
