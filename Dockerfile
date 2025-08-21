@@ -15,7 +15,11 @@ RUN apt-get update && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Копируем весь проект
 COPY . .
+
+# Проверяем, какие файлы скопировались (для отладки)
+RUN ls -la /app/
 
 # Создаем пользователя для безопасности
 RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
@@ -24,5 +28,5 @@ USER appuser
 # Открываем порт
 EXPOSE 8000
 
-# Команда запуска
-CMD ["python", "app.py"]
+# Команда запуска (измените app.py на ваше имя файла)
+CMD ["python", "main.py"]
