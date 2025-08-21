@@ -1,11 +1,10 @@
-# render.yaml - Версия, использующая Docker для сборки
+# render.yaml - Финальная версия, полагающаяся только на Dockerfile
 services:
   # 1. Веб-сервис
   - type: web
     name: messenger-transcribe-bot
     env: docker
-    # Упрощаем команду, убирая вложенные кавычки
-    startCommand: /usr/bin/tor & sleep 5 && exec python main.py
+    # startCommand удален, чтобы использовалась команда CMD из Dockerfile
     envVars:
       - key: REDIS_URL
         fromService:
