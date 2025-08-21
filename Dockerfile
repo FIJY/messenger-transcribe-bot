@@ -1,7 +1,5 @@
-# Dockerfile - Последняя попытка с другим базовым образом
 FROM python:3.11-bullseye
 
-# Устанавливаем системные зависимости
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     tor \
@@ -10,27 +8,15 @@ RUN apt-get update && \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем файл с зависимостями и устанавливаем их
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Создаем непривилегированного пользователя для безопасности
-RUN useradd --create-home --shell /bin/bash appuser
+COPY . .
 
-# Копируем код приложения и устанавливаем правильного владельца
-COPY --chown=appuser:appuser . .
-
-# Переключаемся на непривилегированного пользователя
-USER appuser
-
-# Устанавливаем переменную окружения PYTHONPATH
 ENV PYTHONPATH /app
-
-# Открываем порт 10000 для доступа извне
 EXPOSE 10000
 
-# Команда для запуска веб-сервера при старте контейнера
-CMD ["python", "main.py"]
+# Запускаем Tor в фоне и затем приложение
+CMD ["sh", "-c", "tor & sleep 5 && python main.py"]
