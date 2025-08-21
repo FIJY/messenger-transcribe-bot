@@ -1,10 +1,10 @@
 services:
+  # 1. Веб-сервис (Docker)
   - type: web
     name: messenger-transcribe-bot
     env: docker
     region: oregon
-    buildCommand: "apt-get update && apt-get install -y tor ffmpeg curl && pip install -r requirements.txt"
-    startCommand: "bash -c 'echo Starting Tor... && tor --RunAsDaemon 1 --SocksPort 9050 --Log notice stdout && sleep 15 && echo Starting app... && python main.py'"
+    # buildCommand и startCommand удалены, так как они управляются Dockerfile
     envVars:
       - key: REDIS_URL
         fromService:
@@ -16,11 +16,12 @@ services:
       - key: YT_PROXY
         value: "socks5://127.0.0.1:9050"
       - key: PYTHONPATH
-        value: "/opt/render/project/src"
+        value: "/app" # Путь внутри Docker-контейнера
 
+  # 2. Celery воркер (Стандартная среда Python)
   - type: worker
-    name: celery-worker  
-    env: python3
+    name: celery-worker
+    env: python # Исправлено с python3
     buildCommand: "pip install -r requirements.txt"
     startCommand: "celery -A services.transcription.celery_app worker --loglevel=info --concurrency=1"
     envVars:
@@ -32,6 +33,11 @@ services:
       - key: PYTHONPATH
         value: "/opt/render/project/src"
 
+  # 3. Redis
   - type: redis
     name: bot-redis
     maxmemoryPolicy: allkeys-lru
+    # Добавлен IP allow list для разрешения подключений
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: "Allow all connections"
