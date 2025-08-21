@@ -4,28 +4,26 @@ services:
   - type: web
     name: messenger-transcribe-bot
     env: docker
-    # Render автоматически найдет Dockerfile в корне проекта
+    # startCommand удален, чтобы использовалась команда CMD из Dockerfile
     envVars:
       - key: REDIS_URL
         fromService:
           type: redis
           name: bot-redis
           property: connectionString
-      # Остальные переменные окружения (например, TELEGRAM_TOKEN)
-      # будут подтянуты из веб-интерфейса Render
 
   # 2. Celery воркер
   - type: worker
     name: celery-worker
     env: docker
+    # startCommand здесь остается, так как он отличается от веб-сервиса
+    startCommand: "celery -A services.transcription.celery_app worker --loglevel=info --concurrency=1"
     envVars:
       - key: REDIS_URL
         fromService:
           type: redis
           name: bot-redis
           property: connectionString
-    # Переопределяем команду запуска для воркера, так как она отличается от веб-сервиса
-    startCommand: "celery -A services.transcription.celery_app worker --loglevel=info --concurrency=1"
 
   # 3. Redis
   - type: redis
