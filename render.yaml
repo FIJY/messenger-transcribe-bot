@@ -4,7 +4,8 @@ services:
   - type: web
     name: messenger-transcribe-bot
     env: docker
-    # startCommand удален, чтобы использовалась команда CMD из Dockerfile
+    # Явно указываем команду запуска, чтобы удовлетворить требование Render
+    startCommand: "sh -c 'tor & sleep 5 && exec python main.py'"
     envVars:
       - key: REDIS_URL
         fromService:
