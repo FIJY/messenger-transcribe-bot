@@ -1,18 +1,12 @@
-# Dockerfile - Финальная версия с установкой последней версии Tor
+# Dockerfile - Упрощенная и надежная версия для Render
 FROM python:3.11-bullseye
 
 # Явно переключаемся на root для выполнения системных команд
 USER root
 
-# Устанавливаем системные зависимости и добавляем репозиторий Tor Project
+# Устанавливаем системные зависимости из стандартных репозиториев
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    apt-transport-https \
-    gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/tor-archive-keyring.gpg] https://deb.torproject.org/torproject.org $(lsb_release -cs) main" > /etc/apt/sources.list.d/tor.list \
-    && wget -qO- https://deb.torproject.org/torproject.org/A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89.asc | gpg --dearmor | tee /usr/share/keyrings/tor-archive-keyring.gpg >/dev/null \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
     tor \
     ffmpeg \
     && apt-get clean && \
