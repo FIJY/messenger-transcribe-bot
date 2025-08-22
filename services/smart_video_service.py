@@ -556,7 +556,7 @@ class SmartVideoService:
                         try:
                             r2_url = await self.upload_to_r2(final_path, video_id)
                             # Удаляем локальный файл после загрузки в R2
-                            os.remove(final_path)
+                            #os.remove(final_path)
                             logger.info(f"🧹 Локальный файл удален после загрузки в R2")
                             return r2_url
                         except Exception as r2_error:
@@ -602,8 +602,7 @@ class SmartVideoService:
 
     async def enhanced_download_youtube_content(self, url: str) -> Dict[str, Any]:
         """
-        ДОБАВЛЕННЫЙ МЕТОД: Расширенная загрузка контента YouTube
-        Возвращает структурированный результат для обработчика
+        УПРОЩЕННЫЙ МЕТОД: Сразу скачиваем аудио, минуя субтитры
         """
         video_id = self.extract_video_id(url)
         logger.info(f"🎬 Начинаем обработку видео {video_id}: {url}")
@@ -614,45 +613,16 @@ class SmartVideoService:
             video_info = await self.get_video_info(url)
             logger.info(f"✅ Информация получена: '{video_info.get('title', 'Unknown')}'")
 
-            # Проверяем наличие субтитров в полученной информации
-            has_subtitles = bool(video_info.get('subtitles') or video_info.get('automatic_captions'))
-            logger.info(f"📝 Субтитры доступны: {has_subtitles}")
-
-            if has_subtitles:
-                logger.info(f"📝 Обнаружены субтитры для {video_id}, пытаемся их получить...")
-                try:
-                    # Пытаемся получить контент
-                    text, content_type, metadata = await self.get_text_smart(url)
-                    logger.info(f"✅ Контент получен успешно. Тип: {content_type}")
-
-                    return {
-                        'success': True,
-                        'video_id': video_id,
-                        'title': video_info.get('title', 'Unknown'),
-                        'duration': video_info.get('duration', 0),
-                        'uploader': video_info.get('uploader', 'Unknown'),
-                        'content_type': content_type,  # 'subtitles' или 'audio_file'
-                        'content': text,  # Текст субтитров или путь к аудио файлу
-                        'metadata': metadata,
-                        'has_subtitles': has_subtitles,
-                        'video_info': video_info
-                    }
-                except Exception as subtitle_error:
-                    logger.warning(f"⚠️ Ошибка получения субтитров: {subtitle_error}")
-                    logger.warning(f"⚠️ Тип ошибки: {type(subtitle_error).__name__}")
-                    # Продолжаем к аудио
-
-            # Если субтитров нет или не удалось их получить
-            logger.info(f"🎵 Субтитров нет или не удалось получить, скачиваем аудио для {video_id}...")
+            # СРАЗУ ПЕРЕХОДИМ К СКАЧИВАНИЮ АУДИО (пропускаем субтитры)
+            logger.info(f"🎵 Скачиваем аудио для {video_id}...")
 
             # Проверяем статус Tor перед скачиванием
             if self.tor.is_enabled and not self.tor.is_running():
                 logger.info("🚀 Tor не запущен, пытаемся запустить...")
                 await self.tor.start_tor()
 
-            # Пытаемся скачать аудио напрямую
             try:
-                logger.info(f"⬬ Начинаем скачивание аудио для {video_id}...")
+                logger.info(f"⬇️ Начинаем скачивание аудио для {video_id}...")
                 local_audio_path = await self.download_audio(url)
                 logger.info(f"✅ Аудио скачано: {local_audio_path}")
 
@@ -673,12 +643,12 @@ class SmartVideoService:
                     'content_type': 'audio_file',
                     'content': local_audio_path,
                     'metadata': metadata,
-                    'has_subtitles': has_subtitles,
+                    'has_subtitles': False,  # Игнорируем субтитры
                     'video_info': video_info
                 }
+
             except YouTubeBlockedError as blocked_error:
                 logger.error(f"🚫 YouTube заблокировал доступ: {blocked_error}")
-                # Специальная обработка блокировки YouTube
                 return {
                     'success': False,
                     'error': f"YouTube заблокировал доступ: {str(blocked_error)}",
@@ -690,17 +660,15 @@ class SmartVideoService:
                 }
             except Exception as download_error:
                 logger.error(f"❌ Ошибка скачивания аудио: {download_error}")
-                logger.error(f"❌ Тип ошибки: {type(download_error).__name__}")
-                raise download_error  # Пробрасываем дальше
+                raise download_error
 
         except Exception as e:
             logger.error(f"❌ КРИТИЧЕСКАЯ ошибка в enhanced_download_youtube_content для {video_id}")
             logger.error(f"❌ Ошибка: {str(e)}")
             logger.error(f"❌ Тип ошибки: {type(e).__name__}")
 
-            # Логируем полный стэк трейс для отладки
             import traceback
-            logger.error(f"❌ Полный стэк трейс:")
+            logger.error(f"❌ Полный стек трейс:")
             logger.error(traceback.format_exc())
 
             return {
@@ -714,30 +682,21 @@ class SmartVideoService:
                     'tor_running': self.tor.is_running(),
                     'current_ip': self.tor.current_ip,
                     'download_available': self.download_available,
-                    'subtitles_available': self.subtitles_available
+                    'subtitles_available': False  # Отключаем субтитры
                 }
             }
 
     async def get_text_smart(self, url: str) -> Tuple[str, str, Dict[str, Any]]:
         """
-        Главный метод: сначала пытается получить субтитры, если не удается - скачивает аудио.
+        УПРОЩЕННЫЙ МЕТОД: Сразу скачиваем аудио (пропускаем субтитры)
         """
         video_id = self.extract_video_id(url)
         if not video_id:
             raise SmartVideoError("Не удалось извлечь ID видео")
 
-        # 1. Попытка получить субтитры
-        try:
-            text = await self.get_transcript_text(video_id, languages=['ru', 'en'])
-            logger.info(f"✅ Субтитры для {video_id} успешно получены.")
-            metadata = {'method': 'subtitles', 'video_id': video_id}
-            return text, 'subtitles', metadata
-        except (NoTranscriptFound, TranscriptsDisabled):
-            logger.info(f"Субтитры для {video_id} не найдены, переходим к скачиванию аудио.")
-        except Exception as e:
-            logger.warning(f"Ошибка при получении субтитров для {video_id}: {e}. Переходим к аудио.")
+        logger.info(f"🎵 Переходим сразу к скачиванию аудио для {video_id}...")
 
-        # 2. Если субтитры не найдены - скачиваем аудио
+        # Сразу скачиваем аудио
         local_audio_path = await self.download_audio(url)
         metadata = {
             'method': 'audio_download',
