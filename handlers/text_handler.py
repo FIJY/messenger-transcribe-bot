@@ -69,11 +69,11 @@ class TextHandler:
         await self._handle_regular_text(chat_id, user, text)
 
     async def _handle_youtube_video(self, chat_id: int, user: dict, url: str):
-        """Обработка YouTube видео (умно: сначала субтитры, потом аудио)"""
+        """Обработка YouTube видео с новым Tor методом"""
 
         status_message = await self.telegram.send_message(
             chat_id,
-            "🎬 Обрабатываю YouTube видео...\n🔄 Проверяю доступность субтитров"
+            "🎬 Обрабатываю YouTube видео через Tor...\n⏳ Это может занять 30-60 секунд"
         )
 
         try:
@@ -90,20 +90,75 @@ class TextHandler:
                 f"🔄 Пытаюсь получить субтитры..."
             )
 
+            # Используем улучшенный метод с Tor
+            result = await self.smart_video_service.enhanced_download_youtube_content(url)
+
+            if result and result.get('type') == 'subtitles':
+                # Успешно получили субтитры
+                await self._handle_subtitles_result(
+                    chat_id, user, status_message['message_id'],
+                    result['content'], {
+                        'video_id': video_id,
+                        'title': result.get('title'),
+                        'duration': result.get('duration'),
+                        'method': result.get('method'),
+                        'ip_used': result.get('ip_used')
+                    }, url
+                )
+
+            elif result and result.get('type') == 'audio':
+                # Скачали аудио, нужно транскрибировать
+                await self._handle_audio_transcription_result(
+                    chat_id, user, status_message['message_id'],
+                    result['file_path'], {
+                        'video_id': video_id,
+                        'title': result.get('title'),
+                        'duration': result.get('duration'),
+                        'method': result.get('method'),
+                        'ip_used': result.get('ip_used')
+                    }, url
+                )
+
+            else:
+                # Fallback на старый метод
+                await self._handle_youtube_video_fallback(chat_id, user, status_message['message_id'], url, video_id)
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки YouTube: {e}", exc_info=True)
+
+            await self.telegram.edit_message_text(
+                chat_id,
+                status_message['message_id'],
+                f"❌ Ошибка при обработке видео\n"
+                f"🔧 Техническая информация: {str(e)[:200]}"
+            )
+
+    async def _handle_youtube_video_fallback(self, chat_id: int, user: dict, message_id: int, url: str, video_id: str):
+        """Fallback на старый метод обработки YouTube"""
+
+        try:
+            # Обновляем статус
+            await self.telegram.edit_message_text(
+                chat_id,
+                message_id,
+                f"🔄 Tor метод не сработал, пробуем стандартный способ...\n"
+                f"🎬 Видео: {video_id}"
+            )
+
             # Умное получение текста (сначала субтитры, потом аудио)
             result, source, metadata = await self.smart_video_service.get_text_smart(url)
 
-            if source == 'subtitles':
+            if source == 'subtitles' or source == 'subtitles_invidious':
                 # ✅ Субтитры найдены - БЕСПЛАТНО!
                 await self._handle_subtitles_result(
-                    chat_id, user, status_message['message_id'],
+                    chat_id, user, message_id,
                     result, metadata, url
                 )
 
             elif source == 'audio_file':
-                # 📥 Нужна транскрипция аудио - платно
+                # 🔥 Нужна транскрипция аудио - платно
                 await self._handle_audio_transcription_result(
-                    chat_id, user, status_message['message_id'],
+                    chat_id, user, message_id,
                     result, metadata, url
                 )
 
@@ -111,8 +166,8 @@ class TextHandler:
             # Субтитры не найдены, пробуем загрузить аудио
             await self.telegram.edit_message_text(
                 chat_id,
-                status_message['message_id'],
-                f"📄 Субтитры не найдены\n🔄 Загружаю аудиодорожку..."
+                message_id,
+                f"🔄 Субтитры не найдены\n🔄 Загружаю аудиодорожку..."
             )
 
             try:
@@ -123,108 +178,34 @@ class TextHandler:
 
                 if source == 'audio_file':
                     await self._handle_audio_transcription_result(
-                        chat_id, user, status_message['message_id'],
+                        chat_id, user, message_id,
                         result, metadata, url
                     )
 
             except YouTubeBlockedError as blocked_error:
-                error_msg = str(blocked_error).lower()
-                if "sign in to confirm" in error_msg or "not a bot" in error_msg:
-                    await self.telegram.edit_message_text(
-                        chat_id,
-                        status_message['message_id'],
-                        f"🤖 YouTube требует подтверждения\n\n"
-                        f"🎬 Видео: {video_id}\n"
-                        f"❌ YouTube: \"Sign in to confirm you're not a bot\"\n\n"
-                        f"🔧 **Возможные решения:**\n"
-                        f"• Обновить cookies в системе\n"
-                        f"• Попробовать через 30-60 минут\n"
-                        f"• Использовать VPN\n"
-                        f"• Отправить аудиофайл напрямую\n\n"
-                        f"💡 Проблема на стороне YouTube, не в боте"
-                    )
-                else:
-                    await self.telegram.edit_message_text(
-                        chat_id,
-                        status_message['message_id'],
-                        f"🚫 YouTube заблокировал загрузку\n\n"
-                        f"🎬 Видео: {video_id}\n"
-                        f"❌ Причина: {str(blocked_error)}\n\n"
-                        f"💡 **Что попробовать:**\n"
-                        f"• Подождать несколько минут и попробовать снова\n"
-                        f"• Использовать VPN\n"
-                        f"• Отправить аудиофайл напрямую\n"
-                        f"• Попробовать другое видео"
-                    )
+                await self._handle_youtube_blocked_error(chat_id, message_id, video_id, blocked_error)
 
             except DownloadError as download_error:
-                await self.telegram.edit_message_text(
-                    chat_id,
-                    status_message['message_id'],
-                    f"📥 Не удалось загрузить аудио\n\n"
-                    f"🎬 Видео: {video_id}\n"
-                    f"❌ Ошибка: {str(download_error)}\n\n"
-                    f"💡 Возможные причины:\n"
-                    f"• Видео приватное или удалено\n"
-                    f"• Блокировка по авторским правам\n"
-                    f"• Временные проблемы с YouTube\n\n"
-                    f"Попробуйте другую ссылку"
-                )
+                await self._handle_download_error(chat_id, message_id, video_id, download_error)
 
             except SmartVideoError as video_error:
                 await self.telegram.edit_message_text(
                     chat_id,
-                    status_message['message_id'],
+                    message_id,
                     f"❌ Ошибка обработки видео:\n{str(video_error)}\n\n"
                     f"💡 Попробуйте другую ссылку или отправьте аудиофайл напрямую"
                 )
 
         except YouTubeBlockedError as blocked_error:
-            # Блокировка уже на стадии получения субтитров
-            error_msg = str(blocked_error).lower()
-            if "sign in to confirm" in error_msg or "not a bot" in error_msg:
-                await self.telegram.edit_message_text(
-                    chat_id,
-                    status_message['message_id'],
-                    f"🤖 YouTube требует подтверждения\n\n"
-                    f"🎬 Видео: {video_id}\n"
-                    f"❌ \"Sign in to confirm you're not a bot\"\n\n"
-                    f"🔧 **Технические проблемы:**\n"
-                    f"• YouTube активировал anti-bot защиту\n"
-                    f"• Нужны обновленные cookies\n"
-                    f"• Возможно, IP временно заблокирован\n\n"
-                    f"💡 **Рекомендации:**\n"
-                    f"• Попробуйте через час\n"
-                    f"• Используйте VPN\n"
-                    f"• Отправьте аудиофайл напрямую"
-                )
-            else:
-                await self.telegram.edit_message_text(
-                    chat_id,
-                    status_message['message_id'],
-                    f"🚫 YouTube заблокировал доступ к видео\n\n"
-                    f"🎬 Видео: {video_id}\n"
-                    f"❌ {str(blocked_error)}\n\n"
-                    f"💡 **Рекомендации:**\n"
-                    f"• Попробуйте через 10-15 минут\n"
-                    f"• Используйте VPN\n"
-                    f"• Отправьте аудиофайл напрямую"
-                )
+            await self._handle_youtube_blocked_error(chat_id, message_id, video_id, blocked_error)
 
         except DownloadError as download_error:
-            await self.telegram.edit_message_text(
-                chat_id,
-                status_message['message_id'],
-                f"📥 Проблема с загрузкой\n\n"
-                f"🎬 Видео: {video_id}\n"
-                f"❌ {str(download_error)}\n\n"
-                f"💡 Попробуйте другую ссылку"
-            )
+            await self._handle_download_error(chat_id, message_id, video_id, download_error)
 
         except SmartVideoError as e:
             await self.telegram.edit_message_text(
                 chat_id,
-                status_message['message_id'],
+                message_id,
                 f"❌ Ошибка обработки видео:\n{str(e)}\n\n"
                 f"💡 Попробуйте другую ссылку или отправьте аудиофайл напрямую"
             )
@@ -232,10 +213,57 @@ class TextHandler:
             logger.error(f"Критическая ошибка обработки YouTube: {e}", exc_info=True)
             await self.telegram.edit_message_text(
                 chat_id,
-                status_message['message_id'],
+                message_id,
                 "❌ Произошла непредвиденная ошибка при обработке видео\n\n"
                 f"🔧 Если проблема повторяется, обратитесь к администратору"
             )
+
+    async def _handle_youtube_blocked_error(self, chat_id: int, message_id: int, video_id: str,
+                                            blocked_error: Exception):
+        """Обработка ошибки блокировки YouTube"""
+        error_msg = str(blocked_error).lower()
+        if "sign in to confirm" in error_msg or "not a bot" in error_msg:
+            await self.telegram.edit_message_text(
+                chat_id,
+                message_id,
+                f"🤖 YouTube требует подтверждения\n\n"
+                f"🎬 Видео: {video_id}\n"
+                f"❌ YouTube: \"Sign in to confirm you're not a bot\"\n\n"
+                f"🔧 **Возможные решения:**\n"
+                f"• Обновить cookies в системе\n"
+                f"• Попробовать через 30-60 минут\n"
+                f"• Использовать VPN\n"
+                f"• Отправить аудиофайл напрямую\n\n"
+                f"💡 Проблема на стороне YouTube, не в боте"
+            )
+        else:
+            await self.telegram.edit_message_text(
+                chat_id,
+                message_id,
+                f"🚫 YouTube заблокировал загрузку\n\n"
+                f"🎬 Видео: {video_id}\n"
+                f"❌ Причина: {str(blocked_error)}\n\n"
+                f"💡 **Что попробовать:**\n"
+                f"• Подождать несколько минут и попробовать снова\n"
+                f"• Использовать VPN\n"
+                f"• Отправить аудиофайл напрямую\n"
+                f"• Попробовать другое видео"
+            )
+
+    async def _handle_download_error(self, chat_id: int, message_id: int, video_id: str, download_error: Exception):
+        """Обработка ошибки загрузки"""
+        await self.telegram.edit_message_text(
+            chat_id,
+            message_id,
+            f"🔥 Не удалось загрузить аудио\n\n"
+            f"🎬 Видео: {video_id}\n"
+            f"❌ Ошибка: {str(download_error)}\n\n"
+            f"💡 Возможные причины:\n"
+            f"• Видео приватное или удалено\n"
+            f"• Блокировка по авторским правам\n"
+            f"• Временные проблемы с YouTube\n\n"
+            f"Попробуйте другую ссылку"
+        )
 
     async def _handle_subtitles_result(self, chat_id: int, user: dict, message_id: int,
                                        text: str, metadata: dict, url: str):
@@ -277,12 +305,14 @@ class TextHandler:
                 f"YouTube_{video_id}_subtitles.txt",
                 len(text.encode('utf-8')),
                 'text/plain',
-                duration_seconds=0,  # Неизвестно для субтитров
+                duration_seconds=metadata.get('duration', 0),
                 metadata={
                     'source': 'youtube_subtitles',
                     'original_url': url,
                     'video_id': video_id,
-                    'method': 'subtitles'
+                    'method': metadata.get('method', 'subtitles'),
+                    'ip_used': metadata.get('ip_used'),
+                    'title': metadata.get('title')
                 }
             )
 
@@ -300,9 +330,15 @@ class TextHandler:
 🎬 YouTube: {video_id}
 📄 Источник: Готовые субтитры
 📊 {words_count} слов • {len(text)} символов
-💰 Стоимость: 0 мин (бесплатно!)
+💰 Стоимость: 0 мин (бесплатно!)"""
 
-🎯 Теперь можете обработать текст в любых форматах:"""
+            if metadata.get('title'):
+                success_text += f"\n🎭 {metadata['title'][:50]}..."
+
+            if metadata.get('ip_used'):
+                success_text += f"\n🌐 IP: {metadata['ip_used']}"
+
+            success_text += f"\n\n🎯 Теперь можете обработать текст в любых форматах:"
 
             # Создаем клавиатуру для обработки
             from ui.keyboards import create_post_transcription_keyboard
@@ -368,13 +404,21 @@ class TextHandler:
             return
 
         # Обновляем статус
+        status_text = f"🔥 Аудио загружено из YouTube!\n\n"
+        status_text += f"🎬 Видео: {video_id}\n"
+        status_text += f"📁 {file_size_mb:.1f} МБ\n"
+        status_text += f"💰 Примерная стоимость: {estimated_cost_seconds / 60:.1f} мин\n"
+
+        if metadata.get('title'):
+            status_text += f"🎭 {metadata['title'][:50]}...\n"
+
+        if metadata.get('ip_used'):
+            status_text += f"🌐 IP: {metadata['ip_used']}\n"
+
+        status_text += f"\n🔄 Передаю в систему транскрипции..."
+
         await self.telegram.edit_message_text(
-            chat_id, message_id,
-            f"📥 Аудио загружено из YouTube!\n\n"
-            f"🎬 Видео: {video_id}\n"
-            f"📁 {file_size_mb:.1f} МБ\n"
-            f"💰 Примерная стоимость: {estimated_cost_seconds / 60:.1f} мин\n\n"
-            f"🔄 Передаю в систему транскрипции..."
+            chat_id, message_id, status_text
         )
 
         try:
@@ -391,7 +435,10 @@ class TextHandler:
                 'source': 'youtube_audio',
                 'original_url': url,
                 'video_id': video_id,
-                'local_file_path': audio_path  # Путь к уже загруженному файлу
+                'local_file_path': audio_path,  # Путь к уже загруженному файлу
+                'title': metadata.get('title'),
+                'method': metadata.get('method'),
+                'ip_used': metadata.get('ip_used')
             }
 
             # Используем существующую логику обработки через Redis/filesystem
@@ -432,13 +479,18 @@ class TextHandler:
                 process_large_file_task.delay(chat_id, user['telegram_id'], file_info)
 
             # Обновляем статус - передано в обработку
+            final_status = f"✅ YouTube аудио передано в обработку!\n\n"
+            final_status += f"🎬 Видео: {video_id}\n"
+            final_status += f"📁 {file_size_mb:.1f} МБ\n"
+            final_status += f"🤖 Транскрипция началась...\n"
+
+            if metadata.get('title'):
+                final_status += f"🎭 {metadata['title'][:50]}...\n"
+
+            final_status += f"\n⏳ Ожидайте результат через ~1-2 минуты"
+
             await self.telegram.edit_message_text(
-                chat_id, message_id,
-                f"✅ YouTube аудио передано в обработку!\n\n"
-                f"🎬 Видео: {video_id}\n"
-                f"📁 {file_size_mb:.1f} МБ\n"
-                f"🤖 Транскрипция началась...\n\n"
-                f"⏳ Ожидайте результат через ~1-2 минуты"
+                chat_id, message_id, final_status
             )
 
             logger.info(f"✅ YouTube аудио передано в систему транскрипции: {video_id}")

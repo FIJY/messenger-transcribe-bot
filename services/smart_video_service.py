@@ -9,6 +9,7 @@ import tempfile
 import asyncio
 from typing import Optional, Dict, Any, Tuple, List
 from concurrent.futures import ThreadPoolExecutor
+from services.tor_youtube_service import TorYouTubeService
 
 # Добавьте в начало smart_video_service.py
 
@@ -34,8 +35,6 @@ def setup_cookies_file():
 
 # Обновите функцию get_yt_dlp_options():
 def get_yt_dlp_options(cookies_file=None):
-    """Получить настройки yt-dlp с поддержкой куков"""
-
     options = {
         'format': 'best[height<=720]/best',
         'noplaylist': True,
@@ -45,15 +44,12 @@ def get_yt_dlp_options(cookies_file=None):
         'subtitleslangs': ['ru', 'en', 'auto'],
         'ignoreerrors': True,
         'no_warnings': False,
-
-        # Заголовки как в рабочем примере
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-us,en;q=0.5',
             'Sec-Fetch-Mode': 'navigate'
         },
-
         'extractor_retries': 3,
         'fragment_retries': 3,
         'retry_sleep_functions': {
@@ -62,12 +58,10 @@ def get_yt_dlp_options(cookies_file=None):
         }
     }
 
-    # Добавляем куки если есть
     if cookies_file and os.path.exists(cookies_file):
         options['cookiefile'] = cookies_file
         logger.info(f"🍪 Используем куки: {cookies_file}")
 
-    # Tor прокси
     if os.getenv('USE_TOR', 'false').lower() == 'true':
         options['proxy'] = os.getenv('YT_PROXY', 'socks5://127.0.0.1:9050')
 
@@ -76,48 +70,34 @@ def get_yt_dlp_options(cookies_file=None):
 
 # Обновите основную функцию загрузки:
 async def download_youtube_with_cookies(video_url: str):
-    """Загрузка YouTube с использованием куков"""
-
     cookies_file = setup_cookies_file()
-
     try:
         options = get_yt_dlp_options(cookies_file)
-
-        # Сначала пробуем получить информацию
         options_info = options.copy()
         options_info['skip_download'] = True
-
         with yt_dlp.YoutubeDL(options_info) as ydl:
             info = ydl.extract_info(video_url, download=False)
-
             if info:
                 logger.info(f"✅ Информация получена: {info.get('title', 'Unknown')}")
-
-                # Проверяем субтитры
                 has_subtitles = bool(info.get('subtitles') or info.get('automatic_captions'))
-
                 if has_subtitles:
                     logger.info("📝 Субтитры найдены!")
                     return info
                 else:
                     logger.info("🎵 Субтитров нет, скачиваем аудио")
-                    # Здесь можно добавить логику скачивания аудио
                     return info
-
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки с куками: {e}")
         return None
-
     finally:
-        # Очищаем временный файл куков
         if cookies_file and os.path.exists(cookies_file):
             try:
                 os.unlink(cookies_file)
                 logger.info("🧹 Временный файл куков удален")
             except:
                 pass
-
     return None
+
 
 # ==== Диагностика импортов (мягкая, без падения) ====
 try:
