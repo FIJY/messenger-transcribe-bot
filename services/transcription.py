@@ -302,7 +302,7 @@ async def _async_process_small_file(task_instance, chat_id: int, user_id: int, e
                                  db_service, telegram_client, transcription_service)
 
 
-async def async def _async_process_large_file(task, chat_id: int, user_id: int, enhanced_file_info: dict):
+async def _async_process_large_file(task, chat_id: int, user_id: int, enhanced_file_info: dict):
     """Асинхронная обработка большого файла из R2"""
     import tempfile
     import requests

@@ -8,6 +8,7 @@ import tempfile
 import asyncio
 from typing import Optional, Dict, Any, Tuple, List
 from concurrent.futures import ThreadPoolExecutor
+import subprocess
 
 # ==== Диагностика импортов ====
 try:
@@ -568,7 +569,26 @@ class SmartVideoService:
                     raise DownloadError("Файл не был создан после скачивания.")
 
             except Exception as e:
-            # ... ваша существующая обработка ошибок ...
+                error_msg = str(e)
+                logger.warning(f"Ошибка при скачивании (попытка {attempt}): {error_msg}")
+
+                # Если это ошибка аутентификации - пробуем запустить/переключить Tor
+                if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
+                    if not self.tor.is_running() and self.tor.is_enabled:
+                        logger.info("🔄 Пытаемся запустить Tor для обхода блокировки...")
+                        await self.tor.start_tor()
+                    elif self.tor.is_running():
+                        logger.info("🔄 Меняем IP через Tor...")
+                        await self.tor.change_ip()
+                    else:
+                        logger.warning("⚠️ Tor недоступен, не можем обойти блокировку")
+
+                if attempt == max_retries:
+                    raise YouTubeBlockedError(
+                        f"Не удалось скачать видео после {max_retries} попыток. YouTube требует аутентификацию. Последняя ошибка: {error_msg}")
+
+                # Ждем между попытками
+                await asyncio.sleep(2 * attempt)
 
             finally:
                 if cookies_file and os.path.exists(cookies_file):
