@@ -132,7 +132,7 @@ def get_yt_dlp_options(cookies_file=None):
 
 
 class TorService:
-    """Сервис для УПРАВЛЕНИЯ уже запущенным Tor"""
+    """Сервис для УПРАВЛЕНИЯ Tor (запуск, смена IP)"""
 
     def __init__(self, tor_port: int, control_port: int):
         self.tor_port = tor_port
@@ -140,32 +140,76 @@ class TorService:
         self.current_ip = None
         self.is_enabled = USE_TOR and _tor_ok
         self._is_running = False
+        self._tor_process = None
 
-    async def initialize(self) -> bool:
-        """Проверяет, запущен ли Tor, и получает IP"""
+    async def start_tor(self) -> bool:
+        """Запускает Tor если он не запущен"""
         if not self.is_enabled:
             return False
 
-        logger.info("Проверяем доступность Tor...")
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection('127.0.0.1', self.tor_port),
-                timeout=10
-            )
-            writer.close()
-            await writer.wait_closed()
-            logger.info(f"✅ Tor SOCKS порт {self.tor_port} доступен.")
+        # Проверяем, не запущен ли уже
+        if await self._check_tor_running():
+            logger.info("✅ Tor уже запущен")
             self._is_running = True
             await self.get_current_ip()
             return True
-        except (ConnectionRefusedError, asyncio.TimeoutError):
-            logger.error(f"❌ Tor SOCKS порт {self.tor_port} недоступен. Убедитесь, что Tor запущен в Docker.")
-            self._is_running = False
+
+        logger.info("🚀 Запускаем Tor...")
+        try:
+            # Запускаем Tor в фоне
+            self._tor_process = subprocess.Popen([
+                'tor',
+                '--SocksPort', str(self.tor_port),
+                '--ControlPort', str(self.control_port),
+                '--DataDirectory', '/tmp/tor_data',
+                '--quiet'
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            # Ждем запуска (до 30 секунд)
+            for i in range(30):
+                await asyncio.sleep(1)
+                if await self._check_tor_running():
+                    logger.info(f"✅ Tor запущен за {i + 1} секунд")
+                    self._is_running = True
+                    await self.get_current_ip()
+                    return True
+
+            logger.error("❌ Tor не смог запуститься за 30 секунд")
             return False
+
         except Exception as e:
-            logger.error(f"Неизвестная ошибка при проверке Tor: {e}")
-            self._is_running = False
+            logger.error(f"❌ Ошибка запуска Tor: {e}")
             return False
+
+    async def _check_tor_running(self) -> bool:
+        """Проверяет, запущен ли Tor"""
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection('127.0.0.1', self.tor_port),
+                timeout=3
+            )
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except:
+            return False
+
+    async def initialize(self) -> bool:
+        """Инициализация - проверяет или запускает Tor"""
+        if not self.is_enabled:
+            return False
+
+        logger.info("🔍 Проверяем Tor...")
+
+        # Сначала проверяем, не запущен ли уже
+        if await self._check_tor_running():
+            logger.info("✅ Tor уже запущен и доступен")
+            self._is_running = True
+            await self.get_current_ip()
+            return True
+
+        # Если нет - пытаемся запустить
+        return await self.start_tor()
 
     async def get_current_ip(self) -> Optional[str]:
         """Получает текущий IP через Tor"""
@@ -187,20 +231,41 @@ class TorService:
             return None
 
     async def change_ip(self) -> bool:
-        """Отправляет сигнал NEWNYM для смены IP"""
+        """Отправляет сигнал NEWNYM для смены IP (как в bash скрипте)"""
         if not self.is_running():
             return False
         logger.info("🔄 Запрашиваем новый IP у Tor...")
         try:
-            with Controller.from_port(port=self.control_port) as controller:
-                controller.authenticate()
-                controller.signal(Signal.NEWNYM)
-            await asyncio.sleep(10)
+            # Используем тот же метод что и в bash скрипте
+            proc = await asyncio.create_subprocess_shell(
+                f'echo -e \'AUTHENTICATE ""\nSIGNAL NEWNYM\nQUIT\' | nc 127.0.0.1 {self.control_port}',
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.wait()
+
+            await asyncio.sleep(5)  # Ждем как в bash скрипте
+            old_ip = self.current_ip
             await self.get_current_ip()
-            return True
+
+            if self.current_ip != old_ip:
+                logger.info(f"✅ IP изменен: {old_ip} → {self.current_ip}")
+                return True
+            else:
+                logger.warning("⚠️ IP не изменился")
+                return False
+
         except Exception as e:
             logger.error(f"❌ Ошибка смены IP: {e}")
             return False
+
+    async def stop(self):
+        """Останавливает Tor процесс"""
+        if self._tor_process:
+            self._tor_process.terminate()
+            self._tor_process = None
+            self._is_running = False
+            logger.info("🛑 Tor остановлен")
 
     def is_running(self) -> bool:
         return self._is_running
@@ -217,9 +282,14 @@ class SmartVideoService:
             logger.warning("yt-dlp не установлен. Загрузка аудио недоступна.")
 
     async def initialize(self):
-        """Инициализирует сервис и проверяет Tor"""
+        """Инициализирует сервис и запускает Tor"""
         if self.tor.is_enabled:
+            # Пытаемся запустить Tor
             await self.tor.initialize()
+            if self.tor.is_running():
+                logger.info(f"🌐 Tor запущен. IP: {self.tor.current_ip}")
+            else:
+                logger.warning("⚠️ Tor не удалось запустить, работаем без прокси")
 
     def _init_r2_client(self):
         if not all([_boto_ok, R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
@@ -376,11 +446,16 @@ class SmartVideoService:
 
         loop = asyncio.get_event_loop()
         max_retries = 3
+
         for attempt in range(1, max_retries + 1):
+            cookies_file = None
             try:
+                # Создаем куки для каждой попытки
+                cookies_file = setup_cookies_file()
+
                 logger.info(
                     f"Попытка {attempt}/{max_retries} скачать аудио для {video_id} через IP: {self.tor.current_ip}")
-                opts = self._get_ytdlp_options(local_path)
+                opts = self._get_ytdlp_options(local_path, cookies_file)
 
                 def _download():
                     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -396,13 +471,34 @@ class SmartVideoService:
                     raise DownloadError("Файл не был создан после скачивания.")
 
             except Exception as e:
-                logger.warning(f"Ошибка при скачивании (попытка {attempt}): {e}")
-                if attempt < max_retries:
-                    if self.tor.is_running():
+                error_msg = str(e)
+                logger.warning(f"Ошибка при скачивании (попытка {attempt}): {error_msg}")
+
+                # Если это ошибка аутентификации - пробуем запустить/переключить Tor
+                if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
+                    if not self.tor.is_running() and self.tor.is_enabled:
+                        logger.info("🔄 Пытаемся запустить Tor для обхода блокировки...")
+                        await self.tor.start_tor()
+                    elif self.tor.is_running():
+                        logger.info("🔄 Меняем IP через Tor...")
                         await self.tor.change_ip()
-                else:
+                    else:
+                        logger.warning("⚠️ Tor недоступен, не можем обойти блокировку")
+
+                if attempt == max_retries:
                     raise YouTubeBlockedError(
-                        f"Не удалось скачать видео после {max_retries} попыток. Последняя ошибка: {e}")
+                        f"Не удалось скачать видео после {max_retries} попыток. YouTube требует аутентификацию. Последняя ошибка: {error_msg}")
+
+                # Ждем между попытками
+                await asyncio.sleep(2 * attempt)
+
+            finally:
+                # Очищаем временные куки
+                if cookies_file and os.path.exists(cookies_file):
+                    try:
+                        os.unlink(cookies_file)
+                    except:
+                        pass
 
         raise DownloadError("Неизвестная ошибка скачивания.")
 
@@ -416,21 +512,67 @@ class SmartVideoService:
             video_info = await self.get_video_info(url)
             video_id = self.extract_video_id(url)
 
-            # Пытаемся получить контент
-            text, content_type, metadata = await self.get_text_smart(url)
+            # Проверяем наличие субтитров в полученной информации
+            has_subtitles = bool(video_info.get('subtitles') or video_info.get('automatic_captions'))
 
-            return {
-                'success': True,
-                'video_id': video_id,
-                'title': video_info.get('title', 'Unknown'),
-                'duration': video_info.get('duration', 0),
-                'uploader': video_info.get('uploader', 'Unknown'),
-                'content_type': content_type,  # 'subtitles' или 'audio_file'
-                'content': text,  # Текст субтитров или путь к аудио файлу
-                'metadata': metadata,
-                'has_subtitles': bool(video_info.get('subtitles') or video_info.get('automatic_captions')),
-                'video_info': video_info
-            }
+            if has_subtitles:
+                logger.info(f"📝 Обнаружены субтитры для {video_id}, пытаемся их получить...")
+                try:
+                    # Пытаемся получить контент
+                    text, content_type, metadata = await self.get_text_smart(url)
+
+                    return {
+                        'success': True,
+                        'video_id': video_id,
+                        'title': video_info.get('title', 'Unknown'),
+                        'duration': video_info.get('duration', 0),
+                        'uploader': video_info.get('uploader', 'Unknown'),
+                        'content_type': content_type,  # 'subtitles' или 'audio_file'
+                        'content': text,  # Текст субтитров или путь к аудио файлу
+                        'metadata': metadata,
+                        'has_subtitles': has_subtitles,
+                        'video_info': video_info
+                    }
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось получить субтитры, попробуем аудио: {e}")
+
+            # Если субтитров нет или не удалось их получить
+            logger.info(f"🎵 Субтитров нет, скачиваем аудио для {video_id}...")
+
+            # Пытаемся скачать аудио напрямую
+            try:
+                local_audio_path = await self.download_audio(url)
+                metadata = {
+                    'method': 'audio_download',
+                    'video_id': video_id,
+                    'audio_path': local_audio_path,
+                    'tor_used': self.tor.is_running(),
+                    'current_ip': self.tor.current_ip
+                }
+
+                return {
+                    'success': True,
+                    'video_id': video_id,
+                    'title': video_info.get('title', 'Unknown'),
+                    'duration': video_info.get('duration', 0),
+                    'uploader': video_info.get('uploader', 'Unknown'),
+                    'content_type': 'audio_file',
+                    'content': local_audio_path,
+                    'metadata': metadata,
+                    'has_subtitles': has_subtitles,
+                    'video_info': video_info
+                }
+            except YouTubeBlockedError as e:
+                # Специальная обработка блокировки YouTube
+                return {
+                    'success': False,
+                    'error': f"YouTube заблокировал доступ: {str(e)}",
+                    'error_type': 'YouTubeBlockedError',
+                    'video_id': video_id,
+                    'title': video_info.get('title', 'Unknown'),
+                    'url': url,
+                    'suggestion': 'Попробуйте позже или используйте другое видео'
+                }
 
         except Exception as e:
             logger.error(f"❌ Ошибка в enhanced_download_youtube_content: {e}")
