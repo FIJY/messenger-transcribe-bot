@@ -9,6 +9,7 @@ import asyncio
 from typing import Optional, Dict, Any, Tuple, List
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
+import signal  # Добавить эту строку
 
 # ==== Диагностика импортов ====
 try:
@@ -288,108 +289,44 @@ class TorService:
         """Проверяет, что Tor запущен И готов к использованию"""
         return self._is_running and self._startup_complete
 
+    async def change_ip(self) -> bool:
+        """Отправляет сигнал NEWNYM для смены IP"""
+        if not self.is_running():
+            return False
+        logger.info("🔄 Запрашиваем новый IP у Tor...")
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                f'echo -e \'AUTHENTICATE ""\nSIGNAL NEWNYM\nQUIT\' | nc 127.0.0.1 {self.control_port}',
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.wait()
+            await asyncio.sleep(5)
+            old_ip = self.current_ip
+            await self.get_current_ip()
+            if self.current_ip != old_ip:
+                logger.info(f"✅ IP изменен: {old_ip} → {self.current_ip}")
+                return True
+            else:
+                logger.warning("⚠️ IP не изменился")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Ошибка смены IP: {e}")
+            return False
+
+    async def stop(self):
+        """Останавливает Tor процесс"""
+        if self._tor_process:
+            try:
+                os.killpg(os.getpgid(self._tor_process.pid), signal.SIGTERM)
+            except:
+                pass
+            self._tor_process = None
+            self._is_running = False
+            logger.info("🛑 Tor остановлен")
+
 
 # ОСНОВНОЙ СЕРВИС - убираем повторные запуски Tor
-class SmartVideoService:
-    def __init__(self):
-        self.download_available = _yt_dlp_ok
-        self.subtitles_available = False  # Отключаем субтитры
-        self.s3 = self._init_r2_client()
-        self.tor = TorService(TOR_SOCKS_PORT, TOR_CONTROL_PORT)
-        self.executor = ThreadPoolExecutor(max_workers=2)
-
-    async def initialize(self):
-        """Инициализирует сервис - запускает Tor ОДИН РАЗ"""
-        logger.info("🚀 Инициализация SmartVideoService...")
-
-        if self.tor.is_enabled:
-            logger.info("🔄 Запускаем Tor (это может занять ~30-45 секунд)...")
-            tor_ready = await self.tor.initialize()
-
-            if tor_ready:
-                logger.info(f"✅ Tor готов! IP: {self.tor.current_ip}")
-            else:
-                logger.error("❌ Tor не запустился, работа будет нестабильной")
-        else:
-            logger.warning("⚠️ Tor отключен в настройках")
-
-    # Упрощенный download_audio - БЕЗ проверок Tor (он уже должен быть запущен)
-    async def download_audio(self, url: str) -> str:
-        """Скачивает аудио через уже готовый Tor"""
-        video_id = self.extract_video_id(url)
-        if not video_id:
-            raise SmartVideoError("Не удалось извлечь ID видео")
-
-        # Проверяем кэш
-        os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
-        local_path = os.path.join(AUDIO_STORAGE_DIR, f"{video_id}.mp3")
-
-        if os.path.exists(local_path):
-            logger.info(f"✅ Файл уже существует: {local_path}")
-            return local_path
-
-        # Проверяем готовность Tor
-        if self.tor.is_enabled and not self.tor.is_running():
-            raise DownloadError("Tor не готов. Попробуйте позже.")
-
-        cookies_file = setup_cookies_file()
-        try:
-            logger.info(f"⬇️ Скачиваем {video_id} через Tor...")
-
-            opts = {
-                "format": "bestaudio[ext=webm]/bestaudio/best",
-                "quiet": False,
-                "noprogress": True,
-                "noplaylist": True,
-                "socket_timeout": 30,
-                "extractor_retries": 2,
-                "fragment_retries": 2,
-                "outtmpl": local_path.replace(".mp3", "") + ".%(ext)s",
-                "postprocessors": [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '128',
-                }],
-            }
-
-            if cookies_file and os.path.exists(cookies_file):
-                opts['cookiefile'] = cookies_file
-
-            if self.tor.is_running():
-                opts["proxy"] = YT_PROXY
-                logger.info(f"🌐 Используем готовый Tor: {YT_PROXY}")
-
-            def _download():
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([url])
-
-            loop = asyncio.get_event_loop()
-            await asyncio.wait_for(
-                loop.run_in_executor(self.executor, _download),
-                timeout=4800  # 80 минут
-            )
-
-            final_path = os.path.splitext(local_path)[0] + ".mp3"
-            if os.path.exists(final_path):
-                logger.info(f"✅ Аудио скачано: {final_path}")
-                return final_path
-            else:
-                raise DownloadError("Файл не создан")
-
-        except asyncio.TimeoutError:
-            raise DownloadError("Превышен таймаут скачивания (8 мин)")
-        except Exception as e:
-            raise DownloadError(f"Ошибка скачивания: {e}")
-        finally:
-            if cookies_file and os.path.exists(cookies_file):
-                try:
-                    os.unlink(cookies_file)
-                except:
-                    pass
-
-
-# ВАЖНО: В main.py нужно запустить initialize() ОДИН РАЗ при старте приложения
-# await smart_video_service.initialize()  # Tor запустится один раз здесь
 
 class SmartVideoService:
     def __init__(self):
@@ -650,7 +587,7 @@ class SmartVideoService:
                 if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
                     if not self.tor.is_running() and self.tor.is_enabled:
                         logger.info("🔄 Пытаемся запустить Tor для обхода блокировки...")
-                        await self.tor.start_tor()
+                        await self.tor.initialize()
                     elif self.tor.is_running():
                         logger.info("🔄 Меняем IP через Tor...")
                         await self.tor.change_ip()
@@ -692,7 +629,7 @@ class SmartVideoService:
             # Проверяем статус Tor перед скачиванием
             if self.tor.is_enabled and not self.tor.is_running():
                 logger.info("🚀 Tor не запущен, пытаемся запустить...")
-                await self.tor.start_tor()
+                await self.tor.initialize()
 
             try:
                 logger.info(f"⬇️ Начинаем скачивание аудио для {video_id}...")
@@ -822,6 +759,23 @@ async def create_smart_video_service() -> SmartVideoService:
     await service.initialize()
     return service
 
+async def get_system_status() -> Dict[str, Any]:
+    """Получает статус системы для health check"""
+    return {
+        'components': {
+            'yt_dlp': _yt_dlp_ok,
+            'youtube_transcript_api': _yta_ok,
+            'boto3': _boto_ok,
+            'tor_libs': _tor_ok
+        },
+        'tor': {
+            'enabled': USE_TOR,
+            'port': TOR_SOCKS_PORT
+        },
+        'r2': {
+            'configured': bool(R2_ACCOUNT_ID and R2_BUCKET)
+        }
+    }
 
 async def diagnose_system() -> Dict[str, Any]:
     """Диагностика системы для отладки проблем"""
@@ -864,7 +818,7 @@ async def diagnose_system() -> Dict[str, Any]:
         service = SmartVideoService()
         if service.tor.is_enabled:
             diagnosis['tor_status']['enabled'] = True
-            diagnosis['tor_status']['can_start'] = await service.tor.start_tor()
+            diagnosis['tor_status']['can_start'] = await service.tor.initialize()
             diagnosis['tor_status']['running'] = service.tor.is_running()
             diagnosis['tor_status']['ip'] = service.tor.current_ip
             await service.tor.stop()
