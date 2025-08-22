@@ -572,6 +572,16 @@ async def _send_transcription_result_new_ux(telegram_client, chat_id: int, text:
     file_size_mb = file_info.get('file_size', 0) / (1024 * 1024)
     duration_seconds = file_info.get('duration', 0)
 
+    # В services/transcription.py добавить:
+    if file_info.get('processing_method') == 'local_file':
+        # Читаем файл напрямую без скачивания
+        local_file_path = file_info.get('local_file_path')
+        if os.path.exists(local_file_path):
+            # Обрабатываем файл напрямую
+            process_audio_file(local_file_path)
+        else:
+            raise FileNotFoundError(f"Локальный файл не найден: {local_file_path}")
+
     # Определяем тип языка для правильной статистики
     is_cjk = language in ['zh', 'ja', 'ko']
 
