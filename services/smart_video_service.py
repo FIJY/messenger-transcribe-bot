@@ -145,6 +145,7 @@ class TorService:
     async def start_tor(self) -> bool:
         """Запускает Tor если он не запущен"""
         if not self.is_enabled:
+            logger.warning("⚠️ Tor отключен в настройках")
             return False
 
         # Проверяем, не запущен ли уже
@@ -156,6 +157,21 @@ class TorService:
 
         logger.info("🚀 Запускаем Tor...")
         try:
+            # Проверяем наличие tor в системе
+            try:
+                result = subprocess.run(['which', 'tor'], capture_output=True, text=True)
+                if result.returncode != 0:
+                    logger.error("❌ Tor не установлен в системе")
+                    return False
+                tor_path = result.stdout.strip()
+                logger.info(f"📍 Tor найден: {tor_path}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка поиска Tor: {e}")
+                return False
+
+            # Создаем директорию для данных
+            os.makedirs('/tmp/tor_data', exist_ok=True)
+
             # Запускаем Tor в фоне
             self._tor_process = subprocess.Popen([
                 'tor',
@@ -164,6 +180,8 @@ class TorService:
                 '--DataDirectory', '/tmp/tor_data',
                 '--quiet'
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            logger.info(f"🔄 Ждем запуска Tor (PID: {self._tor_process.pid})...")
 
             # Ждем запуска (до 30 секунд)
             for i in range(30):
@@ -175,8 +193,14 @@ class TorService:
                     return True
 
             logger.error("❌ Tor не смог запуститься за 30 секунд")
+            if self._tor_process:
+                self._tor_process.terminate()
+                self._tor_process = None
             return False
 
+        except FileNotFoundError:
+            logger.error("❌ Команда 'tor' не найдена. Убедитесь что Tor установлен")
+            return False
         except Exception as e:
             logger.error(f"❌ Ошибка запуска Tor: {e}")
             return False
@@ -507,19 +531,25 @@ class SmartVideoService:
         ДОБАВЛЕННЫЙ МЕТОД: Расширенная загрузка контента YouTube
         Возвращает структурированный результат для обработчика
         """
+        video_id = self.extract_video_id(url)
+        logger.info(f"🎬 Начинаем обработку видео {video_id}: {url}")
+
         try:
             # Получаем информацию о видео
+            logger.info(f"📋 Получаем информацию о видео {video_id}...")
             video_info = await self.get_video_info(url)
-            video_id = self.extract_video_id(url)
+            logger.info(f"✅ Информация получена: '{video_info.get('title', 'Unknown')}'")
 
             # Проверяем наличие субтитров в полученной информации
             has_subtitles = bool(video_info.get('subtitles') or video_info.get('automatic_captions'))
+            logger.info(f"📝 Субтитры доступны: {has_subtitles}")
 
             if has_subtitles:
                 logger.info(f"📝 Обнаружены субтитры для {video_id}, пытаемся их получить...")
                 try:
                     # Пытаемся получить контент
                     text, content_type, metadata = await self.get_text_smart(url)
+                    logger.info(f"✅ Контент получен успешно. Тип: {content_type}")
 
                     return {
                         'success': True,
@@ -533,15 +563,25 @@ class SmartVideoService:
                         'has_subtitles': has_subtitles,
                         'video_info': video_info
                     }
-                except Exception as e:
-                    logger.warning(f"⚠️ Не удалось получить субтитры, попробуем аудио: {e}")
+                except Exception as subtitle_error:
+                    logger.warning(f"⚠️ Ошибка получения субтитров: {subtitle_error}")
+                    logger.warning(f"⚠️ Тип ошибки: {type(subtitle_error).__name__}")
+                    # Продолжаем к аудио
 
             # Если субтитров нет или не удалось их получить
-            logger.info(f"🎵 Субтитров нет, скачиваем аудио для {video_id}...")
+            logger.info(f"🎵 Субтитров нет или не удалось получить, скачиваем аудио для {video_id}...")
+
+            # Проверяем статус Tor перед скачиванием
+            if self.tor.is_enabled and not self.tor.is_running():
+                logger.info("🚀 Tor не запущен, пытаемся запустить...")
+                await self.tor.start_tor()
 
             # Пытаемся скачать аудио напрямую
             try:
+                logger.info(f"⬬ Начинаем скачивание аудио для {video_id}...")
                 local_audio_path = await self.download_audio(url)
+                logger.info(f"✅ Аудио скачано: {local_audio_path}")
+
                 metadata = {
                     'method': 'audio_download',
                     'video_id': video_id,
@@ -562,26 +602,46 @@ class SmartVideoService:
                     'has_subtitles': has_subtitles,
                     'video_info': video_info
                 }
-            except YouTubeBlockedError as e:
+            except YouTubeBlockedError as blocked_error:
+                logger.error(f"🚫 YouTube заблокировал доступ: {blocked_error}")
                 # Специальная обработка блокировки YouTube
                 return {
                     'success': False,
-                    'error': f"YouTube заблокировал доступ: {str(e)}",
+                    'error': f"YouTube заблокировал доступ: {str(blocked_error)}",
                     'error_type': 'YouTubeBlockedError',
                     'video_id': video_id,
                     'title': video_info.get('title', 'Unknown'),
                     'url': url,
                     'suggestion': 'Попробуйте позже или используйте другое видео'
                 }
+            except Exception as download_error:
+                logger.error(f"❌ Ошибка скачивания аудио: {download_error}")
+                logger.error(f"❌ Тип ошибки: {type(download_error).__name__}")
+                raise download_error  # Пробрасываем дальше
 
         except Exception as e:
-            logger.error(f"❌ Ошибка в enhanced_download_youtube_content: {e}")
+            logger.error(f"❌ КРИТИЧЕСКАЯ ошибка в enhanced_download_youtube_content для {video_id}")
+            logger.error(f"❌ Ошибка: {str(e)}")
+            logger.error(f"❌ Тип ошибки: {type(e).__name__}")
+
+            # Логируем полный стэк трейс для отладки
+            import traceback
+            logger.error(f"❌ Полный стэк трейс:")
+            logger.error(traceback.format_exc())
+
             return {
                 'success': False,
                 'error': str(e),
                 'error_type': type(e).__name__,
-                'video_id': self.extract_video_id(url),
-                'url': url
+                'video_id': video_id,
+                'url': url,
+                'debug_info': {
+                    'tor_enabled': self.tor.is_enabled,
+                    'tor_running': self.tor.is_running(),
+                    'current_ip': self.tor.current_ip,
+                    'download_available': self.download_available,
+                    'subtitles_available': self.subtitles_available
+                }
             }
 
     async def get_text_smart(self, url: str) -> Tuple[str, str, Dict[str, Any]]:
@@ -646,3 +706,56 @@ async def create_smart_video_service() -> SmartVideoService:
     service = SmartVideoService()
     await service.initialize()
     return service
+
+
+async def diagnose_system() -> Dict[str, Any]:
+    """Диагностика системы для отладки проблем"""
+    diagnosis = {
+        'python_imports': {
+            'yt_dlp': _yt_dlp_ok,
+            'youtube_transcript_api': _yta_ok,
+            'boto3': _boto_ok,
+            'tor_libs': _tor_ok,
+        },
+        'system_commands': {},
+        'environment': {},
+        'tor_status': {},
+        'errors': []
+    }
+
+    # Проверяем системные команды
+    commands_to_check = ['tor', 'nc', 'ffmpeg', 'which']
+    for cmd in commands_to_check:
+        try:
+            result = subprocess.run(['which', cmd], capture_output=True, text=True, timeout=5)
+            diagnosis['system_commands'][cmd] = {
+                'available': result.returncode == 0,
+                'path': result.stdout.strip() if result.returncode == 0 else None
+            }
+        except Exception as e:
+            diagnosis['system_commands'][cmd] = {'available': False, 'error': str(e)}
+
+    # Проверяем переменные окружения
+    env_vars = ['USE_TOR', 'YT_PROXY', 'YT_COOKIES_DATA', 'TOR_PORT', 'TOR_CONTROL_PORT']
+    for var in env_vars:
+        value = os.getenv(var)
+        diagnosis['environment'][var] = {
+            'set': value is not None,
+            'value': value if var != 'YT_COOKIES_DATA' else ('***hidden***' if value else None)
+        }
+
+    # Проверяем Tor
+    try:
+        service = SmartVideoService()
+        if service.tor.is_enabled:
+            diagnosis['tor_status']['enabled'] = True
+            diagnosis['tor_status']['can_start'] = await service.tor.start_tor()
+            diagnosis['tor_status']['running'] = service.tor.is_running()
+            diagnosis['tor_status']['ip'] = service.tor.current_ip
+            await service.tor.stop()
+        else:
+            diagnosis['tor_status']['enabled'] = False
+    except Exception as e:
+        diagnosis['errors'].append(f"Tor check failed: {e}")
+
+    return diagnosis
