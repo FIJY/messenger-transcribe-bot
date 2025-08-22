@@ -164,11 +164,11 @@ class TextHandler:
 
     async def _handle_audio_result_fixed(self, chat_id: int, user: dict, message_id: int,
                                          audio_path: str, result: dict, url: str):
-        """ИСПРАВЛЕННАЯ обработка аудио результата"""
+        """ФИНАЛЬНО ИСПРАВЛЕННАЯ обработка аудио результата"""
 
         video_id = result.get('video_id', 'unknown')
 
-        # ИСПРАВЛЕНИЕ: Определяем, что у нас - локальный файл
+        # Получаем размер локального файла
         try:
             file_size = os.path.getsize(audio_path)
             file_size_mb = file_size / (1024 * 1024)
@@ -242,11 +242,11 @@ class TextHandler:
         )
 
         try:
-            # Создаем file_info с ПРАВИЛЬНЫМИ данными
+            # ИСПРАВЛЕНИЕ: Создаем file_info с правильным методом обработки
             file_info = {
                 'file_id': f'youtube_{video_id}',
                 'file_unique_id': f'yt_{video_id}',
-                'file_size': file_size,  # Теперь гарантированно > 0
+                'file_size': file_size,
                 'duration': duration_seconds,
                 'file_name': f'YouTube_{video_id}.mp3',
                 'media_type': 'youtube_audio',
@@ -261,9 +261,9 @@ class TextHandler:
 
             logger.info(f"📦 Отправляем в транскрипцию: размер={file_size}, длительность={duration_seconds}")
 
-            # Определяем способ обработки
+            # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Определяем способ обработки правильно
             if file_size_mb <= 15:
-                # Небольшой файл - через Redis
+                # Небольшой файл - через Redis с base64
                 import base64
                 with open(audio_path, 'rb') as f:
                     file_content = f.read()
@@ -274,26 +274,23 @@ class TextHandler:
                 # Удаляем исходный файл
                 self.smart_video_service.cleanup_temp_files(audio_path)
 
+                # Используем обычную задачу транскрипции
                 from services.transcription import process_transcription_task
                 process_transcription_task.delay(chat_id, user['telegram_id'], file_info)
 
             else:
-                # Большой файл - через файловую систему
-                from services.transcription import process_large_file_task
-                import uuid
-                import shutil
+                # ИСПРАВЛЕНИЕ: Большой файл - НЕ перемещаем, а передаем прямой путь
+                # Система транскрипции должна читать файл НАПРЯМУЮ, а не скачивать
 
-                shared_dir = "/tmp/shared_large_files"
-                os.makedirs(shared_dir, exist_ok=True)
-                unique_filename = f"youtube_{uuid.uuid4().hex}.mp3"
-                shared_file_path = os.path.join(shared_dir, unique_filename)
-                shutil.move(audio_path, shared_file_path)
-
-                file_info['shared_file_path'] = shared_file_path
+                file_info['local_file_path'] = audio_path  # Прямой путь к файлу
+                file_info['processing_method'] = 'local_file'  # Новый метод
                 file_info['is_large_file'] = True
-                file_info['processing_method'] = 'filesystem'
 
-                process_large_file_task.delay(chat_id, user['telegram_id'], file_info)
+                # Используем обычную задачу вместо process_large_file_task
+                from services.transcription import process_transcription_task
+                process_transcription_task.delay(chat_id, user['telegram_id'], file_info)
+
+                logger.info(f"📂 Передан прямой путь к файлу: {audio_path}")
 
             # Финальный статус
             final_status = f"✅ YouTube аудио передано в обработку!\n\n"
@@ -309,7 +306,7 @@ class TextHandler:
                 final_status += f"🎭 {result['title'][:50]}...\n"
 
             final_status += f"\n⏳ Ожидайте результат через ~1-2 минуты"
-            final_status += f"\n\n🔍 ID задачи: {video_id}"  # Для отладки
+            final_status += f"\n\n🔍 ID задачи: {video_id}"
 
             await self.telegram.edit_message_text(
                 chat_id, message_id, final_status
