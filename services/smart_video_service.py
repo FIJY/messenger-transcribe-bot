@@ -385,6 +385,42 @@ class SmartVideoService:
 
         raise DownloadError("Неизвестная ошибка скачивания.")
 
+    async def enhanced_download_youtube_content(self, url: str) -> Dict[str, Any]:
+        """
+        ДОБАВЛЕННЫЙ МЕТОД: Расширенная загрузка контента YouTube
+        Возвращает структурированный результат для обработчика
+        """
+        try:
+            # Получаем информацию о видео
+            video_info = await self.get_video_info(url)
+            video_id = self.extract_video_id(url)
+
+            # Пытаемся получить контент
+            text, content_type, metadata = await self.get_text_smart(url)
+
+            return {
+                'success': True,
+                'video_id': video_id,
+                'title': video_info.get('title', 'Unknown'),
+                'duration': video_info.get('duration', 0),
+                'uploader': video_info.get('uploader', 'Unknown'),
+                'content_type': content_type,  # 'subtitles' или 'audio_file'
+                'content': text,  # Текст субтитров или путь к аудио файлу
+                'metadata': metadata,
+                'has_subtitles': bool(video_info.get('subtitles') or video_info.get('automatic_captions')),
+                'video_info': video_info
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка в enhanced_download_youtube_content: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'video_id': self.extract_video_id(url),
+                'url': url
+            }
+
     async def get_text_smart(self, url: str) -> Tuple[str, str, Dict[str, Any]]:
         """
         Главный метод: сначала пытается получить субтитры, если не удается - скачивает аудио.
