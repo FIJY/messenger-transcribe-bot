@@ -115,20 +115,21 @@ async def lifespan(app: FastAPI):
             logger.error(f"❌ Ошибка инициализации SmartVideoService: {e}")
             smart_video_service = None
 
-        # 2. Затем инициализируем бота с уже готовым сервисом
+        # 2. Создаем бота
         bot_instance = TranscribeBot(settings)
 
-        # Передаем готовый сервис в бот (нужно будет добавить этот метод)
-        if smart_video_service and hasattr(bot_instance, 'set_video_service'):
+        # 3. СНАЧАЛА инициализируем бота (создаются все handlers)
+        init_success = await bot_instance.initialize()
+
+        # 4. ПОТОМ передаем готовый сервис (после создания handlers)
+        if smart_video_service and init_success:
             bot_instance.set_video_service(smart_video_service)
             logger.info("✅ SmartVideoService передан в бот")
 
-        init_success = await bot_instance.initialize()
-
         if not init_success:
-            logger.error("❌ Инициализация бота провалена. Приложение может работать некорректно.")
+            logger.error("❌ Инициализация бота провалена")
 
-        # 3. Устанавливаем webhook ПОСЛЕ инициализации
+        # 5. Устанавливаем webhook ПОСЛЕ полной инициализации
         if init_success:
             await setup_webhook()
 
