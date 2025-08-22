@@ -43,8 +43,17 @@ class TranscribeBot:
         self.media_handler: MediaHandler | None = None
         self.callback_handler: CallbackHandler | None = None
         self.text_handler: TextHandler | None = None  # НОВЫЙ ХЕНДЛЕР
+        self.video_service = None
+
 
         logger.info("🤖 TranscribeBot координатор создан")
+
+    def set_video_service(self, video_service):
+        """Устанавливает готовый video service"""
+        self.video_service = video_service
+        # Передаем в text_handler если он уже создан
+        if hasattr(self, 'text_handler'):
+            self.text_handler.video_service = video_service
 
     async def initialize(self):
         """Асинхронная инициализация всех компонентов бота."""

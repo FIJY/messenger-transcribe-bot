@@ -132,9 +132,10 @@ def get_yt_dlp_options(cookies_file=None):
     return options
 
 
-class TorService:
-    """Сервис для УПРАВЛЕНИЯ Tor (запуск, смена IP)"""
+# ГЛАВНАЯ ПРОБЛЕМА: Tor запускается каждый раз заново
+# РЕШЕНИЕ: Tor должен стартовать ОДИН РАЗ при запуске приложения и работать постоянно
 
+class TorService:
     def __init__(self, tor_port: int, control_port: int):
         self.tor_port = tor_port
         self.control_port = control_port
@@ -142,87 +143,15 @@ class TorService:
         self.is_enabled = USE_TOR and _tor_ok
         self._is_running = False
         self._tor_process = None
-
-    async def start_tor(self) -> bool:
-        """Запускает Tor если он не запущен"""
-        if not self.is_enabled:
-            logger.warning("⚠️ Tor отключен в настройках")
-            return False
-
-        # Проверяем, не запущен ли уже
-        if await self._check_tor_running():
-            logger.info("✅ Tor уже запущен")
-            self._is_running = True
-            await self.get_current_ip()
-            return True
-
-        logger.info("🚀 Запускаем Tor...")
-        try:
-            # Проверяем наличие tor в системе
-            try:
-                result = subprocess.run(['which', 'tor'], capture_output=True, text=True)
-                if result.returncode != 0:
-                    logger.error("❌ Tor не установлен в системе")
-                    return False
-                tor_path = result.stdout.strip()
-                logger.info(f"📍 Tor найден: {tor_path}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка поиска Tor: {e}")
-                return False
-
-            # Создаем директорию для данных
-            os.makedirs('/tmp/tor_data', exist_ok=True)
-
-            # Запускаем Tor в фоне
-            self._tor_process = subprocess.Popen([
-                'tor',
-                '--SocksPort', str(self.tor_port),
-                '--ControlPort', str(self.control_port),
-                '--DataDirectory', '/tmp/tor_data',
-                '--quiet'
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            logger.info(f"🔄 Ждем запуска Tor (PID: {self._tor_process.pid})...")
-
-            # Ждем запуска (до 30 секунд)
-            for i in range(30):
-                await asyncio.sleep(1)
-                if await self._check_tor_running():
-                    logger.info(f"✅ Tor запущен за {i + 1} секунд")
-                    self._is_running = True
-                    await self.get_current_ip()
-                    return True
-
-            logger.error("❌ Tor не смог запуститься за 30 секунд")
-            if self._tor_process:
-                self._tor_process.terminate()
-                self._tor_process = None
-            return False
-
-        except FileNotFoundError:
-            logger.error("❌ Команда 'tor' не найдена. Убедитесь что Tor установлен")
-            return False
-        except Exception as e:
-            logger.error(f"❌ Ошибка запуска Tor: {e}")
-            return False
-
-    async def _check_tor_running(self) -> bool:
-        """Проверяет, запущен ли Tor"""
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection('127.0.0.1', self.tor_port),
-                timeout=3
-            )
-            writer.close()
-            await writer.wait_closed()
-            return True
-        except:
-            return False
+        self._startup_complete = False  # Новый флаг
 
     async def initialize(self) -> bool:
-        """Инициализация - проверяет или запускает Tor"""
+        """Инициализация - проверяет или запускает Tor ОДИН РАЗ"""
         if not self.is_enabled:
             return False
+
+        if self._startup_complete:
+            return self._is_running
 
         logger.info("🔍 Проверяем Tor...")
 
@@ -230,93 +159,237 @@ class TorService:
         if await self._check_tor_running():
             logger.info("✅ Tor уже запущен и доступен")
             self._is_running = True
+            self._startup_complete = True
             await self.get_current_ip()
             return True
 
         # Если нет - пытаемся запустить
-        return await self.start_tor()
+        logger.info("🚀 Запускаем Tor...")
+        success = await self._start_tor_fast()
+        self._startup_complete = True
+        return success
 
-
-    async def download_from_r2(self, r2_url: str, local_path: str) -> str:
-        """Скачивает файл из R2 в локальную папку"""
+    async def _start_tor_fast(self) -> bool:
+        """Быстрый запуск Tor с оптимизированными настройками"""
         try:
-            loop = asyncio.get_event_loop()
+            # Проверяем наличие tor
+            try:
+                result = subprocess.run(['which', 'tor'], capture_output=True, text=True, timeout=5)
+                if result.returncode != 0:
+                    logger.error("❌ Tor не установлен в системе")
+                    return False
+            except Exception as e:
+                logger.error(f"❌ Ошибка поиска Tor: {e}")
+                return False
 
-            def _download():
-                response = requests.get(r2_url, timeout=300)  # 5 минут
-                response.raise_for_status()
+            # Создаем директорию
+            tor_data_dir = '/tmp/tor_data'
+            os.makedirs(tor_data_dir, exist_ok=True)
 
-                with open(local_path, 'wb') as f:
-                    f.write(response.content)
+            # ОПТИМИЗИРОВАННЫЕ настройки Tor для быстрого запуска
+            tor_config = [
+                'tor',
+                '--SocksPort', str(self.tor_port),
+                '--ControlPort', str(self.control_port),
+                '--DataDirectory', tor_data_dir,
+                '--quiet',
+                # УСКОРЕНИЯ:
+                '--DisableNetwork', '0',
+                '--UseBridges', '0',
+                '--ClientUseIPv6', '0',
+                '--ExitNodes', '{ru},{de},{us}',  # Ограничиваем выходные ноды
+                '--StrictNodes', '0',
+                '--FascistFirewall', '0',
+                '--ControlSocket', '',
+                # Быстрая загрузка консенсуса
+                '--DirReqStatistics', '0',
+                '--ExtraInfoStatistics', '0',
+                '--CellStatistics', '0',
+                '--ConnDirectionStatistics', '0',
+                '--EntryStatistics', '0',
+                '--ExitPortStatistics', '0',
+            ]
 
-            await loop.run_in_executor(self.executor, _download)
-            logger.info(f"✅ Файл скачан из R2: {local_path}")
-            return local_path
+            # Запускаем Tor
+            self._tor_process = subprocess.Popen(
+                tor_config,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid  # Создаем новую группу процессов
+            )
+
+            logger.info(f"🔄 Tor запускается (PID: {self._tor_process.pid})...")
+
+            # Ждем готовности с уменьшенным таймаутом
+            max_wait = 45  # Уменьшаем с 60 до 45 секунд
+            for i in range(max_wait):
+                await asyncio.sleep(1)
+                if await self._check_tor_running():
+                    self._is_running = True
+                    await self.get_current_ip()
+                    logger.info(f"✅ Tor готов за {i + 1} секунд. IP: {self.current_ip}")
+                    return True
+
+                # Показываем прогресс каждые 10 секунд
+                if (i + 1) % 10 == 0:
+                    logger.info(f"⏳ Tor загружается... {i + 1}/{max_wait} сек")
+
+            logger.error(f"❌ Tor не запустился за {max_wait} секунд")
+            if self._tor_process:
+                try:
+                    os.killpg(os.getpgid(self._tor_process.pid), signal.SIGTERM)
+                except:
+                    pass
+                self._tor_process = None
+            return False
 
         except Exception as e:
-            logger.error(f"❌ Ошибка скачивания из R2: {e}")
-            raise SmartVideoError(f"Ошибка скачивания из R2: {e}")
+            logger.error(f"❌ Ошибка запуска Tor: {e}")
+            return False
 
+    async def _check_tor_running(self) -> bool:
+        """Быстрая проверка Tor"""
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection('127.0.0.1', self.tor_port),
+                timeout=2  # Уменьшаем таймаут
+            )
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except:
+            return False
 
     async def get_current_ip(self) -> Optional[str]:
-        """Получает текущий IP через Tor"""
+        """Быстрое получение IP"""
         if not self.is_running():
             return None
         try:
             loop = asyncio.get_event_loop()
             proxies = {'http': YT_PROXY, 'https': YT_PROXY}
-            response = await loop.run_in_executor(
-                None,
-                lambda: requests.get('https://api.ipify.org?format=json', proxies=proxies, timeout=15)
-            )
-            response.raise_for_status()
-            self.current_ip = response.json().get("ip")
-            logger.info(f"🌍 Текущий IP через Tor: {self.current_ip}")
+
+            def _get_ip():
+                import requests
+                response = requests.get(
+                    'https://api.ipify.org?format=json',
+                    proxies=proxies,
+                    timeout=10  # Уменьшаем таймаут
+                )
+                return response.json().get("ip")
+
+            self.current_ip = await loop.run_in_executor(None, _get_ip)
+            logger.info(f"🌍 IP через Tor: {self.current_ip}")
             return self.current_ip
         except Exception as e:
             logger.warning(f"Не удалось получить IP через Tor: {e}")
             return None
 
-    async def change_ip(self) -> bool:
-        """Отправляет сигнал NEWNYM для смены IP (как в bash скрипте)"""
-        if not self.is_running():
-            return False
-        logger.info("🔄 Запрашиваем новый IP у Tor...")
-        try:
-            # Используем тот же метод что и в bash скрипте
-            proc = await asyncio.create_subprocess_shell(
-                f'echo -e \'AUTHENTICATE ""\nSIGNAL NEWNYM\nQUIT\' | nc 127.0.0.1 {self.control_port}',
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL
-            )
-            await proc.wait()
-
-            await asyncio.sleep(5)  # Ждем как в bash скрипте
-            old_ip = self.current_ip
-            await self.get_current_ip()
-
-            if self.current_ip != old_ip:
-                logger.info(f"✅ IP изменен: {old_ip} → {self.current_ip}")
-                return True
-            else:
-                logger.warning("⚠️ IP не изменился")
-                return False
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка смены IP: {e}")
-            return False
-
-    async def stop(self):
-        """Останавливает Tor процесс"""
-        if self._tor_process:
-            self._tor_process.terminate()
-            self._tor_process = None
-            self._is_running = False
-            logger.info("🛑 Tor остановлен")
-
     def is_running(self) -> bool:
-        return self._is_running
+        """Проверяет, что Tor запущен И готов к использованию"""
+        return self._is_running and self._startup_complete
 
+
+# ОСНОВНОЙ СЕРВИС - убираем повторные запуски Tor
+class SmartVideoService:
+    def __init__(self):
+        self.download_available = _yt_dlp_ok
+        self.subtitles_available = False  # Отключаем субтитры
+        self.s3 = self._init_r2_client()
+        self.tor = TorService(TOR_SOCKS_PORT, TOR_CONTROL_PORT)
+        self.executor = ThreadPoolExecutor(max_workers=2)
+
+    async def initialize(self):
+        """Инициализирует сервис - запускает Tor ОДИН РАЗ"""
+        logger.info("🚀 Инициализация SmartVideoService...")
+
+        if self.tor.is_enabled:
+            logger.info("🔄 Запускаем Tor (это может занять ~30-45 секунд)...")
+            tor_ready = await self.tor.initialize()
+
+            if tor_ready:
+                logger.info(f"✅ Tor готов! IP: {self.tor.current_ip}")
+            else:
+                logger.error("❌ Tor не запустился, работа будет нестабильной")
+        else:
+            logger.warning("⚠️ Tor отключен в настройках")
+
+    # Упрощенный download_audio - БЕЗ проверок Tor (он уже должен быть запущен)
+    async def download_audio(self, url: str) -> str:
+        """Скачивает аудио через уже готовый Tor"""
+        video_id = self.extract_video_id(url)
+        if not video_id:
+            raise SmartVideoError("Не удалось извлечь ID видео")
+
+        # Проверяем кэш
+        os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
+        local_path = os.path.join(AUDIO_STORAGE_DIR, f"{video_id}.mp3")
+
+        if os.path.exists(local_path):
+            logger.info(f"✅ Файл уже существует: {local_path}")
+            return local_path
+
+        # Проверяем готовность Tor
+        if self.tor.is_enabled and not self.tor.is_running():
+            raise DownloadError("Tor не готов. Попробуйте позже.")
+
+        cookies_file = setup_cookies_file()
+        try:
+            logger.info(f"⬇️ Скачиваем {video_id} через Tor...")
+
+            opts = {
+                "format": "bestaudio[ext=webm]/bestaudio/best",
+                "quiet": False,
+                "noprogress": True,
+                "noplaylist": True,
+                "socket_timeout": 30,
+                "extractor_retries": 2,
+                "fragment_retries": 2,
+                "outtmpl": local_path.replace(".mp3", "") + ".%(ext)s",
+                "postprocessors": [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '128',
+                }],
+            }
+
+            if cookies_file and os.path.exists(cookies_file):
+                opts['cookiefile'] = cookies_file
+
+            if self.tor.is_running():
+                opts["proxy"] = YT_PROXY
+                logger.info(f"🌐 Используем готовый Tor: {YT_PROXY}")
+
+            def _download():
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([url])
+
+            loop = asyncio.get_event_loop()
+            await asyncio.wait_for(
+                loop.run_in_executor(self.executor, _download),
+                timeout=4800  # 80 минут
+            )
+
+            final_path = os.path.splitext(local_path)[0] + ".mp3"
+            if os.path.exists(final_path):
+                logger.info(f"✅ Аудио скачано: {final_path}")
+                return final_path
+            else:
+                raise DownloadError("Файл не создан")
+
+        except asyncio.TimeoutError:
+            raise DownloadError("Превышен таймаут скачивания (8 мин)")
+        except Exception as e:
+            raise DownloadError(f"Ошибка скачивания: {e}")
+        finally:
+            if cookies_file and os.path.exists(cookies_file):
+                try:
+                    os.unlink(cookies_file)
+                except:
+                    pass
+
+
+# ВАЖНО: В main.py нужно запустить initialize() ОДИН РАЗ при старте приложения
+# await smart_video_service.initialize()  # Tor запустится один раз здесь
 
 class SmartVideoService:
     def __init__(self):

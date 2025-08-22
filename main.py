@@ -6,7 +6,6 @@ import asyncio
 import json
 from datetime import datetime
 
-
 # Настройте базовое логгирование, если его еще нет
 logging.basicConfig(level=logging.INFO)
 
@@ -41,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Глобальные переменные для хранения экземпляров
 bot_instance: TranscribeBot | None = None
+smart_video_service = None  # ДОБАВЛЯЕМ глобальный сервис
 
 
 async def setup_webhook():
@@ -100,21 +100,35 @@ async def simple_health_check():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global bot_instance
+    global bot_instance, smart_video_service
 
     logger.info("🚀 Запуск TranscribeBot...")
 
     try:
-        # 1. Инициализируем бота и все его компоненты
+        # 1. СНАЧАЛА инициализируем SmartVideoService (включая Tor)
+        logger.info("🔧 Инициализация SmartVideoService...")
+        try:
+            from services.smart_video_service import create_smart_video_service
+            smart_video_service = await create_smart_video_service()
+            logger.info("✅ SmartVideoService инициализирован")
+        except Exception as e:
+            logger.error(f"❌ Ошибка инициализации SmartVideoService: {e}")
+            smart_video_service = None
+
+        # 2. Затем инициализируем бота с уже готовым сервисом
         bot_instance = TranscribeBot(settings)
+
+        # Передаем готовый сервис в бот (нужно будет добавить этот метод)
+        if smart_video_service and hasattr(bot_instance, 'set_video_service'):
+            bot_instance.set_video_service(smart_video_service)
+            logger.info("✅ SmartVideoService передан в бот")
+
         init_success = await bot_instance.initialize()
 
         if not init_success:
             logger.error("❌ Инициализация бота провалена. Приложение может работать некорректно.")
-            # В реальном проде можно остановить запуск, если бот не стартовал
-            # sys.exit(1)
 
-        # 2. Устанавливаем webhook ПОСЛЕ инициализации
+        # 3. Устанавливаем webhook ПОСЛЕ инициализации
         if init_success:
             await setup_webhook()
 
@@ -127,6 +141,15 @@ async def lifespan(app: FastAPI):
 
     # Очистка ресурсов при остановке
     logger.info("🛑 Остановка приложения...")
+
+    # Останавливаем SmartVideoService (включая Tor)
+    if smart_video_service and hasattr(smart_video_service, 'shutdown'):
+        try:
+            await smart_video_service.shutdown()
+            logger.info("✅ SmartVideoService остановлен")
+        except Exception as e:
+            logger.error(f"❌ Ошибка остановки SmartVideoService: {e}")
+
     if bot_instance:
         await bot_instance.shutdown()
 
@@ -143,11 +166,16 @@ app = FastAPI(
 @app.get("/")
 async def root():
     """Главная страница с информацией о сервисе"""
+    tor_status = "unknown"
+    if smart_video_service and hasattr(smart_video_service, 'tor'):
+        tor_status = "running" if smart_video_service.tor.is_running() else "stopped"
+
     return {
         "message": "🤖 TranscribeBot API активен!",
         "version": "2.0.0",
         "status": "healthy" if bot_instance else "degraded",
         "bot_initialized": bot_instance is not None,
+        "tor_status": tor_status,
         "features": [
             "YouTube transcription",
             "Tor proxy support",
@@ -202,9 +230,20 @@ async def detailed_status():
         from services.smart_video_service import get_system_status
 
         system_status = await get_system_status()
+
+        # Добавляем статус Tor из глобального сервиса
+        tor_info = {"status": "unknown"}
+        if smart_video_service and hasattr(smart_video_service, 'tor'):
+            tor_info = {
+                "status": "running" if smart_video_service.tor.is_running() else "stopped",
+                "enabled": smart_video_service.tor.is_enabled,
+                "current_ip": smart_video_service.tor.current_ip
+            }
+
         return {
             "bot_status": "running" if bot_instance else "stopped",
             "system_status": system_status,
+            "tor_status": tor_info,
             "timestamp": datetime.now().isoformat(),
             "environment": {
                 "use_tor": os.getenv("USE_TOR", "false"),
@@ -255,35 +294,34 @@ async def metrics():
         }
 
 
+# НОВЫЙ ENDPOINT для диагностики Tor
+@app.get("/tor-status")
+async def tor_status():
+    """Подробный статус Tor"""
+    if not smart_video_service:
+        return {"error": "SmartVideoService не инициализирован"}
+
+    if not hasattr(smart_video_service, 'tor'):
+        return {"error": "Tor сервис недоступен"}
+
+    tor_service = smart_video_service.tor
+    return {
+        "enabled": tor_service.is_enabled,
+        "running": tor_service.is_running(),
+        "current_ip": tor_service.current_ip,
+        "startup_complete": getattr(tor_service, '_startup_complete', False),
+        "tor_port": tor_service.tor_port,
+        "control_port": tor_service.control_port,
+        "timestamp": datetime.now().isoformat()
+    }
+
+
 # Запуск сервера для локального тестирования
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     host = "0.0.0.0"
 
     logger.info(f"🌐 Запуск сервера на {host}:{port}")
-
-    # Для локальной разработки можно использовать long polling вместо webhook
-    # Для этого нужно закомментировать uvicorn.run и раскомментировать блок ниже
-
-    # async def start_polling():
-    #     global bot_instance
-    #     logger.info("🚀 Запуск в режиме long polling...")
-    #     bot_instance = TranscribeBot(settings)
-    #     await bot_instance.initialize()
-    #     client = TelegramClient(settings.TELEGRAM_TOKEN)
-    #     await client.delete_webhook() # Удаляем вебхук перед поллингом
-    #     offset = 0
-    #     while True:
-    #         updates = await client.get_updates(offset)
-    #         for update in updates:
-    #             offset = update['update_id'] + 1
-    #             await bot_instance.process_update(update)
-    #         await asyncio.sleep(1)
-
-    # try:
-    #      asyncio.run(start_polling())
-    # except KeyboardInterrupt:
-    #      logger.info("🛑 Сервер остановлен пользователем")
 
     uvicorn.run(
         "main:app",
