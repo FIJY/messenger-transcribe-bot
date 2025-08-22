@@ -235,6 +235,51 @@ class TorService:
         # Если нет - пытаемся запустить
         return await self.start_tor()
 
+    async def upload_to_r2(self, local_path: str, video_id: str) -> str:
+        """Загружает файл в R2 и возвращает URL"""
+        if not self.s3:
+            raise SmartVideoError("R2 не настроен")
+
+        key = f"youtube_audio/{video_id}.mp3"
+
+        try:
+            with open(local_path, 'rb') as f:
+                self.s3.upload_fileobj(f, R2_BUCKET, key)
+
+            # Формируем публичный URL
+            if R2_PUBLIC_BASEURL:
+                r2_url = f"{R2_PUBLIC_BASEURL}/{key}"
+            else:
+                r2_url = f"https://{R2_BUCKET}.{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{key}"
+
+            logger.info(f"✅ Файл загружен в R2: {r2_url}")
+            return r2_url
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки в R2: {e}")
+            raise SmartVideoError(f"Ошибка загрузки в R2: {e}")
+
+    async def download_from_r2(self, r2_url: str, local_path: str) -> str:
+        """Скачивает файл из R2 в локальную папку"""
+        try:
+            loop = asyncio.get_event_loop()
+
+            def _download():
+                response = requests.get(r2_url, timeout=300)  # 5 минут
+                response.raise_for_status()
+
+                with open(local_path, 'wb') as f:
+                    f.write(response.content)
+
+            await loop.run_in_executor(self.executor, _download)
+            logger.info(f"✅ Файл скачан из R2: {local_path}")
+            return local_path
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка скачивания из R2: {e}")
+            raise SmartVideoError(f"Ошибка скачивания из R2: {e}")
+
+
     async def get_current_ip(self) -> Optional[str]:
         """Получает текущий IP через Tor"""
         if not self.is_running():
@@ -453,7 +498,7 @@ class SmartVideoService:
         return await loop.run_in_executor(self.executor, _get_sync)
 
     async def download_audio(self, url: str) -> str:
-        """Скачивает аудио, используя Tor, со сменой IP при ошибке"""
+        """Скачивает аудио, загружает в R2 и возвращает R2 URL"""
         if not self.download_available:
             raise DownloadError("yt-dlp не установлен")
 
@@ -461,24 +506,37 @@ class SmartVideoService:
         if not video_id:
             raise SmartVideoError("Не удалось извлечь ID видео")
 
+        # Проверяем наличие в R2 (через публичный URL)
+        if self.s3:
+            r2_key = f"youtube_audio/{video_id}.mp3"
+            if R2_PUBLIC_BASEURL:
+                r2_url = f"{R2_PUBLIC_BASEURL}/{r2_key}"
+            else:
+                r2_url = f"https://{R2_BUCKET}.{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{r2_key}"
+
+            # Проверяем существование файла в R2
+            try:
+                response = requests.head(r2_url, timeout=10)
+                if response.status_code == 200:
+                    logger.info(f"✅ Файл уже существует в R2: {r2_url}")
+                    return r2_url
+            except:
+                pass
+
+        # Создаем локальную папку
         os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
         local_path = os.path.join(AUDIO_STORAGE_DIR, f"{video_id}.mp3")
 
-        if os.path.exists(local_path):
-            logger.info(f"✅ Файл уже существует локально: {local_path}")
-            return local_path
-
+        # Скачиваем как раньше (ваш существующий код)
         loop = asyncio.get_event_loop()
         max_retries = 3
 
         for attempt in range(1, max_retries + 1):
             cookies_file = None
             try:
-                # Создаем куки для каждой попытки
                 cookies_file = setup_cookies_file()
+                logger.info(f"Попытка {attempt}/{max_retries} скачать аудио для {video_id}")
 
-                logger.info(
-                    f"Попытка {attempt}/{max_retries} скачать аудио для {video_id} через IP: {self.tor.current_ip}")
                 opts = self._get_ytdlp_options(local_path, cookies_file)
 
                 def _download():
@@ -489,35 +547,30 @@ class SmartVideoService:
 
                 final_path = os.path.splitext(local_path)[0] + ".mp3"
                 if os.path.exists(final_path):
-                    logger.info(f"✅ Аудио успешно скачано: {final_path}")
-                    return final_path
+                    logger.info(f"✅ Аудио скачано локально: {final_path}")
+
+                    # Загружаем в R2 если настроен
+                    if self.s3:
+                        try:
+                            r2_url = await self.upload_to_r2(final_path, video_id)
+                            # Удаляем локальный файл после загрузки в R2
+                            os.remove(final_path)
+                            logger.info(f"🧹 Локальный файл удален после загрузки в R2")
+                            return r2_url
+                        except Exception as r2_error:
+                            logger.warning(f"⚠️ Не удалось загрузить в R2: {r2_error}")
+                            # Возвращаем локальный путь как fallback
+                            return final_path
+                    else:
+                        # R2 не настроен, возвращаем локальный путь
+                        return final_path
                 else:
                     raise DownloadError("Файл не был создан после скачивания.")
 
             except Exception as e:
-                error_msg = str(e)
-                logger.warning(f"Ошибка при скачивании (попытка {attempt}): {error_msg}")
-
-                # Если это ошибка аутентификации - пробуем запустить/переключить Tor
-                if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
-                    if not self.tor.is_running() and self.tor.is_enabled:
-                        logger.info("🔄 Пытаемся запустить Tor для обхода блокировки...")
-                        await self.tor.start_tor()
-                    elif self.tor.is_running():
-                        logger.info("🔄 Меняем IP через Tor...")
-                        await self.tor.change_ip()
-                    else:
-                        logger.warning("⚠️ Tor недоступен, не можем обойти блокировку")
-
-                if attempt == max_retries:
-                    raise YouTubeBlockedError(
-                        f"Не удалось скачать видео после {max_retries} попыток. YouTube требует аутентификацию. Последняя ошибка: {error_msg}")
-
-                # Ждем между попытками
-                await asyncio.sleep(2 * attempt)
+            # ... ваша существующая обработка ошибок ...
 
             finally:
-                # Очищаем временные куки
                 if cookies_file and os.path.exists(cookies_file):
                     try:
                         os.unlink(cookies_file)

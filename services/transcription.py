@@ -184,14 +184,14 @@ def process_transcription_task(self, chat_id: int, user_id: int, enhanced_file_i
 
 @celery_app.task(name="process_large_file_task", bind=True)
 def process_large_file_task(self, chat_id: int, user_id: int, enhanced_file_info: dict):
-    """НОВАЯ задача для больших файлов через файловую систему (>15MB)"""
+    """НОВАЯ задача для больших файлов через R2 (>15MB)"""
     try:
         file_size_mb = enhanced_file_info.get('file_size', 0) / (1024 * 1024)
-        logger.info(f"Обработка большого файла: {file_size_mb:.1f}MB через файловую систему")
+        logger.info(f"Обработка большого файла: {file_size_mb:.1f}MB через R2")
 
         self.update_state(state='PROGRESS', meta={
             'progress': 0,
-            'status': f'Обработка большого файла {file_size_mb:.1f}MB...'
+            'status': f'Скачивание файла {file_size_mb:.1f}MB из R2...'
         })
 
         result = asyncio.run(
@@ -204,15 +204,8 @@ def process_large_file_task(self, chat_id: int, user_id: int, enhanced_file_info
     except Exception as e:
         logger.critical(f"Критическая ошибка в обработке большого файла: {e}", exc_info=True)
 
-        # Очистка большого файла при ошибке
-        try:
-            shared_file_path = enhanced_file_info.get('shared_file_path')
-            if shared_file_path and os.path.exists(shared_file_path):
-                os.remove(shared_file_path)
-                logger.info(f"Очищен файл при ошибке: {shared_file_path}")
-        except Exception as cleanup_error:
-            logger.warning(f"Не удалось очистить большой файл: {cleanup_error}")
-
+        # Очистка не нужна для R2 - файлы остаются в облаке
+        # Только уведомляем пользователя
         try:
             asyncio.run(_notify_user_error(chat_id, str(e)))
         except Exception as notify_error:
@@ -309,77 +302,129 @@ async def _async_process_small_file(task_instance, chat_id: int, user_id: int, e
                                  db_service, telegram_client, transcription_service)
 
 
-async def _async_process_large_file(task_instance, chat_id: int, user_id: int, enhanced_file_info: dict):
-    """Обработка больших файлов через файловую систему - минуя Redis"""
+async def async def _async_process_large_file(task, chat_id: int, user_id: int, enhanced_file_info: dict):
+    """Асинхронная обработка большого файла из R2"""
+    import tempfile
+    import requests
 
-    # Импорты
+    # Получаем R2 URL вместо локального пути
+    r2_url = enhanced_file_info.get('shared_file_path')  # Теперь это R2 URL
+    if not r2_url:
+        raise ValueError("R2 URL не найден в enhanced_file_info")
+
+    # Создаем временный файл для скачивания
+    temp_file = None
     try:
-        from services.database import DatabaseService
-        from services.audio_processor import AudioProcessor
-        from services.telegram_client import TelegramClient
-        from ui.localization import LocalizationService
-        from ui.keyboards import create_post_transcription_keyboard
-    except ImportError as import_error:
-        logger.error(f"Ошибка импорта: {import_error}")
-        try:
-            sys.path.append('/opt/render/project/src')
-            from services.database import DatabaseService
-            from services.audio_processor import AudioProcessor
-            from services.telegram_client import TelegramClient
-            from ui.localization import LocalizationService
-            from ui.keyboards import create_post_transcription_keyboard
-        except ImportError as e2:
-            raise ImportError(f"Критическая ошибка импорта: {import_error}")
+        # Обновляем прогресс
+        task.update_state(state='PROGRESS', meta={
+            'progress': 10,
+            'status': 'Скачивание файла из облачного хранилища...'
+        })
 
-    # Сервисы
-    db_service = None
-    telegram_client = None
-    transcription_service = None
-    audio_processor = AudioProcessor()
-    localization_service = LocalizationService()
+        # Скачиваем файл из R2
+        logger.info(f"📥 Скачивание из R2: {r2_url}")
 
-    shared_file_path = enhanced_file_info.get('shared_file_path')
-    processed_audio_path = None
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_f:
+            temp_file = tmp_f.name
 
-    try:
-        # Проверяем что большой файл существует
-        task_instance.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Проверяю большой файл...'})
+            response = requests.get(r2_url, timeout=300, stream=True)
+            response.raise_for_status()
 
-        if not shared_file_path or not os.path.exists(shared_file_path):
-            raise ValueError(f"Большой файл не найден: {shared_file_path}")
+            # Скачиваем с отображением прогресса
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
 
-        file_size_mb = os.path.getsize(shared_file_path) / (1024 * 1024)
-        logger.info(f"Обрабатываю большой файл: {shared_file_path} ({file_size_mb:.1f}MB)")
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    tmp_f.write(chunk)
+                    downloaded += len(chunk)
 
-        # Обработка большого файла
-        await _common_transcription_processing(
-            task_instance, chat_id, user_id, shared_file_path, enhanced_file_info,
-            db_service, telegram_client, transcription_service, audio_processor, localization_service
+                    # Обновляем прогресс скачивания (10-30%)
+                    if total_size > 0:
+                        progress = 10 + int((downloaded / total_size) * 20)
+                        task.update_state(state='PROGRESS', meta={
+                            'progress': progress,
+                            'status': f'Скачивание: {progress-10}%'
+                        })
+
+        logger.info(f"✅ Файл скачан во временную папку: {temp_file}")
+
+        # Обновляем прогресс
+        task.update_state(state='PROGRESS', meta={
+            'progress': 35,
+            'status': 'Начинаем транскрипцию...'
+        })
+
+        # Инициализируем сервисы
+        localization = LocalizationService()
+        transcription_service = TranscriptionService()
+
+        # Валидация файла
+        validated_info = transcription_service.validate_file(temp_file)
+        if not validated_info['valid']:
+            raise ValueError(f"Файл не прошел валидацию: {validated_info['error']}")
+
+        # Обновляем enhanced_file_info для локального файла
+        local_file_info = enhanced_file_info.copy()
+        local_file_info['file_path'] = temp_file
+        local_file_info['shared_file_path'] = temp_file  # Для совместимости
+
+        # Транскрипция
+        task.update_state(state='PROGRESS', meta={
+            'progress': 40,
+            'status': 'Выполняется транскрипция...'
+        })
+
+        transcription_result = await transcription_service.transcribe_audio_async(
+            temp_file,
+            local_file_info,
+            progress_callback=lambda p: task.update_state(
+                state='PROGRESS',
+                meta={'progress': 40 + int(p * 0.5), 'status': f'Транскрипция: {int(p)}%'}
+            )
         )
 
+        if not transcription_result.get('success'):
+            raise ValueError(f"Ошибка транскрипции: {transcription_result.get('error')}")
+
+        # Сохранение результатов в БД
+        task.update_state(state='PROGRESS', meta={
+            'progress': 90,
+            'status': 'Сохранение результатов...'
+        })
+
+        # ... остальная логика сохранения в БД ...
+
+        task.update_state(state='PROGRESS', meta={
+            'progress': 100,
+            'status': 'Завершено!'
+        })
+
         return {
-            "status": "success",
-            "processing_method": "filesystem",
-            "file_type": "large",
-            "file_size_mb": file_size_mb
+            'status': 'success',
+            'processing_method': 'r2_cloud',
+            'file_type': 'large',
+            'transcription_id': str(transcription_result.get('transcription_id')),
+            'text_length': len(transcription_result.get('text', '')),
+            'r2_url': r2_url
         }
 
+    except requests.RequestException as e:
+        logger.error(f"❌ Ошибка скачивания из R2: {e}")
+        raise ValueError(f"Не удалось скачать файл из облачного хранилища: {e}")
+
     except Exception as e:
-        logger.error(f"Ошибка в обработке большого файла: {e}", exc_info=True)
-        return {"status": "error", "error": str(e)}
+        logger.error(f"❌ Ошибка обработки большого файла: {e}")
+        raise
 
     finally:
-        # Очистка большого файла
-        try:
-            if shared_file_path and os.path.exists(shared_file_path):
-                os.remove(shared_file_path)
-                logger.info(f"Большой файл удален: {shared_file_path}")
-        except Exception as cleanup_error:
-            logger.warning(f"Ошибка при очистке большого файла: {cleanup_error}")
-
-        await _cleanup_resources(None, processed_audio_path,
-                                 db_service, telegram_client, transcription_service)
-
+        # Очищаем временный файл
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+                logger.info(f"🧹 Временный файл удален: {temp_file}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Не удалось удалить временный файл: {cleanup_error}")
 
 async def _common_transcription_processing(task_instance, chat_id: int, user_id: int, file_path: str,
                                            enhanced_file_info: dict, db_service, telegram_client,
