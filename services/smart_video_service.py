@@ -293,24 +293,45 @@ class SmartVideoService:
                 except:
                     pass
 
-    def _get_ytdlp_options(self, output_path: str) -> Dict:
-        """Формирует опции для yt-dlp"""
+    def _get_ytdlp_options(self, output_path: str = None, cookies_file: str = None) -> Dict:
+        """Формирует опции для yt-dlp с поддержкой кукков"""
         opts = {
             "format": "bestaudio/best",
-            "outtmpl": output_path.replace(".mp3", "") + ".%(ext)s",
-            "quiet": True,
+            "quiet": False,  # Включаем логи для отладки
             "noprogress": True,
-            "no_warnings": True,
+            "no_warnings": False,
             "noplaylist": True,
             "retries": 3,
-            "postprocessors": [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
+            "http_headers": {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate'
+            },
+            "extractor_retries": 3,
+            "fragment_retries": 3,
         }
+
+        if output_path:
+            opts.update({
+                "outtmpl": output_path.replace(".mp3", "") + ".%(ext)s",
+                "postprocessors": [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            })
+
+        # Добавляем куки если есть
+        if cookies_file and os.path.exists(cookies_file):
+            opts['cookiefile'] = cookies_file
+            logger.info(f"🍪 Используем куки для скачивания: {cookies_file}")
+
+        # Добавляем прокси если Tor запущен
         if self.tor.is_running():
             opts["proxy"] = YT_PROXY
+            logger.info(f"🌐 Используем Tor прокси: {YT_PROXY}")
+
         return opts
 
     async def get_transcript_text(self, video_id: str, languages: List[str]) -> str:
