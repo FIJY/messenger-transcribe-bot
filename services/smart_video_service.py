@@ -1,5 +1,4 @@
 # services/smart_video_service.py
-# Полная версия: YT -> (Tor/proxy/invidious) -> локально -> R2 cache -> возвращаем локальный путь + r2_url в метаданных
 import os
 import re
 import time
@@ -9,12 +8,26 @@ import tempfile
 import asyncio
 from typing import Optional, Dict, Any, Tuple, List
 from concurrent.futures import ThreadPoolExecutor
-from services.tor_youtube_service import TorYouTubeService
 
-# Добавьте в начало smart_video_service.py
+# ==== Диагностика импортов ====
+try:
+    import yt_dlp
+    _yt_dlp_ok = True
+except Exception:
+    yt_dlp = None
+    _yt_dlp_ok = False
 
-import tempfile
-import os
+try:
+    import requests
+    from stem import Signal
+    from stem.control import Controller
+    _tor_ok = True
+except Exception:
+    requests = None
+    Signal = None
+    Controller = None
+    _tor_ok = False
+
 
 
 def setup_cookies_file():
@@ -150,6 +163,11 @@ logger = logging.getLogger(__name__)
 # ==== Хранилище для локальных аудио (временное) ====
 AUDIO_STORAGE_DIR = os.environ.get("AUDIO_STORAGE_DIR", "/tmp/youtube_audio")
 MAX_FILE_AGE_SECONDS = int(os.environ.get("AUDIO_MAX_AGE_SEC", "86400"))  # 24h
+USE_TOR = os.getenv("USE_TOR", "true").lower() == "true"
+TOR_SOCKS_PORT = int(os.getenv("TOR_PORT", "9050"))
+TOR_CONTROL_PORT = int(os.getenv("TOR_CONTROL_PORT", "9051"))
+YT_PROXY = os.getenv("YT_PROXY", f"socks5://127.0.0.1:{TOR_SOCKS_PORT}")
+
 
 # ==== R2 окружение ====
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "")
@@ -217,179 +235,80 @@ class YouTubeBlockedError(SmartVideoError):
 
 
 class TorService:
-    """Tor сервис для обхода блокировок YouTube"""
+    """Сервис для УПРАВЛЕНИЯ уже запущенным Tor"""
 
-    def __init__(self, tor_port: int = TOR_PORT, control_port: int = TOR_CONTROL_PORT):
+    def __init__(self, tor_port: int, control_port: int):
         self.tor_port = tor_port
         self.control_port = control_port
-        self.tor_process = None
-        self.last_ip_change = 0
         self.current_ip = None
         self.is_enabled = USE_TOR and _tor_ok
-        self.is_connected_to_existing = False # <-- ИЗМЕНЕНИЕ: Флаг для подключения к существующему Tor
+        self._is_running = False
 
-    # <-- ИЗМЕНЕНИЕ: Новый асинхронный метод для проверки существующего Tor
-    async def _connect_to_existing_tor(self) -> bool:
-        """Проверяет, запущен ли Tor на нужном порту, и подключается к нему."""
+    async def initialize(self) -> bool:
+        """Проверяет, запущен ли Tor, и получает IP"""
         if not self.is_enabled:
             return False
+
+        logger.info("Проверяем доступность Tor...")
         try:
-            # Проверяем, открыт ли порт
-            reader, writer = await asyncio.open_connection('127.0.0.1', self.tor_port)
+            # Проверяем, открыт ли SOCKS порт
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection('127.0.0.1', self.tor_port),
+                timeout=5
+            )
             writer.close()
             await writer.wait_closed()
-            logger.info(f"✅ Обнаружен открытый порт {self.tor_port}. Проверяем, является ли он Tor...")
-
-            # Тестируем соединение, чтобы убедиться, что это рабочий Tor-прокси
-            if await self._test_tor_connection():
-                logger.info(f"✅ Успешно подключились к существующему Tor. IP: {self.current_ip}")
-                self.is_connected_to_existing = True
-                return True
-            else:
-                logger.warning(f"⚠️ Порт {self.tor_port} открыт, но это не рабочий Tor-прокси.")
-                return False
-        except ConnectionRefusedError:
-            return False # Порт закрыт, это нормально
-        except Exception as e:
-            logger.warning(f"Ошибка при проверке существующего Tor: {e}")
-            return False
-
-    # <-- ИЗМЕНЕНИЕ: Логика запуска теперь сначала проверяет существующий Tor
-    async def start_tor(self) -> bool:
-        """Запускает Tor или подключается к существующему"""
-        if not self.is_enabled:
-            return False
-
-        # 1. Попытка подключиться к уже запущенному Tor
-        if await self._connect_to_existing_tor():
-            logger.info("🧅 Используем уже запущенный Tor")
+            logger.info(f"✅ Tor SOCKS порт {self.tor_port} доступен.")
+            self._is_running = True
+            await self.get_current_ip() # Получаем начальный IP
             return True
-
-        # 2. Если не удалось, запускаем свой собственный процесс
-        logger.info("🔍 Существующий Tor не найден, запускаем свой процесс...")
-        try:
-            result = subprocess.run(['which', 'tor'], capture_output=True)
-            if result.returncode != 0:
-                logger.error("❌ Tor не установлен. Установите: apt-get install tor")
-                return False
-
-            await self._create_tor_config()
-            logger.info(f"🧅 Запускаем Tor на портах {self.tor_port}/{self.control_port}")
-            self.tor_process = subprocess.Popen(
-                ['tor', '-f', '/tmp/torrc', '--quiet'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-            await asyncio.sleep(15)
-
-            if await self._test_tor_connection():
-                logger.info(f"✅ Tor запущен успешно, IP: {self.current_ip}")
-                return True
-            else:
-                logger.error("❌ Tor запустился, но соединение не работает")
-                self.stop()
-                return False
+        except (ConnectionRefusedError, asyncio.TimeoutError):
+            logger.error(f"❌ Tor SOCKS порт {self.tor_port} недоступен. Убедитесь, что Tor запущен.")
+            self._is_running = False
+            return False
         except Exception as e:
-            logger.error(f"❌ Ошибка запуска Tor: {e}")
+            logger.error(f"Неизвестная ошибка при проверке Tor: {e}")
+            self._is_running = False
             return False
 
-    async def _create_tor_config(self):
-        """Создает конфигурацию Tor"""
-        config = f"""
-SocksPort {self.tor_port}
-ControlPort {self.control_port}
-DataDirectory /tmp/tor_data
-ExitNodes {{us}},{{de}},{{nl}},{{se}},{{ch}},{{fr}},{{ca}}
-StrictNodes 0
-NewCircuitPeriod 300
-MaxCircuitDirtiness 300
-CircuitBuildTimeout 10
-LearnCircuitBuildTimeout 0
-"""
-        os.makedirs('/tmp/tor_data', exist_ok=True, mode=0o700)
-        with open('/tmp/torrc', 'w') as f:
-            f.write(config)
-
-    # <-- ИЗМЕНЕНИЕ: Метод сделан асинхронным для корректной работы
-    async def _test_tor_connection(self) -> bool:
-        """Тестирует Tor соединение асинхронно"""
+    async def get_current_ip(self) -> Optional[str]:
+        """Получает текущий IP через Tor"""
+        if not self.is_running():
+            return None
         try:
             loop = asyncio.get_event_loop()
-            proxies = {
-                'http': f'socks5://127.0.0.1:{self.tor_port}',
-                'https': f'socks5://127.0.0.1:{self.tor_port}'
-            }
-            # Выполняем синхронный requests в отдельном потоке, чтобы не блокировать asyncio
+            proxies = {'http': YT_PROXY, 'https': YT_PROXY}
             response = await loop.run_in_executor(
                 None,
-                lambda: requests.get('https://httpbin.org/ip', proxies=proxies, timeout=30)
+                lambda: requests.get('https://api.ipify.org?format=json', proxies=proxies, timeout=15)
             )
-            if response.status_code == 200:
-                ip_data = response.json()
-                self.current_ip = ip_data.get('origin', 'unknown')
-                return True
-            return False
+            response.raise_for_status()
+            self.current_ip = response.json().get("ip")
+            logger.info(f"🌐 Текущий IP через Tor: {self.current_ip}")
+            return self.current_ip
         except Exception as e:
-            logger.warning(f"Ошибка тестирования Tor: {e}")
-            return False
+            logger.warning(f"Не удалось получить IP через Tor: {e}")
+            return None
 
     async def change_ip(self) -> bool:
-        """Принудительно меняет IP через Tor"""
+        """Отправляет сигнал NEWNYM для смены IP"""
         if not self.is_running():
             return False
+        logger.info("🔄 Запрашиваем новый IP у Tor...")
         try:
-            logger.info("🔄 Меняем IP через Tor...")
             with Controller.from_port(port=self.control_port) as controller:
                 controller.authenticate()
                 controller.signal(Signal.NEWNYM)
-            await asyncio.sleep(10)
-            old_ip = self.current_ip
-            if await self._test_tor_connection():
-                if self.current_ip != old_ip:
-                    logger.info(f"✅ IP изменен: {old_ip} → {self.current_ip}")
-                    self.last_ip_change = time.time()
-                    return True
-                else:
-                    logger.warning("⚠️ IP не изменился, повторяем...")
-                    return False
-            return False
+            await asyncio.sleep(10) # Даем время на смену цепочки
+            await self.get_current_ip()
+            return True
         except Exception as e:
             logger.error(f"❌ Ошибка смены IP: {e}")
             return False
 
-    def get_proxy_config(self) -> Optional[str]:
-        """Возвращает строку прокси для yt-dlp"""
-        if self.is_running():
-            return f'socks5://127.0.0.1:{self.tor_port}'
-        return None
-
-    def get_requests_proxies(self) -> Optional[dict]:
-        """Возвращает прокси для requests"""
-        if self.is_running():
-            return {
-                'http': f'socks5://127.0.0.1:{self.tor_port}',
-                'https': f'socks5://127.0.0.1:{self.tor_port}'
-            }
-        return None
-
-    async def stop(self):
-        """Останавливает Tor"""
-        if self.tor_process:
-            logger.info("🛑 Останавливаем Tor...")
-            self.tor_process.terminate()
-            self.tor_process.wait()
-            self.tor_process = None
-
-    # <-- ИЗМЕНЕНИЕ: Логика проверки теперь учитывает оба сценария
     def is_running(self) -> bool:
-        """Проверяет, запущен ли Tor или мы к нему подключены"""
-        is_process_running = self.tor_process is not None and self.tor_process.poll() is None
-        return self.is_connected_to_existing or is_process_running
+        return self._is_running
 
-# ... остальная часть файла без изменений ...
-# (Код ниже этой строки остается прежним)
-# ...
-# ...
-# ...
 
 def _r2_enabled() -> bool:
     return all([_boto_ok, R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY])
@@ -425,46 +344,182 @@ def cleanup_old_audio_files():
             logger.warning(f"Не удалось удалить {filepath}: {e}")
 
 
+# services/smart_video_service.py
+import os
+import re
+import time
+import hashlib
+import logging
+import tempfile
+import asyncio
+from typing import Optional, Dict, Any, Tuple, List
+from concurrent.futures import ThreadPoolExecutor
+
+# ==== Диагностика импортов (мягкая, без падения) ====
+try:
+    import yt_dlp
+    _yt_dlp_ok = True
+except Exception:
+    yt_dlp = None
+    _yt_dlp_ok = False
+
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi
+    from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled
+    _yta_ok = True
+except Exception:
+    YouTubeTranscriptApi = None
+    NoTranscriptFound = Exception
+    TranscriptsDisabled = Exception
+    _yta_ok = False
+
+try:
+    import boto3
+    from botocore.client import Config
+    _boto_ok = True
+except Exception:
+    boto3 = None
+    Config = None
+    _boto_ok = False
+
+try:
+    import requests
+    from stem import Signal
+    from stem.control import Controller
+    _tor_ok = True
+except Exception:
+    requests = None
+    Signal = None
+    Controller = None
+    _tor_ok = False
+
+logger = logging.getLogger(__name__)
+
+# ==== Настройки ====
+AUDIO_STORAGE_DIR = os.environ.get("AUDIO_STORAGE_DIR", "/tmp/youtube_audio")
+USE_TOR = os.getenv("USE_TOR", "true").lower() == "true"
+TOR_SOCKS_PORT = int(os.getenv("TOR_PORT", "9050"))
+TOR_CONTROL_PORT = int(os.getenv("TOR_CONTROL_PORT", "9051"))
+YT_PROXY = os.getenv("YT_PROXY", f"socks5://127.0.0.1:{TOR_SOCKS_PORT}")
+
+R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "")
+R2_BUCKET = os.getenv("R2_BUCKET_NAME", "")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
+R2_PUBLIC_BASEURL = os.getenv("R2_PUBLIC_BASEURL", "")
+
+class SmartVideoError(Exception): pass
+class SubtitleNotFoundError(SmartVideoError): pass
+class DownloadError(SmartVideoError): pass
+class YouTubeBlockedError(SmartVideoError): pass
+
+class TorService:
+    """Сервис для УПРАВЛЕНИЯ уже запущенным Tor"""
+
+    def __init__(self, tor_port: int, control_port: int):
+        self.tor_port = tor_port
+        self.control_port = control_port
+        self.current_ip = None
+        self.is_enabled = USE_TOR and _tor_ok
+        self._is_running = False
+
+    async def initialize(self) -> bool:
+        """Проверяет, запущен ли Tor, и получает IP"""
+        if not self.is_enabled:
+            return False
+
+        logger.info("Проверяем доступность Tor...")
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection('127.0.0.1', self.tor_port),
+                timeout=10
+            )
+            writer.close()
+            await writer.wait_closed()
+            logger.info(f"✅ Tor SOCKS порт {self.tor_port} доступен.")
+            self._is_running = True
+            await self.get_current_ip()
+            return True
+        except (ConnectionRefusedError, asyncio.TimeoutError):
+            logger.error(f"❌ Tor SOCKS порт {self.tor_port} недоступен. Убедитесь, что Tor запущен в Docker.")
+            self._is_running = False
+            return False
+        except Exception as e:
+            logger.error(f"Неизвестная ошибка при проверке Tor: {e}")
+            self._is_running = False
+            return False
+
+    async def get_current_ip(self) -> Optional[str]:
+        """Получает текущий IP через Tor"""
+        if not self.is_running():
+            return None
+        try:
+            loop = asyncio.get_event_loop()
+            proxies = {'http': YT_PROXY, 'https': YT_PROXY}
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.get('https://api.ipify.org?format=json', proxies=proxies, timeout=15)
+            )
+            response.raise_for_status()
+            self.current_ip = response.json().get("ip")
+            logger.info(f"🌐 Текущий IP через Tor: {self.current_ip}")
+            return self.current_ip
+        except Exception as e:
+            logger.warning(f"Не удалось получить IP через Tor: {e}")
+            return None
+
+    async def change_ip(self) -> bool:
+        """Отправляет сигнал NEWNYM для смены IP"""
+        if not self.is_running():
+            return False
+        logger.info("🔄 Запрашиваем новый IP у Tor...")
+        try:
+            with Controller.from_port(port=self.control_port) as controller:
+                controller.authenticate()
+                controller.signal(Signal.NEWNYM)
+            await asyncio.sleep(10)
+            await self.get_current_ip()
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка смены IP: {e}")
+            return False
+
+    def is_running(self) -> bool:
+        return self._is_running
+
 class SmartVideoService:
-    def __init__(self, temp_dir: Optional[str] = None, max_workers: int = 2):
-        self.temp_dir = temp_dir or tempfile.gettempdir()
-        self.executor = ThreadPoolExecutor(max_workers=max_workers)
-
-        self.subtitles_available = _yta_ok and (YouTubeTranscriptApi is not None)
-        self.download_available = _yt_dlp_ok and (yt_dlp is not None)
-
-        if not self.subtitles_available:
-            logger.warning("youtube-transcript-api не установлен. Субтитры недоступны.")
+    def __init__(self):
+        self.download_available = _yt_dlp_ok
+        self.subtitles_available = _yta_ok
+        self.s3 = self._init_r2_client()
+        self.tor = TorService(TOR_SOCKS_PORT, TOR_CONTROL_PORT)
+        self.executor = ThreadPoolExecutor(max_workers=2)
         if not self.download_available:
             logger.warning("yt-dlp не установлен. Загрузка аудио недоступна.")
 
-        self.s3 = _init_r2_client()
-        if self.s3 is None:
-            logger.warning("R2 не настроен: кеш в облаке отключён.")
-
-        # Инициализируем Tor сервис
-        self.tor = TorService()
-
-        logger.info(f"SmartVideoService: субтитры={'✅' if self.subtitles_available else '❌'}, "
-                    f"загрузка={'✅' if self.download_available else '❌'}, "
-                    f"R2={'✅' if self.s3 else '❌'}, "
-                    f"Tor={'✅' if self.tor.is_enabled else '❌'}")
-
     async def initialize(self):
-        """Инициализирует сервис (запускает Tor если нужно)"""
+        """Инициализирует сервис и проверяет Tor"""
         if self.tor.is_enabled:
-            logger.info("🧅 Инициализируем Tor для обхода блокировок...")
-            await self.tor.start_tor()
+            await self.tor.initialize()
 
-    # ========== Helpers ==========
+    def _init_r2_client(self):
+        if not all([_boto_ok, R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
+            return None
+        session = boto3.session.Session()
+        return session.client(
+            "s3",
+            endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+            config=Config(signature_version="s3v4"),
+            region_name="auto",
+        )
 
     @staticmethod
     def is_youtube_url(url: str) -> bool:
         youtube_patterns = [
             r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([^&\s]+)',
             r'(?:https?://)?(?:www\.)?youtu\.be/([^?\s]+)',
-            r'(?:https?://)?(?:m\.)?youtube\.com/watch\?v=([^&\s]+)',
-            r'(?:https?://)?(?:mobile\.)?youtube\.com/watch\?v=([^&\s]+)',
         ]
         for pattern in youtube_patterns:
             if re.search(pattern, url, re.IGNORECASE):
@@ -473,549 +528,140 @@ class SmartVideoService:
 
     @staticmethod
     def extract_video_id(url: str) -> Optional[str]:
-        patterns = [
-            r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})',
-            r'/embed/([a-zA-Z0-9_-]{11})',
-            r'/v/([a-zA-Z0-9_-]{11})',
-            r'watch\?v=([a-zA-Z0-9_-]{11})',
-        ]
+        patterns = [r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})']
         for pattern in patterns:
             m = re.search(pattern, url)
-            if m:
-                return m.group(1)
+            if m: return m.group(1)
         return None
 
-    @staticmethod
-    def _sha1(s: str) -> str:
-        return hashlib.sha1(s.encode("utf-8")).hexdigest()
+    def _get_ytdlp_options(self, output_path: str) -> Dict:
+        """Формирует опции для yt-dlp"""
+        opts = {
+            "format": "bestaudio/best",
+            "outtmpl": output_path.replace(".mp3", "") + ".%(ext)s",
+            "quiet": True,
+            "noprogress": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "retries": 3,
+            "postprocessors": [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
+        if self.tor.is_running():
+            opts["proxy"] = YT_PROXY
+        return opts
 
-    def _r2_key_for_audio(self, video_id: str, codec: str = "mp3", abr: str = "192k") -> str:
-        # Ключ в R2: можно добавить префиксы/папки
-        return f"yt/{video_id}/{video_id}.{codec}"
+    async def get_transcript_text(self, video_id: str, languages: List[str]) -> str:
+        """Получает текст субтитров"""
+        if not self.subtitles_available:
+            raise SubtitleNotFoundError("Библиотека для субтитров не установлена.")
 
-    def _r2_url_for_key(self, key: str) -> Optional[str]:
-        if not self.s3:
-            return None
-        # Если есть публичный базовый URL (через Cloudflare/domain), формируем постоянную ссылку
-        if R2_PUBLIC_BASEURL:
-            return f"{R2_PUBLIC_BASEURL.rstrip('/')}/{key}"
-        # Иначе — временная пресайн-ссылка
-        try:
-            return self.s3.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": R2_BUCKET, "Key": key},
-                ExpiresIn=24 * 3600,
-            )
-        except Exception as e:
-            logger.warning(f"Не удалось создать presigned URL: {e}")
-            return None
-
-    def _r2_head(self, key: str) -> bool:
-        if not self.s3:
-            return False
-        try:
-            self.s3.head_object(Bucket=R2_BUCKET, Key=key)
-            return True
-        except Exception:
-            return False
-
-    def _r2_upload_file(self, local_path: str, key: str, content_type: str = "audio/mpeg") -> None:
-        if not self.s3:
-            return
-        try:
-            extra = {"ContentType": content_type, "ACL": "private"}
-            self.s3.upload_file(local_path, R2_BUCKET, key, ExtraArgs=extra)
-            logger.info(f"⬆️ Загружено в R2: s3://{R2_BUCKET}/{key}")
-        except Exception as e:
-            logger.error(f"Ошибка загрузки в R2: {e}")
-
-    # ========== Invidious API helpers ==========
-
-    async def _get_invidious_metadata(self, video_id: str) -> Optional[Dict]:
-        """Получает метаданные видео через Invidious API"""
-        for base in YT_INVIDIOUS_INSTANCES:
-            try:
-                url = f"{base.rstrip('/')}/api/v1/videos/{video_id}"
-                proxies = self.tor.get_requests_proxies()
-
-                response = requests.get(url, timeout=30, proxies=proxies)
-                if response.status_code == 200:
-                    return response.json()
-            except Exception as e:
-                logger.warning(f"Invidious API недоступен {base}: {e}")
-                continue
-        return None
-
-    async def _get_invidious_subtitles(self, video_id: str) -> Optional[str]:
-        """Получает субтитры через Invidious API"""
-        metadata = await self._get_invidious_metadata(video_id)
-        if not metadata:
-            return None
-
-        # Ищем субтитры
-        captions = metadata.get('captions', [])
-        if not captions:
-            return None
-
-        # Приоритет языков
-        preferred_langs = ['ru', 'en', 'en-US', 'ru-RU']
-        caption_url = None
-
-        # Сначала ищем предпочитаемые языки
-        for lang in preferred_langs:
-            for caption in captions:
-                if caption.get('languageCode', '').startswith(lang):
-                    caption_url = caption.get('url')
+        def _get_sync():
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript = None
+            for lang in languages:
+                try:
+                    transcript = transcript_list.find_transcript([lang])
                     break
-            if caption_url:
-                break
-
-        # Если не нашли, берем первые доступные
-        if not caption_url and captions:
-            caption_url = captions[0].get('url')
-
-        if not caption_url:
-            return None
-
-        # Скачиваем субтитры
-        try:
-            # Обычно это относительный URL, добавляем базу
-            if caption_url.startswith('/'):
-                for base in YT_INVIDIOUS_INSTANCES:
-                    try:
-                        full_url = f"{base.rstrip('/')}{caption_url}"
-                        proxies = self.tor.get_requests_proxies()
-                        response = requests.get(full_url, timeout=30, proxies=proxies)
-                        if response.status_code == 200:
-                            return self._parse_vtt_subtitles(response.text)
-                    except Exception:
-                        continue
-            else:
-                proxies = self.tor.get_requests_proxies()
-                response = requests.get(caption_url, timeout=30, proxies=proxies)
-                if response.status_code == 200:
-                    return self._parse_vtt_subtitles(response.text)
-
-        except Exception as e:
-            logger.warning(f"Ошибка загрузки субтитров через Invidious: {e}")
-
-        return None
-
-    def _parse_vtt_subtitles(self, vtt_content: str) -> str:
-        """Парсит VTT субтитры в простой текст"""
-        lines = vtt_content.split('\n')
-        text_parts = []
-
-        for line in lines:
-            line = line.strip()
-            # Пропускаем заголовки VTT и временные метки
-            if (line and
-                    not line.startswith('WEBVTT') and
-                    not line.startswith('NOTE') and
-                    not '-->' in line and
-                    not line.isdigit() and
-                    not re.match(r'^\d+:\d+', line)):
-
-                # Очистка от HTML тегов
-                clean_line = re.sub(r'<[^>]+>', '', line)
-                if clean_line.strip():
-                    text_parts.append(clean_line.strip())
-
-        full_text = ' '.join(text_parts)
-        # Легкая очистка
-        full_text = re.sub(r'\s+', ' ', full_text)
-        full_text = re.sub(r'\[[^\]]*\]|\([^)]*\)|♪[^♪]*♪', '', full_text)
-        full_text = re.sub(r'\s+', ' ', full_text).strip()
-
-        return full_text
-
-    # ========== Subtitles ==========
-
-    async def get_video_info(self, url: str) -> Dict[str, Any]:
-        if not self.is_youtube_url(url):
-            raise SmartVideoError("Поддерживается только YouTube")
-        video_id = self.extract_video_id(url)
-        if not video_id:
-            raise SmartVideoError("Не удалось извлечь ID видео")
-        return {"video_id": video_id, "url": url, "platform": "YouTube"}
-
-    async def get_transcript_text(self, url: str, languages: Optional[List[str]] = None) -> Tuple[str, str]:
-        if not self.is_youtube_url(url):
-            raise SmartVideoError("Поддерживается только YouTube")
-
-        video_id = self.extract_video_id(url)
-        if not video_id:
-            raise SmartVideoError("Не удалось извлечь ID видео")
-
-        if languages is None:
-            languages = ['ru', 'en', 'en-US', 'ru-RU']
-
-        # Сначала пробуем через обычный API
-        if self.subtitles_available:
-            try:
-                loop = asyncio.get_event_loop()
-                transcript_text = await loop.run_in_executor(
-                    self.executor,
-                    self._get_subtitles_sync,
-                    video_id,
-                    languages
-                )
-                logger.info(f"✅ Субтитры получены через API для {video_id}, длина: {len(transcript_text)} символов")
-                return transcript_text, 'subtitles'
-            except (NoTranscriptFound, TranscriptsDisabled) as e:
-                logger.info(f"❌ Субтитры через API не найдены для {video_id}: {e}")
-            except Exception as e:
-                logger.warning(f"Ошибка получения субтитров через API: {e}")
-
-        # Fallback через Invidious
-        logger.info(f"🔄 Пробуем получить субтитры через Invidious для {video_id}")
-        invidious_text = await self._get_invidious_subtitles(video_id)
-        if invidious_text and len(invidious_text.strip()) > 50:
-            logger.info(f"✅ Субтитры получены через Invidious для {video_id}, длина: {len(invidious_text)} символов")
-            return invidious_text, 'subtitles_invidious'
-
-        raise SubtitleNotFoundError(f"Субтитры не найдены ни через API, ни через Invidious")
-
-    def _get_subtitles_sync(self, video_id: str, languages: List[str]) -> str:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        transcript = None
-        for lang in languages:
-            try:
-                transcript = transcript_list.find_transcript([lang])
-                break
-            except NoTranscriptFound:
-                continue
-        if not transcript:
-            available_transcripts = list(transcript_list)
-            if available_transcripts:
-                transcript = available_transcripts[0]
-            else:
+                except NoTranscriptFound:
+                    continue
+            if not transcript:
                 raise NoTranscriptFound(video_id)
 
-        transcript_data = transcript.fetch()
-        text_parts = [item.get('text', '').strip() for item in transcript_data if item.get('text', '').strip()]
-        full_text = ' '.join(text_parts)
+            transcript_data = transcript.fetch()
+            text_parts = [item['text'] for item in transcript_data]
+            return ' '.join(text_parts)
 
-        # легкая очистка
-        full_text = re.sub(r'\s+', ' ', full_text)
-        full_text = re.sub(r'\[[^\]]*\]|\([^)]*\)|♪[^♪]*♪', '', full_text)
-        full_text = re.sub(r'\s+', ' ', full_text).strip()
-        return full_text
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self.executor, _get_sync)
 
-    # ========== Download (with R2 cache) ==========
-
-    async def download_audio_as_fallback(self, url: str, codec: str = "mp3", abr: str = "192") -> str:
-        """
-        Скачивает аудио локально (для транскрипции), параллельно пушит в R2 (кеш).
-        Возвращает локальный путь к .mp3.
-        """
+    async def download_audio(self, url: str) -> str:
+        """Скачивает аудио, используя Tor, со сменой IP при ошибке"""
         if not self.download_available:
             raise DownloadError("yt-dlp не установлен")
-        if not self.is_youtube_url(url):
-            raise SmartVideoError("Поддерживается только YouTube")
 
         video_id = self.extract_video_id(url)
         if not video_id:
             raise SmartVideoError("Не удалось извлечь ID видео")
 
         os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
-        cleanup_old_audio_files()
-
-        # Ключ в R2
-        r2_key = self._r2_key_for_audio(video_id, codec=codec)
-        r2_url_existing = self._r2_url_for_key(r2_key) if self._r2_head(r2_key) else None
-
-        # Локальный путь
         local_path = os.path.join(AUDIO_STORAGE_DIR, f"{video_id}.mp3")
 
-        # Уже скачан локально?
-        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-            logger.info(f"✅ Локальный файл уже есть: {local_path}")
-            # Если в R2 нет — зальем
-            if not r2_url_existing and self.s3:
-                self._r2_upload_file(local_path, r2_key, content_type="audio/mpeg")
+        if os.path.exists(local_path):
+            logger.info(f"✅ Файл уже существует локально: {local_path}")
             return local_path
 
-        # Автоматическая смена IP через Tor каждые 5 минут
-        if self.tor.is_running() and time.time() - self.tor.last_ip_change > 300:
-            await self.tor.change_ip()
-
-        # Иначе качаем.
         loop = asyncio.get_event_loop()
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"Попытка {attempt}/{max_retries} скачать аудио для {video_id} через IP: {self.tor.current_ip}")
+                opts = self._get_ytdlp_options(local_path)
+
+                def _download():
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        ydl.download([url])
+
+                await loop.run_in_executor(self.executor, _download)
+
+                final_path = os.path.splitext(local_path)[0] + ".mp3"
+                if os.path.exists(final_path):
+                    logger.info(f"✅ Аудио успешно скачано: {final_path}")
+                    return final_path
+                else:
+                    raise DownloadError("Файл не был создан после скачивания.")
+
+            except Exception as e:
+                logger.warning(f"Ошибка при скачивании (попытка {attempt}): {e}")
+                if attempt < max_retries:
+                    if self.tor.is_running():
+                        await self.tor.change_ip()
+                else:
+                    raise YouTubeBlockedError(f"Не удалось скачать видео после {max_retries} попыток. Последняя ошибка: {e}")
+
+        raise DownloadError("Неизвестная ошибка скачивания.")
+
+    async def get_text_smart(self, url: str) -> Tuple[str, str, Dict[str, Any]]:
+        """
+        Главный метод: сначала пытается получить субтитры, если не удается - скачивает аудио.
+        """
+        video_id = self.extract_video_id(url)
+        if not video_id:
+            raise SmartVideoError("Не удалось извлечь ID видео")
+
+        # 1. Попытка получить субтитры
         try:
-            path = await loop.run_in_executor(
-                self.executor,
-                self._download_audio_sync_with_fallbacks,
-                url,
-                local_path,
-                codec,
-                abr
-            )
-            # Успех → заливаем в R2
-            if self.s3:
-                self._r2_upload_file(path, r2_key, content_type="audio/mpeg")
-            return path
-        except YouTubeBlockedError as e:
-            logger.error(f"Блокировка YouTube/IP: {e}")
-            raise
+            text = await self.get_transcript_text(video_id, languages=['ru', 'en'])
+            logger.info(f"✅ Субтитры для {video_id} успешно получены.")
+            metadata = {'method': 'subtitles', 'video_id': video_id}
+            return text, 'subtitles', metadata
+        except (NoTranscriptFound, TranscriptsDisabled):
+            logger.info(f"Субтитры для {video_id} не найдены, переходим к скачиванию аудио.")
         except Exception as e:
-            logger.error(f"Ошибка загрузки аудио для {video_id}: {e}")
-            raise DownloadError(f"Не удалось загрузить аудио: {str(e)}")
+            logger.warning(f"Ошибка при получении субтитров для {video_id}: {e}. Переходим к аудио.")
 
-    def _download_audio_sync_with_fallbacks(self, url: str, local_path: str, codec: str, abr: str) -> str:
-        """
-        Порядок:
-        1) через Tor (если включен),
-        2) прямой YouTube (при наличии куки/прокси),
-        3) через Invidious инстансы.
-        """
-
-        # Базовые опции yt-dlp
-        def _base_opts(out_path: str) -> dict:
-            opts = {
-                "format": "bestaudio/best",
-                "outtmpl": out_path.replace(".mp3", "") + ".%(ext)s",
-                "quiet": True,
-                "noprogress": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "retries": 3,
-                "geo_bypass": True,
-                "user_agent": YT_DLP_UA,
-                "http_headers": {
-                    "Referer": "https://www.youtube.com/",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Accept": "*/*",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "Origin": "https://www.youtube.com",
-                    "Sec-Fetch-Dest": "empty",
-                    "Sec-Fetch-Mode": "cors",
-                    "Sec-Fetch-Site": "same-origin",
-                    "Pragma": "no-cache",
-                    "Cache-Control": "no-cache",
-                },
-                "postprocessors": [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': codec,
-                    'preferredquality': abr,
-                }],
-                "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
-                "concurrent_fragment_downloads": 1,
-                "socket_timeout": 60,
-            }
-            # Куки
-            if YT_COOKIES_FILE and os.path.exists(YT_COOKIES_FILE):
-                opts["cookiefile"] = YT_COOKIES_FILE
-            return opts
-
-        # 1) Через Tor (если запущен)
-        if self.tor.is_running():
-            tor_opts = _base_opts(local_path)
-            tor_proxy = self.tor.get_proxy_config()
-            if tor_proxy:
-                tor_opts["proxy"] = tor_proxy
-
-            try:
-                logger.info(f"🧅 Пробуем скачать через Tor: {self.tor.current_ip}")
-                with yt_dlp.YoutubeDL(tor_opts) as ydl:
-                    ydl.download([url])
-                final = self._resolve_final_mp3_path(local_path)
-                if not os.path.exists(final):
-                    raise DownloadError("yt-dlp (Tor) завершился без итогового файла")
-                logger.info(f"✅ Скачано через Tor: {final}")
-                return final
-            except Exception as e1:
-                msg = str(e1).lower()
-                logger.warning(f"⚠️ Tor путь не удался: {e1}")
-                # Если через Tor не получилось, пробуем сменить IP и повторить
-                if "403" in msg or "forbidden" in msg or "429" in msg:
-                    # Создаем новый event loop для синхронного контекста
-                    try:
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        ip_changed = loop.run_until_complete(self.tor.change_ip())
-                        loop.close()
-
-                        if ip_changed:
-                            try:
-                                logger.info(f"🔄 Повторяем через Tor с новым IP: {self.tor.current_ip}")
-                                with yt_dlp.YoutubeDL(tor_opts) as ydl:
-                                    ydl.download([url])
-                                final = self._resolve_final_mp3_path(local_path)
-                                if os.path.exists(final):
-                                    logger.info(f"✅ Скачано через Tor (повтор): {final}")
-                                    return final
-                            except Exception as e2:
-                                logger.warning(f"⚠️ Повтор через Tor тоже не удался: {e2}")
-                    except Exception as tor_error:
-                        logger.warning(f"⚠️ Ошибка смены IP через Tor: {tor_error}")
-
-        # 2) Прямой YouTube (если есть прокси или куки)
-        direct_opts = _base_opts(local_path)
-        if YT_PROXY:
-            direct_opts["proxy"] = YT_PROXY
-
-        try:
-            logger.info("🎬 Пробуем прямой YouTube")
-            with yt_dlp.YoutubeDL(direct_opts) as ydl:
-                ydl.download([url])
-            final = self._resolve_final_mp3_path(local_path)
-            if not os.path.exists(final):
-                raise DownloadError("yt-dlp завершился без итогового файла")
-            logger.info(f"✅ Скачано напрямую: {final}")
-            return final
-        except Exception as e1:
-            msg = str(e1).lower()
-            logger.warning(f"⚠️ Прямой путь не удался: {e1}")
-            if "403" in msg or "forbidden" in msg or "http error 429" in msg or "too many requests" in msg:
-                pass  # Переходим к Invidious
-
-        # 3) Через Invidious инстансы
-        return self._download_via_invidious(url, local_path, codec, abr)
-
-    def _download_via_invidious(self, url: str, local_path: str, codec: str, abr: str) -> str:
-        # Преобразуем youtube URL в invidious URLs и пытаемся по очереди
-        vid = self.extract_video_id(url)
-        if not vid:
-            raise DownloadError("Не удалось извлечь ID видео для Invidious")
-
-        last_err = None
-        for base in YT_INVIDIOUS_INSTANCES:
-            inv_url = f"{base.rstrip('/')}/watch?v={vid}"
-            opts = {
-                "format": "bestaudio/best",
-                "outtmpl": local_path.replace(".mp3", "") + ".%(ext)s",
-                "quiet": True,
-                "noprogress": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "retries": 2,
-                "user_agent": YT_DLP_UA,
-                "postprocessors": [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': codec,
-                    'preferredquality': abr,
-                }],
-                "concurrent_fragment_downloads": 1,
-                "socket_timeout": 45,
-            }
-
-            # Добавляем Tor прокси если доступен
-            tor_proxy = self.tor.get_proxy_config()
-            if tor_proxy:
-                opts["proxy"] = tor_proxy
-            elif YT_PROXY:
-                opts["proxy"] = YT_PROXY
-
-            try:
-                logger.info(f"🔄 Пробуем Invidious: {base}")
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([inv_url])
-                final = self._resolve_final_mp3_path(local_path)
-                if not os.path.exists(final):
-                    raise DownloadError("yt-dlp (Invidious) завершился без итогового файла")
-                logger.info(f"✅ Скачано через Invidious: {base}")
-                return final
-            except Exception as e:
-                last_err = e
-                logger.warning(f"⚠️ Invidious инстанс упал/недоступен: {base} → {e}")
-
-        if last_err:
-            raise YouTubeBlockedError(f"Не удалось скачать ни напрямую, ни через Invidious: {last_err}")
-        raise YouTubeBlockedError("Не удалось скачать ни напрямую, ни через Invidious (неизвестная ошибка)")
-
-    @staticmethod
-    def _resolve_final_mp3_path(local_path_requested: str) -> str:
-        """
-        yt-dlp пишет во временный файл с исходным расширением (.webm/.m4a),
-        затем постпроцессором конвертирует в mp3.
-        Ищем результат с .mp3.
-        """
-        base = os.path.splitext(local_path_requested)[0]
-        final = base + ".mp3"
-        return final
-
-    # ========== Smart entry ==========
-
-    async def get_text_smart(self, url: str, prefer_subtitles: bool = True) -> Tuple[str, str, Dict[str, Any]]:
-        """
-        1) Если есть субтитры → возвращаем текст, 'subtitles', метаданные.
-        2) Иначе → скачаем аудио локально, одновременно закешируем в R2, вернём локальный путь, 'audio_file', метаданные.
-           В метаданных будет r2_url (если R2 настроен) для быстрой отдачи клиенту.
-        """
-        if not self.is_youtube_url(url):
-            raise SmartVideoError("Поддерживается только YouTube")
-
-        info = await self.get_video_info(url)
-        video_id = info["video_id"]
-
-        # Сначала субтитры (если просили и есть библиотека)
-        if prefer_subtitles and (self.subtitles_available or USE_TOR):
-            try:
-                text, source = await self.get_transcript_text(url)
-                if text and len(text.strip()) > 50:
-                    return text, source, {
-                        'method': 'subtitles',
-                        'video_id': video_id,
-                        'platform': 'YouTube',
-                        'length': len(text),
-                        'words': len(text.split()),
-                        'source': source
-                    }
-            except SubtitleNotFoundError:
-                pass
-            except Exception as e:
-                logger.warning(f"Субтитры недоступны: {e}")
-
-        # Иначе — аудио
-        local_audio_path = await self.download_audio_as_fallback(url)
-        # Сформируем r2_url (если уже в R2), чтобы ты мог отправить клиенту
-        r2_url = None
-        if self.s3:
-            key = self._r2_key_for_audio(video_id)
-            if self._r2_head(key):
-                r2_url = self._r2_url_for_key(key)
-
-        return local_audio_path, 'audio_file', {
+        # 2. Если субтитры не найдены - скачиваем аудио
+        local_audio_path = await self.download_audio(url)
+        metadata = {
             'method': 'audio_download',
             'video_id': video_id,
-            'platform': 'YouTube',
             'audio_path': local_audio_path,
-            'requires_transcription': True,
-            'r2_url': r2_url,
             'tor_used': self.tor.is_running(),
-            'current_ip': self.tor.current_ip if self.tor.is_running() else None
+            'current_ip': self.tor.current_ip
         }
-
-    # ========== Cleanup / Context manager ==========
-
-    def cleanup_temp_files(self, file_path: str):
-        """Удаляет файл когда больше не нужен."""
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.debug(f"Файл удален: {file_path}")
-        except Exception as e:
-            logger.warning(f"Не удалось удалить {file_path}: {e}")
+        return local_audio_path, 'audio_file', metadata
 
     def get_capabilities(self) -> Dict[str, bool]:
+        """Возвращает информацию о возможностях сервиса"""
         return {
             'subtitles': self.subtitles_available,
-            'subtitles_invidious': True,  # Всегда доступно через Invidious API
             'audio_download': self.download_available,
-            'youtube_only': True,
-            'r2_cache': self.s3 is not None,
             'tor_available': self.tor.is_enabled,
             'tor_running': self.tor.is_running()
         }
-
-    async def __aenter__(self):
-        await self.initialize()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.tor.stop()
-        self.executor.shutdown(wait=True)
 
 
 # Удобная функция для инициализации
