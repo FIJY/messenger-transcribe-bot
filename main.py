@@ -105,6 +105,15 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Запуск TranscribeBot...")
 
     try:
+        # 0. ДОБАВЛЯЕМ ПРЕДЗАГРУЗКУ СИСТЕМЫ В САМОМ НАЧАЛЕ
+        logger.info("⚡ Запуск предзагрузки системы...")
+        try:
+            from services.smart_video_service import preload_system
+            await preload_system()
+            logger.info("⚡ Предзагрузка системы завершена")
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка предзагрузки (продолжаем): {e}")
+
         # 1. СНАЧАЛА инициализируем SmartVideoService (включая Tor)
         logger.info("🔧 Инициализация SmartVideoService...")
         try:
@@ -315,6 +324,29 @@ async def tor_status():
         "control_port": tor_service.control_port,
         "timestamp": datetime.now().isoformat()
     }
+
+
+# НОВЫЙ ENDPOINT для метрик производительности
+@app.get("/performance")
+async def performance_metrics():
+    """Метрики производительности YouTube загрузок"""
+    try:
+        if smart_video_service and hasattr(smart_video_service, 'performance_monitor'):
+            stats = smart_video_service.performance_monitor.get_stats()
+            return {
+                "youtube_downloads": stats,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "youtube_downloads": {"error": "Performance monitor not available"},
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        return {
+            "youtube_downloads": {"error": str(e)},
+            "timestamp": datetime.now().isoformat()
+        }
 
 
 # Запуск сервера для локального тестирования

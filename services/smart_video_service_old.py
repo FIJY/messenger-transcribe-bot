@@ -9,11 +9,12 @@ import asyncio
 from typing import Optional, Dict, Any, Tuple, List
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
-import signal
+import signal  # Добавить эту строку
 
 # ==== Диагностика импортов ====
 try:
     import yt_dlp
+
     _yt_dlp_ok = True
 except Exception:
     yt_dlp = None
@@ -22,6 +23,7 @@ except Exception:
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
     from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled
+
     _yta_ok = True
 except Exception:
     YouTubeTranscriptApi = None
@@ -32,6 +34,7 @@ except Exception:
 try:
     import boto3
     from botocore.client import Config
+
     _boto_ok = True
 except Exception:
     boto3 = None
@@ -42,6 +45,7 @@ try:
     import requests
     from stem import Signal
     from stem.control import Controller
+
     _tor_ok = True
 except Exception:
     requests = None
@@ -68,8 +72,14 @@ R2_PUBLIC_BASEURL = os.getenv("R2_PUBLIC_BASEURL", "")
 
 
 class SmartVideoError(Exception): pass
+
+
 class SubtitleNotFoundError(SmartVideoError): pass
+
+
 class DownloadError(SmartVideoError): pass
+
+
 class YouTubeBlockedError(SmartVideoError): pass
 
 
@@ -123,6 +133,9 @@ def get_yt_dlp_options(cookies_file=None):
     return options
 
 
+# ГЛАВНАЯ ПРОБЛЕМА: Tor запускается каждый раз заново
+# РЕШЕНИЕ: Tor должен стартовать ОДИН РАЗ при запуске приложения и работать постоянно
+
 class TorService:
     def __init__(self, tor_port: int, control_port: int):
         self.tor_port = tor_port
@@ -131,7 +144,7 @@ class TorService:
         self.is_enabled = USE_TOR and _tor_ok
         self._is_running = False
         self._tor_process = None
-        self._startup_complete = False
+        self._startup_complete = False  # Новый флаг
 
     async def initialize(self) -> bool:
         """Инициализация - проверяет или запускает Tor ОДИН РАЗ"""
@@ -206,7 +219,7 @@ class TorService:
                 preexec_fn=os.setsid  # Создаем новую группу процессов
             )
 
-            logger.info(f"📄 Tor запускается (PID: {self._tor_process.pid})...")
+            logger.info(f"🔄 Tor запускается (PID: {self._tor_process.pid})...")
 
             # Ждем готовности с уменьшенным таймаутом
             max_wait = 45  # Уменьшаем с 60 до 45 секунд
@@ -313,14 +326,15 @@ class TorService:
             logger.info("🛑 Tor остановлен")
 
 
+# ОСНОВНОЙ СЕРВИС - убираем повторные запуски Tor
+
 class SmartVideoService:
     def __init__(self):
         self.download_available = _yt_dlp_ok
         self.subtitles_available = _yta_ok
         self.s3 = self._init_r2_client()
         self.tor = TorService(TOR_SOCKS_PORT, TOR_CONTROL_PORT)
-        self.executor = ThreadPoolExecutor(max_workers=4)  # Увеличиваем пул
-        self._video_info_cache = {}  # Кэш для информации о видео
+        self.executor = ThreadPoolExecutor(max_workers=2)
         if not self.download_available:
             logger.warning("yt-dlp не установлен. Загрузка аудио недоступна.")
 
@@ -333,6 +347,30 @@ class SmartVideoService:
                 logger.info(f"🌐 Tor запущен. IP: {self.tor.current_ip}")
             else:
                 logger.warning("⚠️ Tor не удалось запустить, работаем без прокси")
+    async def upload_to_r2(self, local_path: str, video_id: str) -> str:
+        """Загружает файл в R2 и возвращает URL"""
+        if not self.s3:
+            raise SmartVideoError("R2 не настроен")
+
+        key = f"youtube_audio/{video_id}.mp3"
+
+        try:
+            with open(local_path, 'rb') as f:
+                self.s3.upload_fileobj(f, R2_BUCKET, key)
+
+            # Формируем публичный URL
+            if R2_PUBLIC_BASEURL:
+                r2_url = f"{R2_PUBLIC_BASEURL}/{key}"
+            else:
+                r2_url = f"https://{R2_BUCKET}.{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{key}"
+
+            logger.info(f"✅ Файл загружен в R2: {r2_url}")
+            return r2_url
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки в R2: {e}")
+            raise SmartVideoError(f"Ошибка загрузки в R2: {e}")
+
 
     def _init_r2_client(self):
         if not all([_boto_ok, R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
@@ -366,30 +404,10 @@ class SmartVideoService:
             if m: return m.group(1)
         return None
 
-    async def get_video_info_cached(self, url: str) -> Dict[str, Any]:
-        """Получение информации о видео с кэшированием"""
-        video_id = self.extract_video_id(url)
-
-        # Проверяем кэш
-        if video_id in self._video_info_cache:
-            logger.info(f"⚡ Информация из кэша: {video_id}")
-            return self._video_info_cache[video_id]
-
-        # Получаем информацию
-        info = await self.get_video_info(url)
-
-        # Кэшируем на 1 час
-        self._video_info_cache[video_id] = info
-
-        # Очищаем старый кэш
-        if len(self._video_info_cache) > 50:
-            oldest_key = next(iter(self._video_info_cache))
-            del self._video_info_cache[oldest_key]
-
-        return info
-
     async def get_video_info(self, url: str) -> Dict[str, Any]:
-        """Получает информацию о видео через yt-dlp"""
+        """
+        ДОБАВЛЕННЫЙ МЕТОД: Получает информацию о видео через yt-dlp
+        """
         if not self.download_available:
             raise DownloadError("yt-dlp не установлен")
 
@@ -492,13 +510,30 @@ class SmartVideoService:
         return await loop.run_in_executor(self.executor, _get_sync)
 
     async def download_audio(self, url: str) -> str:
-        """ИСПРАВЛЕННАЯ версия: НЕ загружает в R2, возвращает локальный файл"""
+        """Скачивает аудио, загружает в R2 и возвращает R2 URL"""
         if not self.download_available:
             raise DownloadError("yt-dlp не установлен")
 
         video_id = self.extract_video_id(url)
         if not video_id:
             raise SmartVideoError("Не удалось извлечь ID видео")
+
+        # Проверяем наличие в R2 (через публичный URL)
+        if self.s3:
+            r2_key = f"youtube_audio/{video_id}.mp3"
+            if R2_PUBLIC_BASEURL:
+                r2_url = f"{R2_PUBLIC_BASEURL}/{r2_key}"
+            else:
+                r2_url = f"https://{R2_BUCKET}.{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{r2_key}"
+
+            # Проверяем существование файла в R2
+            try:
+                response = requests.head(r2_url, timeout=10)
+                if response.status_code == 200:
+                    logger.info(f"✅ Файл уже существует в R2: {r2_url}")
+                    return r2_url
+            except:
+                pass
 
         # Создаем локальную папку
         os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
@@ -511,9 +546,9 @@ class SmartVideoService:
         for attempt in range(1, max_retries + 1):
             cookies_file = None
             try:
+                cookies_file = setup_cookies_file()
                 logger.info(f"Попытка {attempt}/{max_retries} скачать аудио для {video_id}")
 
-                cookies_file = setup_cookies_file()
                 opts = self._get_ytdlp_options(local_path, cookies_file)
 
                 def _download():
@@ -526,9 +561,21 @@ class SmartVideoService:
                 if os.path.exists(final_path):
                     logger.info(f"✅ Аудио скачано локально: {final_path}")
 
-                    # ИСПРАВЛЕНИЕ: НЕ загружаем в R2, возвращаем локальный путь
-                    logger.info(f"🚨 EMERGENCY MODE: R2 отключен, используем локальные файлы")
-                    return final_path
+                    # Загружаем в R2 если настроен
+                    if self.s3:
+                        try:
+                            r2_url = await self.upload_to_r2(final_path, video_id)
+                            # Удаляем локальный файл после загрузки в R2
+                            #os.remove(final_path)
+                            logger.info(f"🧹 Локальный файл удален после загрузки в R2")
+                            return r2_url
+                        except Exception as r2_error:
+                            logger.warning(f"⚠️ Не удалось загрузить в R2: {r2_error}")
+                            # Возвращаем локальный путь как fallback
+                            return final_path
+                    else:
+                        # R2 не настроен, возвращаем локальный путь
+                        return final_path
                 else:
                     raise DownloadError("Файл не был создан после скачивания.")
 
@@ -564,14 +611,16 @@ class SmartVideoService:
         raise DownloadError("Неизвестная ошибка скачивания.")
 
     async def enhanced_download_youtube_content(self, url: str) -> Dict[str, Any]:
-        """ИСПРАВЛЕННАЯ версия: сразу скачиваем аудио (пропускаем субтитры)"""
+        """
+        УПРОЩЕННЫЙ МЕТОД: Сразу скачиваем аудио, минуя субтитры
+        """
         video_id = self.extract_video_id(url)
         logger.info(f"🎬 Начинаем обработку видео {video_id}: {url}")
 
         try:
             # Получаем информацию о видео
             logger.info(f"📋 Получаем информацию о видео {video_id}...")
-            video_info = await self.get_video_info_cached(url)
+            video_info = await self.get_video_info(url)
             logger.info(f"✅ Информация получена: '{video_info.get('title', 'Unknown')}'")
 
             # СРАЗУ ПЕРЕХОДИМ К СКАЧИВАНИЮ АУДИО (пропускаем субтитры)
@@ -648,7 +697,9 @@ class SmartVideoService:
             }
 
     async def get_text_smart(self, url: str) -> Tuple[str, str, Dict[str, Any]]:
-        """ИСПРАВЛЕННАЯ версия: сразу скачиваем аудио (пропускаем субтитры)"""
+        """
+        УПРОЩЕННЫЙ МЕТОД: Сразу скачиваем аудио (пропускаем субтитры)
+        """
         video_id = self.extract_video_id(url)
         if not video_id:
             raise SmartVideoError("Не удалось извлечь ID видео")
@@ -684,13 +735,6 @@ class SmartVideoService:
             'tor_running': self.tor.is_running()
         }
 
-    async def shutdown(self):
-        """Остановка сервиса"""
-        if self.tor:
-            await self.tor.stop()
-        if self.executor:
-            self.executor.shutdown(wait=True)
-
 
 def cleanup_old_audio_files():
     """Удаляет локальные аудиофайлы старше MAX_FILE_AGE_SECONDS."""
@@ -708,77 +752,12 @@ def cleanup_old_audio_files():
             logger.warning(f"Не удалось удалить {filepath}: {e}")
 
 
-# Предзагрузка системы для ускорения
-async def preload_system():
-    """Предварительная загрузка системы для ускорения"""
-    logger.info("⚡ Предварительная загрузка системы...")
-
-    tasks = []
-
-    # Предзагрузка Tor
-    if USE_TOR:
-        tasks.append(asyncio.create_task(_preload_tor()))
-
-    # Предзагрузка R2 соединения
-    tasks.append(asyncio.create_task(_preload_r2()))
-
-    # Предзагрузка FFmpeg
-    tasks.append(asyncio.create_task(_preload_ffmpeg()))
-
-    # Ждем все задачи
-    await asyncio.gather(*tasks, return_exceptions=True)
-    logger.info("⚡ Система предзагружена")
-
-
-async def _preload_tor():
-    """Предзагрузка Tor"""
-    try:
-        service = SmartVideoService()
-        await service.tor.initialize()
-        logger.info("⚡ Tor предзагружен")
-    except:
-        pass
-
-
-async def _preload_r2():
-    """Предзагрузка R2"""
-    try:
-        if R2_ACCOUNT_ID and R2_BUCKET:
-            import boto3
-            client = boto3.client('s3',
-                                  endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
-                                  aws_access_key_id=R2_ACCESS_KEY_ID,
-                                  aws_secret_access_key=R2_SECRET_ACCESS_KEY)
-            # Тестовый запрос
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: client.list_objects_v2(Bucket=R2_BUCKET, MaxKeys=1)
-            )
-            logger.info("⚡ R2 соединение предзагружено")
-    except:
-        pass
-
-
-async def _preload_ffmpeg():
-    """Предзагрузка FFmpeg"""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            'ffmpeg', '-version',
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL
-        )
-        await proc.wait()
-        logger.info("⚡ FFmpeg предзагружен")
-    except:
-        pass
-
-
 # Удобная функция для инициализации
 async def create_smart_video_service() -> SmartVideoService:
     """Создает и инициализирует SmartVideoService"""
     service = SmartVideoService()
     await service.initialize()
     return service
-
 
 async def get_system_status() -> Dict[str, Any]:
     """Получает статус системы для health check"""
@@ -797,7 +776,6 @@ async def get_system_status() -> Dict[str, Any]:
             'configured': bool(R2_ACCOUNT_ID and R2_BUCKET)
         }
     }
-
 
 async def diagnose_system() -> Dict[str, Any]:
     """Диагностика системы для отладки проблем"""
