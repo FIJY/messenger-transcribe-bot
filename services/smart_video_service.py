@@ -236,29 +236,6 @@ class TorService:
         # Если нет - пытаемся запустить
         return await self.start_tor()
 
-    async def upload_to_r2(self, local_path: str, video_id: str) -> str:
-        """Загружает файл в R2 и возвращает URL"""
-        if not self.s3:
-            raise SmartVideoError("R2 не настроен")
-
-        key = f"youtube_audio/{video_id}.mp3"
-
-        try:
-            with open(local_path, 'rb') as f:
-                self.s3.upload_fileobj(f, R2_BUCKET, key)
-
-            # Формируем публичный URL
-            if R2_PUBLIC_BASEURL:
-                r2_url = f"{R2_PUBLIC_BASEURL}/{key}"
-            else:
-                r2_url = f"https://{R2_BUCKET}.{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{key}"
-
-            logger.info(f"✅ Файл загружен в R2: {r2_url}")
-            return r2_url
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка загрузки в R2: {e}")
-            raise SmartVideoError(f"Ошибка загрузки в R2: {e}")
 
     async def download_from_r2(self, r2_url: str, local_path: str) -> str:
         """Скачивает файл из R2 в локальную папку"""
@@ -360,6 +337,30 @@ class SmartVideoService:
                 logger.info(f"🌐 Tor запущен. IP: {self.tor.current_ip}")
             else:
                 logger.warning("⚠️ Tor не удалось запустить, работаем без прокси")
+    async def upload_to_r2(self, local_path: str, video_id: str) -> str:
+        """Загружает файл в R2 и возвращает URL"""
+        if not self.s3:
+            raise SmartVideoError("R2 не настроен")
+
+        key = f"youtube_audio/{video_id}.mp3"
+
+        try:
+            with open(local_path, 'rb') as f:
+                self.s3.upload_fileobj(f, R2_BUCKET, key)
+
+            # Формируем публичный URL
+            if R2_PUBLIC_BASEURL:
+                r2_url = f"{R2_PUBLIC_BASEURL}/{key}"
+            else:
+                r2_url = f"https://{R2_BUCKET}.{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{key}"
+
+            logger.info(f"✅ Файл загружен в R2: {r2_url}")
+            return r2_url
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки в R2: {e}")
+            raise SmartVideoError(f"Ошибка загрузки в R2: {e}")
+
 
     def _init_r2_client(self):
         if not all([_boto_ok, R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
