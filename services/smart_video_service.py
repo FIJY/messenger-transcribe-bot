@@ -674,6 +674,15 @@ class SmartVideoService:
         }
         return local_audio_path, 'audio_file', metadata
 
+    def cleanup_temp_files(self, file_path: str):
+        """Удаляет временные файлы"""
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(f"🧹 Временный файл удален: {file_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось удалить временный файл {file_path}: {e}")
+
     def get_capabilities(self) -> Dict[str, bool]:
         """Возвращает информацию о возможностях сервиса"""
         return {
