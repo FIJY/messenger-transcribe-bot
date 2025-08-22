@@ -367,25 +367,44 @@ class TextHandler:
 
         video_id = metadata.get('video_id', 'unknown')
 
-        # Получаем размер файла
+        # ИСПРАВЛЕНИЕ: Получаем размер файла ДО загрузки в R2
         try:
-            file_size = os.path.getsize(audio_path)
+            # Если audio_path - это URL (файл уже в R2)
+            if audio_path.startswith('http'):
+                # Получаем размер из метаданных или делаем HEAD запрос
+                file_size = metadata.get('file_size')
+                if not file_size:
+                    import requests
+                    try:
+                        response = requests.head(audio_path, timeout=10)
+                        file_size = int(response.headers.get('content-length', 0))
+                    except Exception as e:
+                        logger.warning(f"Не удалось получить размер файла из R2: {e}")
+                        # Примерная оценка: 1MB на минуту для MP3 128kbps
+                        estimated_duration = metadata.get('duration', 300)  # 5 минут по умолчанию
+                        file_size = estimated_duration * 1024 * 128 // 8  # 128kbps в байты
+            else:
+                # Локальный файл
+                file_size = os.path.getsize(audio_path)
+
             file_size_mb = file_size / (1024 * 1024)
-        except OSError as e:
-            logger.error(f"Не удалось получить размер файла {audio_path}: {e}")
-            await self.telegram.edit_message_text(
-                chat_id, message_id,
-                f"❌ Ошибка доступа к загруженному файлу\n\n"
-                f"🎬 Видео: {video_id}\n"
-                f"Попробуйте еще раз"
-            )
-            return
 
-        # Примерная оценка длительности (MP3 192kbps ≈ 1.44 MB/минуту)
-        estimated_duration_seconds = max(60, int(file_size_mb / 1.44 * 60))  # Минимум 1 минута
-        estimated_cost_seconds = max(3, estimated_duration_seconds)  # Минимум 3 секунды
+        except Exception as e:
+            logger.error(f"Ошибка получения размера файла {audio_path}: {e}")
+            # Fallback: используем данные из метаданных или оценку
+            duration_seconds = metadata.get('duration', 300)
+            file_size = duration_seconds * 16000  # Примерно 16KB на секунду для MP3
+            file_size_mb = file_size / (1024 * 1024)
 
-        # Проверяем баланс (переводим в секунды)
+        # Примерная оценка длительности
+        duration_seconds = metadata.get('duration')
+        if not duration_seconds:
+            # MP3 192kbps ≈ 1.44 MB/минуту
+            duration_seconds = max(60, int(file_size_mb / 1.44 * 60))
+
+        estimated_cost_seconds = max(3, duration_seconds)
+
+        # Проверяем баланс
         user_balance_minutes = user.get('balance_minutes', 0)
         user_balance_seconds = user_balance_minutes * 60
 
@@ -399,14 +418,16 @@ class TextHandler:
                 f"💰 У вас: {user_balance_minutes:.1f} мин\n\n"
                 f"Купите минуты: /subscription"
             )
-            # Удаляем временный файл
-            self.smart_video_service.cleanup_temp_files(audio_path)
+            # Очищаем файл если он локальный
+            if not audio_path.startswith('http'):
+                self.smart_video_service.cleanup_temp_files(audio_path)
             return
 
         # Обновляем статус
         status_text = f"🔥 Аудио загружено из YouTube!\n\n"
         status_text += f"🎬 Видео: {video_id}\n"
         status_text += f"📁 {file_size_mb:.1f} МБ\n"
+        status_text += f"⏱️ ~{duration_seconds // 60}:{duration_seconds % 60:02d}\n"
         status_text += f"💰 Примерная стоимость: {estimated_cost_seconds / 60:.1f} мин\n"
 
         if metadata.get('title'):
@@ -422,44 +443,51 @@ class TextHandler:
         )
 
         try:
-            # ИНТЕГРАЦИЯ с существующей системой медиа-обработки
-            # Создаем file_info в формате, который понимает ваша система
+            # Создаем file_info с правильными данными
             file_info = {
                 'file_id': f'youtube_{video_id}',
                 'file_unique_id': f'yt_{video_id}',
                 'file_size': file_size,
-                'duration': estimated_duration_seconds,
+                'duration': duration_seconds,
                 'file_name': f'YouTube_{video_id}.mp3',
                 'media_type': 'youtube_audio',
                 'original_extension': 'mp3',
                 'source': 'youtube_audio',
                 'original_url': url,
                 'video_id': video_id,
-                'local_file_path': audio_path,  # Путь к уже загруженному файлу
                 'title': metadata.get('title'),
                 'method': metadata.get('method'),
                 'ip_used': metadata.get('ip_used')
             }
 
-            # Используем существующую логику обработки через Redis/filesystem
-            from services.transcription import process_transcription_task
-            import base64
+            # Определяем способ обработки
+            if audio_path.startswith('http'):
+                # Файл уже в R2 - передаем URL
+                file_info['r2_url'] = audio_path
+                file_info['processing_method'] = 'r2_download'
 
-            if file_size_mb <= 15:  # Ваш лимит для Redis
-                # Маленький файл - через Redis
+                # Отправляем в обработку
+                from services.transcription import process_transcription_task
+                process_transcription_task.delay(chat_id, user['telegram_id'], file_info)
+
+            elif file_size_mb <= 15:
+                # Небольшой локальный файл - через Redis
+                import base64
                 with open(audio_path, 'rb') as f:
                     file_content = f.read()
                 file_content_b64 = base64.b64encode(file_content).decode('utf-8')
                 file_info['file_content_b64'] = file_content_b64
+                file_info['processing_method'] = 'redis'
 
                 # Удаляем исходный файл
                 self.smart_video_service.cleanup_temp_files(audio_path)
 
                 # Отправляем в обработку
+                from services.transcription import process_transcription_task
                 process_transcription_task.delay(chat_id, user['telegram_id'], file_info)
 
             else:
-                # Большой файл - через файловую систему
+                # Большой локальный файл - через файловую систему
                 from services.transcription import process_large_file_task
                 import uuid
                 import shutil
@@ -482,6 +510,7 @@ class TextHandler:
             final_status = f"✅ YouTube аудио передано в обработку!\n\n"
             final_status += f"🎬 Видео: {video_id}\n"
             final_status += f"📁 {file_size_mb:.1f} МБ\n"
+            final_status += f"⏱️ ~{duration_seconds // 60}:{duration_seconds % 60:02d}\n"
             final_status += f"🤖 Транскрипция началась...\n"
 
             if metadata.get('title'):
@@ -501,8 +530,56 @@ class TextHandler:
                 chat_id, message_id,
                 f"❌ Ошибка передачи в систему транскрипции: {str(e)}"
             )
-            # Удаляем файл при ошибке
-            self.smart_video_service.cleanup_temp_files(audio_path)
+            # Удаляем файл при ошибке (если локальный)
+            if not audio_path.startswith('http'):
+                self.smart_video_service.cleanup_temp_files(audio_path)
+
+    async def cleanup_old_r2_files():
+        """Очистка файлов в R2 старше 24 часов"""
+        try:
+            # Подключаемся к R2
+            import boto3
+            from datetime import datetime, timedelta
+
+            # Ваши настройки R2
+            r2_client = boto3.client(
+                's3',
+                endpoint_url='https://your-account.r2.cloudflarestorage.com',
+                aws_access_key_id='your-access-key',
+                aws_secret_access_key='your-secret-key'
+            )
+
+            bucket_name = 'fijy-bot-storage'
+            prefix = 'youtube_audio/'
+
+            # Получаем список файлов
+            response = r2_client.list_objects_v2(
+                Bucket=bucket_name,
+                Prefix=prefix
+            )
+
+            if 'Contents' not in response:
+                return
+
+            # Текущее время минус 24 часа
+            cutoff_time = datetime.now() - timedelta(hours=24)
+
+            files_to_delete = []
+            for obj in response['Contents']:
+                # Сравниваем время последнего изменения
+                if obj['LastModified'].replace(tzinfo=None) < cutoff_time:
+                    files_to_delete.append({'Key': obj['Key']})
+
+            # Удаляем старые файлы
+            if files_to_delete:
+                r2_client.delete_objects(
+                    Bucket=bucket_name,
+                    Delete={'Objects': files_to_delete}
+                )
+                logger.info(f"🧹 Удалено {len(files_to_delete)} старых файлов из R2")
+
+        except Exception as e:
+            logger.error(f"Ошибка очистки R2: {e}")
 
     async def _handle_regular_text(self, chat_id: int, user: dict, text: str):
         """Обработка обычного текста"""

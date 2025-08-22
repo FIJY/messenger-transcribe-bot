@@ -72,5 +72,6 @@ def create_celery_app():
 # Создаем глобальный экземпляр
 celery_app = create_celery_app()
 
+
 # Автоматическое обнаружение задач
 celery_app.autodiscover_tasks()
