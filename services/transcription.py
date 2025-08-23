@@ -216,28 +216,14 @@ def process_large_file_task(self, chat_id: int, user_id: int, enhanced_file_info
 
 
 async def _async_process_small_file(task_instance, chat_id: int, user_id: int, enhanced_file_info: dict):
-    """Обработка маленьких файлов через Redis (base64) - текущий рабочий код"""
+    """Обработка маленьких файлов через Redis (base64) или локально, если base64 отсутствует"""
 
-    # Импорты
-    try:
-        from services.database import DatabaseService
-        from services.audio_processor import AudioProcessor
-        from services.telegram_client import TelegramClient
-        from ui.localization import LocalizationService
-        from ui.keyboards import create_post_transcription_keyboard
-    except ImportError as import_error:
-        logger.error(f"Ошибка импорта: {import_error}")
-        try:
-            sys.path.append('/opt/render/project/src')
-            from services.database import DatabaseService
-            from services.audio_processor import AudioProcessor
-            from services.telegram_client import TelegramClient
-            from ui.localization import LocalizationService
-            from ui.keyboards import create_post_transcription_keyboard
-        except ImportError as e2:
-            raise ImportError(f"Критическая ошибка импорта: {import_error}")
+    from services.database import DatabaseService
+    from services.audio_processor import AudioProcessor
+    from services.telegram_client import TelegramClient
+    from ui.localization import LocalizationService
+    from ui.keyboards import create_post_transcription_keyboard
 
-    # Сервисы
     db_service = None
     telegram_client = None
     transcription_service = None
@@ -248,50 +234,37 @@ async def _async_process_small_file(task_instance, chat_id: int, user_id: int, e
     processed_audio_path = None
 
     try:
-        # Воссоздаем файл из base64
-        task_instance.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Восстанавливаю файл...'})
+        task_instance.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Подготовка файла...'})
 
-        if 'file_content_b64' not in enhanced_file_info:
-            raise ValueError("Отсутствует содержимое файла")
+        # 🔹 Вариант 1: файл передан как base64 (Redis-режим)
+        if 'file_content_b64' in enhanced_file_info:
+            file_content = base64.b64decode(enhanced_file_info['file_content_b64'])
+            logger.info(f"Декодировано {len(file_content)} байт из base64")
+            del enhanced_file_info['file_content_b64']
+            gc.collect()
 
-        file_content = base64.b64decode(enhanced_file_info['file_content_b64'])
-        logger.info(f"Декодировано {len(file_content)} байт из base64")
+            file_extension = enhanced_file_info.get('original_extension', 'oga') or 'oga'
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}", dir='/tmp', prefix='small_file_') as tmp:
+                tmp.write(file_content)
+                temp_file_path = tmp.name
+            del file_content
+            gc.collect()
 
-        # Освобождаем память от base64
-        del enhanced_file_info['file_content_b64']
-        gc.collect()
+        # 🔹 Вариант 2: base64 нет, но есть локальный путь
+        elif 'local_file_path' in enhanced_file_info and os.path.exists(enhanced_file_info['local_file_path']):
+            temp_file_path = enhanced_file_info['local_file_path']
+            logger.warning(f"⚠️ base64 отсутствует, использую локальный файл: {temp_file_path}")
 
-        # Создаем временный файл
-        file_extension = enhanced_file_info.get('original_extension', 'oga')
-        if file_extension in ['tmp', '']:
-            file_extension = 'oga'
+        else:
+            raise ValueError("Файл не найден: отсутствует base64 и local_file_path")
 
-        with tempfile.NamedTemporaryFile(
-                delete=False,
-                suffix=f'.{file_extension}',
-                dir='/tmp',
-                prefix='small_file_'
-        ) as temp_file:
-            temp_file.write(file_content)
-            temp_file_path = temp_file.name
-
-        logger.info(f"Маленький файл воссоздан: {temp_file_path}")
-
-        # Освобождаем память
-        del file_content
-        gc.collect()
-
-        # Остальная обработка такая же как раньше
+        # 🔹 Дальше идёт общая логика
         await _common_transcription_processing(
             task_instance, chat_id, user_id, temp_file_path, enhanced_file_info,
             db_service, telegram_client, transcription_service, audio_processor, localization_service
         )
 
-        return {
-            "status": "success",
-            "processing_method": "redis",
-            "file_type": "small"
-        }
+        return {"status": "success", "processing_method": "redis", "file_type": "small"}
 
     except Exception as e:
         logger.error(f"Ошибка в обработке маленького файла: {e}", exc_info=True)
