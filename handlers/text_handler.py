@@ -1,4 +1,4 @@
-# handlers/text_handler.py - Исправленная версия
+# handlers/text_handler.py - ИСПРАВЛЕННАЯ версия
 import logging
 import os
 from typing import Dict, Any, Optional
@@ -164,7 +164,7 @@ class TextHandler:
 
     async def _handle_audio_result_fixed(self, chat_id: int, user: dict, message_id: int,
                                          audio_path: str, result: dict, url: str):
-        """ФИНАЛЬНО ИСПРАВЛЕННАЯ обработка аудио результата"""
+        """🚨 ИСПРАВЛЕННАЯ обработка аудио результата - БЕЗ преждевременного удаления"""
 
         video_id = result.get('video_id', 'unknown')
 
@@ -214,7 +214,7 @@ class TextHandler:
                 f"💰 У вас: {user_balance_minutes:.1f} мин\n\n"
                 f"Купите минуты: /subscription"
             )
-            # Очищаем локальный файл
+            # 🚨 ИСПРАВЛЕНИЕ: Удаление файла перенесено в конец функции
             self.smart_video_service.cleanup_temp_files(audio_path)
             return
 
@@ -235,14 +235,14 @@ class TextHandler:
         if metadata.get('current_ip'):
             status_text += f"🌐 IP: {metadata['current_ip']}\n"
 
-        status_text += f"\n🔄 Передаю в систему транскрипции..."
+        status_text += f"\n📄 Передаю в систему транскрипции..."
 
         await self.telegram.edit_message_text(
             chat_id, message_id, status_text
         )
 
         try:
-            # ИСПРАВЛЕНИЕ: Создаем file_info с правильным методом обработки
+            # 🚨 ИСПРАВЛЕНИЕ: Создаем file_info с правильным методом обработки
             file_info = {
                 'file_id': f'youtube_{video_id}',
                 'file_unique_id': f'yt_{video_id}',
@@ -256,12 +256,13 @@ class TextHandler:
                 'video_id': video_id,
                 'title': result.get('title'),
                 'method': metadata.get('method'),
-                'ip_used': metadata.get('current_ip')
+                'ip_used': metadata.get('current_ip'),
+                'user_id': user['telegram_id']  # 🚨 ДОБАВИЛИ user_id
             }
 
             logger.info(f"📦 Отправляем в транскрипцию: размер={file_size}, длительность={duration_seconds}")
 
-            # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Определяем способ обработки правильно
+            # 🚨 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Определяем способ обработки правильно
             if file_size_mb <= 15:
                 # Небольшой файл - через Redis с base64
                 import base64
@@ -271,15 +272,16 @@ class TextHandler:
                 file_info['file_content_b64'] = file_content_b64
                 file_info['processing_method'] = 'redis'
 
-                # Удаляем исходный файл
-                self.smart_video_service.cleanup_temp_files(audio_path)
+                # 🚨 ИСПРАВЛЕНИЕ: НЕ удаляем файл здесь!
+                # Удаление произойдет в transcription.py после обработки
+                logger.info(f"📦 Файл упакован в base64 ({len(file_content_b64)} символов)")
 
                 # Используем обычную задачу транскрипции
                 from services.transcription import process_transcription_task
                 process_transcription_task.delay(chat_id, user['telegram_id'], file_info)
 
             else:
-                # ИСПРАВЛЕНИЕ: Большой файл - НЕ перемещаем, а передаем прямой путь
+                # 🚨 ИСПРАВЛЕНИЕ: Большой файл - НЕ перемещаем, а передаем прямой путь
                 # Система транскрипции должна читать файл НАПРЯМУЮ, а не скачивать
 
                 file_info['local_file_path'] = audio_path  # Прямой путь к файлу
@@ -306,7 +308,7 @@ class TextHandler:
                 final_status += f"🎭 {result['title'][:50]}...\n"
 
             final_status += f"\n⏳ Ожидайте результат через ~1-2 минуты"
-            final_status += f"\n\n🔍 ID задачи: {video_id}"
+            final_status += f"\n\n📁 ID задачи: {video_id}"
 
             await self.telegram.edit_message_text(
                 chat_id, message_id, final_status
@@ -319,9 +321,9 @@ class TextHandler:
             await self.telegram.edit_message_text(
                 chat_id, message_id,
                 f"❌ Ошибка передачи в систему транскрипции: {str(e)}\n\n"
-                f"🔍 Для отладки: {video_id}"
+                f"📁 Для отладки: {video_id}"
             )
-            # Удаляем файл при ошибке
+            # 🚨 ИСПРАВЛЕНИЕ: Удаляем файл только при ошибке
             self.smart_video_service.cleanup_temp_files(audio_path)
 
     async def _handle_regular_text(self, chat_id: int, user: dict, text: str):
