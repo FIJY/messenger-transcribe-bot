@@ -1,1030 +1,921 @@
-# services/transcription.py - ПОЛНАЯ ИСПРАВЛЕННАЯ версия с новой моделью ценообразования
-import logging
-import asyncio
+# services/smart_video_service.py
 import os
-import sys
-import gc
-import base64
+import re
+import time
+import hashlib
+import logging
 import tempfile
-from typing import Dict, Any
+import asyncio
+from typing import Optional, Dict, Any, Tuple, List
+from concurrent.futures import ThreadPoolExecutor
+import subprocess
+import signal
+from datetime import datetime, timedelta
 
-# Добавляем текущую директорию в путь Python
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-from openai import AsyncOpenAI
-from celery import Celery
-from config import settings
-
-# Импорты для IDE (предварительные объявления)
+# ==== Диагностика импортов ====
 try:
-    from services.database import DatabaseService
-    from services.audio_processor import AudioProcessor
-    from services.telegram_client import TelegramClient
-    from ui.localization import LocalizationService
-    from ui.keyboards import create_post_transcription_keyboard
-except ImportError:
-    # Эти импорты выполняются внутри функций при необходимости
-    DatabaseService = None
-    AudioProcessor = None
-    TelegramClient = None
-    LocalizationService = None
-    create_post_transcription_keyboard = None
+    import yt_dlp
+
+    _yt_dlp_ok = True
+except Exception:
+    yt_dlp = None
+    _yt_dlp_ok = False
+
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi
+    from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled
+
+    _yta_ok = True
+except Exception:
+    YouTubeTranscriptApi = None
+    NoTranscriptFound = Exception
+    TranscriptsDisabled = Exception
+    _yta_ok = False
+
+try:
+    import boto3
+    from botocore.client import Config
+
+    _boto_ok = True
+except Exception:
+    boto3 = None
+    Config = None
+    _boto_ok = False
+
+try:
+    import requests
+    from stem import Signal
+    from stem.control import Controller
+
+    _tor_ok = True
+except Exception:
+    requests = None
+    Signal = None
+    Controller = None
+    _tor_ok = False
 
 logger = logging.getLogger(__name__)
 
+# ==== Настройки ====
+AUDIO_STORAGE_DIR = os.environ.get("AUDIO_STORAGE_DIR", "/tmp/youtube_audio")
+MAX_FILE_AGE_SECONDS = int(os.environ.get("AUDIO_MAX_AGE_SEC", "86400"))  # 24 часа
+USE_TOR = os.getenv("USE_TOR", "true").lower() == "true"
+TOR_SOCKS_PORT = int(os.getenv("TOR_PORT", "9050"))
+TOR_CONTROL_PORT = int(os.getenv("TOR_CONTROL_PORT", "9051"))
+YT_PROXY = os.getenv("YT_PROXY", f"socks5://127.0.0.1:{TOR_SOCKS_PORT}")
 
-class TranscriptionService:
-    """Сервис для транскрипции аудио через OpenAI Whisper"""
+# R2 окружение
+R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "")
+R2_BUCKET = os.getenv("R2_BUCKET_NAME", "")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
+R2_PUBLIC_BASEURL = os.getenv("R2_PUBLIC_BASEURL", "")
 
-    def __init__(self, api_key: str):
-        if not api_key:
-            raise ValueError("OpenAI API key is required")
-        self.client = AsyncOpenAI(
-            api_key=api_key,
-            timeout=180.0,  # 3 минуты для стабильности
-            max_retries=2
-        )
-        logger.info("🎤 TranscriptionService инициализирован")
 
-    async def transcribe_audio(self, file_path: str) -> Dict[str, Any]:
-        """Транскрибирует аудио файл с оптимизацией памяти"""
+class SmartVideoError(Exception): pass
+
+
+class SubtitleNotFoundError(SmartVideoError): pass
+
+
+class DownloadError(SmartVideoError): pass
+
+
+class YouTubeBlockedError(SmartVideoError): pass
+
+
+def setup_cookies_file():
+    """Создать временный файл с куками из переменной окружения"""
+    cookies_data = os.getenv('YT_COOKIES_DATA')
+    if not cookies_data:
+        return None
+
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+            f.write(cookies_data)
+            logger.info(f"🍪 Куки созданы: {f.name}")
+            return f.name
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания кукков: {e}")
+        return None
+
+
+def get_yt_dlp_options(cookies_file=None):
+    options = {
+        'format': 'best[height<=720]/best',
+        'noplaylist': True,
+        'extract_flat': False,
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        'subtitleslangs': ['ru', 'en', 'auto'],
+        'ignoreerrors': True,
+        'no_warnings': False,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-us,en;q=0.5',
+            'Sec-Fetch-Mode': 'navigate'
+        },
+        'extractor_retries': 3,
+        'fragment_retries': 3,
+        'retry_sleep_functions': {
+            'http': lambda n: min(2 ** n, 10),
+            'fragment': lambda n: min(2 ** n, 10)
+        }
+    }
+
+    if cookies_file and os.path.exists(cookies_file):
+        options['cookiefile'] = cookies_file
+        logger.info(f"🍪 Используем куки: {cookies_file}")
+
+    if os.getenv('USE_TOR', 'false').lower() == 'true':
+        options['proxy'] = os.getenv('YT_PROXY', 'socks5://127.0.0.1:9050')
+
+    return options
+
+
+class TorService:
+    def __init__(self, tor_port: int, control_port: int):
+        self.tor_port = tor_port
+        self.control_port = control_port
+        self.current_ip = None
+        self.is_enabled = USE_TOR and _tor_ok
+        self._is_running = False
+        self._tor_process = None
+        self._startup_complete = False
+
+    async def initialize(self) -> bool:
+        """Инициализация - проверяет или запускает Tor ОДИН РАЗ"""
+        if not self.is_enabled:
+            return False
+
+        if self._startup_complete:
+            return self._is_running
+
+        logger.info("🔍 Проверяем Tor...")
+
+        # Сначала проверяем, не запущен ли уже
+        if await self._check_tor_running():
+            logger.info("✅ Tor уже запущен и доступен")
+            self._is_running = True
+            self._startup_complete = True
+            await self.get_current_ip()
+            return True
+
+        # Если нет - пытаемся запустить
+        logger.info("🚀 Запускаем Tor...")
+        success = await self._start_tor_fast()
+        self._startup_complete = True
+        return success
+
+    async def _start_tor_fast(self) -> bool:
+        """Быстрый запуск Tor с оптимизированными настройками"""
         try:
-            file_size = os.path.getsize(file_path)
-            max_size = 25 * 1024 * 1024  # 25MB лимит OpenAI
-            if file_size > max_size:
-                return {
-                    'success': False,
-                    'error': f'Файл слишком большой: {file_size / 1024 / 1024:.1f}MB. Максимум: 25MB для OpenAI Whisper',
-                    'text': '',
-                    'language': 'unknown',
-                    'duration': None
-                }
+            # Проверяем наличие tor
+            try:
+                result = subprocess.run(['which', 'tor'], capture_output=True, text=True, timeout=5)
+                if result.returncode != 0:
+                    logger.error("❌ Tor не установлен в системе")
+                    return False
+            except Exception as e:
+                logger.error(f"❌ Ошибка поиска Tor: {e}")
+                return False
 
-            logger.info(f"🎤 Начинаю транскрипцию: {file_path} ({file_size / 1024 / 1024:.1f}MB)")
+            # Создаем директорию
+            tor_data_dir = '/tmp/tor_data'
+            os.makedirs(tor_data_dir, exist_ok=True)
 
-            with open(file_path, "rb") as audio_file:
-                transcript = await self.client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    response_format="verbose_json",
-                    temperature=0
-                )
+            # ОПТИМИЗИРОВАННЫЕ настройки Tor для быстрого запуска
+            tor_config = [
+                'tor',
+                '--SocksPort', str(self.tor_port),
+                '--ControlPort', str(self.control_port),
+                '--DataDirectory', tor_data_dir,
+                '--quiet',
+                # УСКОРЕНИЯ:
+                '--DisableNetwork', '0',
+                '--UseBridges', '0',
+                '--ClientUseIPv6', '0',
+                '--ExitNodes', '{ru},{de},{us}',  # Ограничиваем выходные ноды
+                '--StrictNodes', '0',
+                '--FascistFirewall', '0',
+                '--ControlSocket', '',
+                # Быстрая загрузка консенсуса
+                '--DirReqStatistics', '0',
+                '--ExtraInfoStatistics', '0',
+                '--CellStatistics', '0',
+                '--ConnDirectionStatistics', '0',
+                '--EntryStatistics', '0',
+                '--ExitPortStatistics', '0',
+            ]
 
-            result = {
-                'success': True,
-                'text': transcript.text.strip(),
-                'language': getattr(transcript, 'language', 'unknown'),
-                'duration': getattr(transcript, 'duration', None)
-            }
+            # Запускаем Tor
+            self._tor_process = subprocess.Popen(
+                tor_config,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid  # Создаем новую группу процессов
+            )
 
-            logger.info(f"✅ Транскрипция завершена: {len(result['text'])} символов")
-            gc.collect()
-            return result
+            logger.info(f"🔄 Tor запускается (PID: {self._tor_process.pid})...")
+
+            # Ждем готовности с уменьшенным таймаутом
+            max_wait = 45  # Уменьшаем с 60 до 45 секунд
+            for i in range(max_wait):
+                await asyncio.sleep(1)
+                if await self._check_tor_running():
+                    self._is_running = True
+                    await self.get_current_ip()
+                    logger.info(f"✅ Tor готов за {i + 1} секунд. IP: {self.current_ip}")
+                    return True
+
+                # Показываем прогресс каждые 10 секунд
+                if (i + 1) % 10 == 0:
+                    logger.info(f"⏳ Tor загружается... {i + 1}/{max_wait} сек")
+
+            logger.error(f"❌ Tor не запустился за {max_wait} секунд")
+            if self._tor_process:
+                try:
+                    os.killpg(os.getpgid(self._tor_process.pid), signal.SIGTERM)
+                except:
+                    pass
+                self._tor_process = None
+            return False
 
         except Exception as e:
-            logger.error(f"❌ Ошибка транскрипции: {e}", exc_info=True)
-            gc.collect()
+            logger.error(f"❌ Ошибка запуска Tor: {e}")
+            return False
+
+    async def _check_tor_running(self) -> bool:
+        """Быстрая проверка Tor"""
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection('127.0.0.1', self.tor_port),
+                timeout=2  # Уменьшаем таймаут
+            )
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except:
+            return False
+
+    async def get_current_ip(self) -> Optional[str]:
+        """Быстрое получение IP"""
+        if not self.is_running():
+            return None
+        try:
+            loop = asyncio.get_event_loop()
+            proxies = {'http': YT_PROXY, 'https': YT_PROXY}
+
+            def _get_ip():
+                import requests
+                response = requests.get(
+                    'https://api.ipify.org?format=json',
+                    proxies=proxies,
+                    timeout=10  # Уменьшаем таймаут
+                )
+                return response.json().get("ip")
+
+            self.current_ip = await loop.run_in_executor(None, _get_ip)
+            logger.info(f"🌍 IP через Tor: {self.current_ip}")
+            return self.current_ip
+        except Exception as e:
+            logger.warning(f"Не удалось получить IP через Tor: {e}")
+            return None
+
+    def is_running(self) -> bool:
+        """Проверяет, что Tor запущен И готов к использованию"""
+        return self._is_running and self._startup_complete
+
+    async def change_ip(self) -> bool:
+        """Отправляет сигнал NEWNYM для смены IP"""
+        if not self.is_running():
+            return False
+        logger.info("🔄 Запрашиваем новый IP у Tor...")
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                f'echo -e \'AUTHENTICATE ""\nSIGNAL NEWNYM\nQUIT\' | nc 127.0.0.1 {self.control_port}',
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.wait()
+            await asyncio.sleep(5)
+            old_ip = self.current_ip
+            await self.get_current_ip()
+            if self.current_ip != old_ip:
+                logger.info(f"✅ IP изменен: {old_ip} → {self.current_ip}")
+                return True
+            else:
+                logger.warning("⚠️ IP не изменился")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Ошибка смены IP: {e}")
+            return False
+
+    async def stop(self):
+        """Останавливает Tor процесс"""
+        if self._tor_process:
+            try:
+                os.killpg(os.getpgid(self._tor_process.pid), signal.SIGTERM)
+            except:
+                pass
+            self._tor_process = None
+            self._is_running = False
+            logger.info("🛑 Tor остановлен")
+
+
+class SmartVideoService:
+    def __init__(self):
+        self.download_available = _yt_dlp_ok
+        self.subtitles_available = _yta_ok
+        self.s3 = self._init_r2_client()
+        self.tor = TorService(TOR_SOCKS_PORT, TOR_CONTROL_PORT)
+        self.executor = ThreadPoolExecutor(max_workers=4)  # Увеличиваем пул
+        self._video_info_cache = {}  # Кэш для информации о видео
+        if not self.download_available:
+            logger.warning("yt-dlp не установлен. Загрузка аудио недоступна.")
+
+    async def initialize(self):
+        """Инициализирует сервис и запускает Tor + автоочистку"""
+        if self.tor.is_enabled:
+            # Пытаемся запустить Tor
+            await self.tor.initialize()
+            if self.tor.is_running():
+                logger.info(f"🌍 Tor запущен. IP: {self.tor.current_ip}")
+            else:
+                logger.warning("⚠️ Tor не удалось запустить, работаем без прокси")
+
+        # НОВОЕ: Запускаем автоочистку в фоне
+        asyncio.create_task(schedule_cleanup())
+        logger.info("🗑️ Автоочистка файлов запущена (каждые 6 часов)")
+
+    def _init_r2_client(self):
+        if not all([_boto_ok, R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
+            return None
+        session = boto3.session.Session()
+        return session.client(
+            "s3",
+            endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+            config=Config(signature_version="s3v4"),
+            region_name="auto",
+        )
+
+    @staticmethod
+    def is_youtube_url(url: str) -> bool:
+        youtube_patterns = [
+            r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([^&\s]+)',
+            r'(?:https?://)?(?:www\.)?youtu\.be/([^?\s]+)',
+        ]
+        for pattern in youtube_patterns:
+            if re.search(pattern, url, re.IGNORECASE):
+                return True
+        return False
+
+    @staticmethod
+    def extract_video_id(url: str) -> Optional[str]:
+        patterns = [r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})']
+        for pattern in patterns:
+            m = re.search(pattern, url)
+            if m: return m.group(1)
+        return None
+
+    async def get_video_info_cached(self, url: str) -> Dict[str, Any]:
+        """Получение информации о видео с кэшированием"""
+        video_id = self.extract_video_id(url)
+
+        # Проверяем кэш
+        if video_id in self._video_info_cache:
+            logger.info(f"⚡ Информация из кэша: {video_id}")
+            return self._video_info_cache[video_id]
+
+        # Получаем информацию
+        info = await self.get_video_info(url)
+
+        # Кэшируем на 1 час
+        self._video_info_cache[video_id] = info
+
+        # Очищаем старый кэш
+        if len(self._video_info_cache) > 50:
+            oldest_key = next(iter(self._video_info_cache))
+            del self._video_info_cache[oldest_key]
+
+        return info
+
+    async def get_video_info(self, url: str) -> Dict[str, Any]:
+        """Получает информацию о видео через yt-dlp"""
+        if not self.download_available:
+            raise DownloadError("yt-dlp не установлен")
+
+        video_id = self.extract_video_id(url)
+        if not video_id:
+            raise SmartVideoError("Не удалось извлечь ID видео")
+
+        cookies_file = setup_cookies_file()
+        try:
+            options = get_yt_dlp_options(cookies_file)
+            options['skip_download'] = True  # Только получаем информацию
+
+            def _extract_info():
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    return ydl.extract_info(url, download=False)
+
+            loop = asyncio.get_event_loop()
+            info = await loop.run_in_executor(self.executor, _extract_info)
+
+            if info:
+                logger.info(f"✅ Информация получена: {info.get('title', 'Unknown')}")
+                return info
+            else:
+                raise DownloadError("Не удалось получить информацию о видео")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения информации о видео: {e}")
+            raise DownloadError(f"Ошибка получения информации: {e}")
+        finally:
+            if cookies_file and os.path.exists(cookies_file):
+                try:
+                    os.unlink(cookies_file)
+                    logger.info("🧹 Временный файл кукков удален")
+                except:
+                    pass
+
+    def _get_ytdlp_options(self, output_path: str = None, cookies_file: str = None) -> Dict:
+        """Формирует опции для yt-dlp с поддержкой кукков"""
+        opts = {
+            "format": "bestaudio/best",
+            "quiet": False,  # Включаем логи для отладки
+            "noprogress": True,
+            "no_warnings": False,
+            "noplaylist": True,
+            "retries": 3,
+            "http_headers": {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate'
+            },
+            "extractor_retries": 3,
+            "fragment_retries": 3,
+        }
+
+        if output_path:
+            opts.update({
+                "outtmpl": output_path.replace(".mp3", "") + ".%(ext)s",
+                "postprocessors": [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            })
+
+        # Добавляем куки если есть
+        if cookies_file and os.path.exists(cookies_file):
+            opts['cookiefile'] = cookies_file
+            logger.info(f"🍪 Используем куки для скачивания: {cookies_file}")
+
+        # Добавляем прокси если Tor запущен
+        if self.tor.is_running():
+            opts["proxy"] = YT_PROXY
+            logger.info(f"🌐 Используем Tor прокси: {YT_PROXY}")
+
+        return opts
+
+    async def get_transcript_text(self, video_id: str, languages: List[str]) -> str:
+        """Получает текст субтитров"""
+        if not self.subtitles_available:
+            raise SubtitleNotFoundError("Библиотека для субтитров не установлена.")
+
+        def _get_sync():
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript = None
+            for lang in languages:
+                try:
+                    transcript = transcript_list.find_transcript([lang])
+                    break
+                except NoTranscriptFound:
+                    continue
+            if not transcript:
+                raise NoTranscriptFound(video_id)
+
+            transcript_data = transcript.fetch()
+            text_parts = [item['text'] for item in transcript_data]
+            return ' '.join(text_parts)
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self.executor, _get_sync)
+
+    async def download_audio(self, url: str) -> str:
+        """ИСПРАВЛЕННАЯ версия: НЕ загружает в R2, возвращает локальный файл"""
+        if not self.download_available:
+            raise DownloadError("yt-dlp не установлен")
+
+        video_id = self.extract_video_id(url)
+        if not video_id:
+            raise SmartVideoError("Не удалось извлечь ID видео")
+
+        # Создаем локальную папку
+        os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
+        local_path = os.path.join(AUDIO_STORAGE_DIR, f"{video_id}.mp3")
+
+        # Скачиваем как раньше (ваш существующий код)
+        loop = asyncio.get_event_loop()
+        max_retries = 3
+
+        for attempt in range(1, max_retries + 1):
+            cookies_file = None
+            try:
+                logger.info(f"Попытка {attempt}/{max_retries} скачать аудио для {video_id}")
+
+                cookies_file = setup_cookies_file()
+                opts = self._get_ytdlp_options(local_path, cookies_file)
+
+                def _download():
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        ydl.download([url])
+
+                await loop.run_in_executor(self.executor, _download)
+
+                final_path = os.path.splitext(local_path)[0] + ".mp3"
+                if os.path.exists(final_path):
+                    logger.info(f"✅ Аудио скачано локально: {final_path}")
+
+                    # ИСПРАВЛЕНИЕ: НЕ загружаем в R2, возвращаем локальный путь
+                    logger.info(f"🚨 EMERGENCY MODE: R2 отключен, используем локальные файлы")
+
+                    # НЕ ВЫЗЫВАЕМ cleanup_temp_files - файл должен остаться!
+                    return final_path
+                else:
+                    raise DownloadError("Файл не был создан после скачивания.")
+
+            except Exception as e:
+                error_msg = str(e)
+                logger.warning(f"Ошибка при скачивании (попытка {attempt}): {error_msg}")
+
+                # Если это ошибка аутентификации - пробуем запустить/переключить Tor
+                if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
+                    if not self.tor.is_running() and self.tor.is_enabled:
+                        logger.info("🔄 Пытаемся запустить Tor для обхода блокировки...")
+                        await self.tor.initialize()
+                    elif self.tor.is_running():
+                        logger.info("🔄 Меняем IP через Tor...")
+                        await self.tor.change_ip()
+                    else:
+                        logger.warning("⚠️ Tor недоступен, не можем обойти блокировку")
+
+                if attempt == max_retries:
+                    raise YouTubeBlockedError(
+                        f"Не удалось скачать видео после {max_retries} попыток. YouTube требует аутентификацию. Последняя ошибка: {error_msg}")
+
+                # Ждем между попытками
+                await asyncio.sleep(2 * attempt)
+
+            finally:
+                if cookies_file and os.path.exists(cookies_file):
+                    try:
+                        os.unlink(cookies_file)
+                    except:
+                        pass
+
+        raise DownloadError("Неизвестная ошибка скачивания.")
+
+    async def enhanced_download_youtube_content(self, url: str) -> Dict[str, Any]:
+        """ИСПРАВЛЕННАЯ версия: сразу скачиваем аудио (пропускаем субтитры)"""
+        video_id = self.extract_video_id(url)
+        logger.info(f"🎬 Начинаем обработку видео {video_id}: {url}")
+
+        try:
+            # Получаем информацию о видео
+            logger.info(f"📋 Получаем информацию о видео {video_id}...")
+            video_info = await self.get_video_info_cached(url)
+            logger.info(f"✅ Информация получена: '{video_info.get('title', 'Unknown')}'")
+
+            # СРАЗУ ПЕРЕХОДИМ К СКАЧИВАНИЮ АУДИО (пропускаем субтитры)
+            logger.info(f"🎵 Скачиваем аудио для {video_id}...")
+
+            # Проверяем статус Tor перед скачиванием
+            if self.tor.is_enabled and not self.tor.is_running():
+                logger.info("🚀 Tor не запущен, пытаемся запустить...")
+                await self.tor.initialize()
+
+            try:
+                logger.info(f"⬇️ Начинаем скачивание аудио для {video_id}...")
+                local_audio_path = await self.download_audio(url)
+                logger.info(f"✅ Аудио скачано: {local_audio_path}")
+
+                metadata = {
+                    'method': 'audio_download',
+                    'video_id': video_id,
+                    'audio_path': local_audio_path,
+                    'tor_used': self.tor.is_running(),
+                    'current_ip': self.tor.current_ip
+                }
+
+                return {
+                    'success': True,
+                    'video_id': video_id,
+                    'title': video_info.get('title', 'Unknown'),
+                    'duration': video_info.get('duration', 0),
+                    'uploader': video_info.get('uploader', 'Unknown'),
+                    'content_type': 'audio_file',
+                    'content': local_audio_path,
+                    'metadata': metadata,
+                    'has_subtitles': False,  # Игнорируем субтитры
+                    'video_info': video_info
+                }
+
+            except YouTubeBlockedError as blocked_error:
+                logger.error(f"🚫 YouTube заблокировал доступ: {blocked_error}")
+                return {
+                    'success': False,
+                    'error': f"YouTube заблокировал доступ: {str(blocked_error)}",
+                    'error_type': 'YouTubeBlockedError',
+                    'video_id': video_id,
+                    'title': video_info.get('title', 'Unknown'),
+                    'url': url,
+                    'suggestion': 'Попробуйте позже или используйте другое видео'
+                }
+            except Exception as download_error:
+                logger.error(f"❌ Ошибка скачивания аудио: {download_error}")
+                raise download_error
+
+        except Exception as e:
+            logger.error(f"❌ КРИТИЧЕСКАЯ ошибка в enhanced_download_youtube_content для {video_id}")
+            logger.error(f"❌ Ошибка: {str(e)}")
+            logger.error(f"❌ Тип ошибки: {type(e).__name__}")
+
+            import traceback
+            logger.error(f"❌ Полный стек трейс:")
+            logger.error(traceback.format_exc())
+
             return {
                 'success': False,
                 'error': str(e),
-                'text': '',
-                'language': 'unknown',
-                'duration': None
+                'error_type': type(e).__name__,
+                'video_id': video_id,
+                'url': url,
+                'debug_info': {
+                    'tor_enabled': self.tor.is_enabled,
+                    'tor_running': self.tor.is_running(),
+                    'current_ip': self.tor.current_ip,
+                    'download_available': self.download_available,
+                    'subtitles_available': False  # Отключаем субтитры
+                }
             }
 
-    async def close(self):
-        """Закрываем соединения для освобождения памяти"""
-        if hasattr(self, 'client'):
-            await self.client.close()
+    async def get_text_smart(self, url: str) -> Tuple[str, str, Dict[str, Any]]:
+        """ИСПРАВЛЕННАЯ версия: сразу скачиваем аудио (пропускаем субтитры)"""
+        video_id = self.extract_video_id(url)
+        if not video_id:
+            raise SmartVideoError("Не удалось извлечь ID видео")
 
+        logger.info(f"🎵 Переходим сразу к скачиванию аудио для {video_id}...")
 
-# Настройки Celery для гибридного подхода
-celery_app = Celery(
-    'transcription_tasks',
-    broker=settings.REDIS_URL,
-    backend=settings.REDIS_URL,
-    include=['services.transcription']
-)
+        # Сразу скачиваем аудио
+        local_audio_path = await self.download_audio(url)
+        metadata = {
+            'method': 'audio_download',
+            'video_id': video_id,
+            'audio_path': local_audio_path,
+            'tor_used': self.tor.is_running(),
+            'current_ip': self.tor.current_ip
+        }
+        return local_audio_path, 'audio_file', metadata
 
-# Настройки оптимизированные под Redis Starter (256MB)
-celery_app.conf.update(
-    # Базовые настройки
-    task_track_started=True,
-    worker_hijack_root_logger=False,
-    worker_log_format='[%(asctime)s: %(levelname)s/%(processName)s] %(message)s',
-    worker_task_log_format='[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s',
-
-    # Лимиты для экономии памяти
-    task_soft_time_limit=1800,  # 30 минут мягкий лимит
-    task_time_limit=3600,  # 60 минут жесткий лимит
-
-    # Настройки очереди
-    task_acks_late=True,
-    worker_prefetch_multiplier=1,
-    task_reject_on_worker_lost=True,
-
-    # Сериализация с сжатием для экономии Redis
-    task_serializer='json',
-    accept_content=['json'],
-    result_serializer='json',
-    task_compression='gzip',  # Сжатие для Redis Starter
-    result_compression='gzip',
-
-    # Быстрое истечение результатов
-    result_expires=3600,  # 1 час
-    task_ignore_result=False,
-
-    # Настройки подключения к Redis
-    broker_connection_retry_on_startup=True,
-    broker_connection_retry=True,
-    broker_connection_max_retries=5,
-
-    # Оптимизация транспорта для Redis Starter
-    broker_transport_options={
-        'max_connections': 20,  # Под лимит 250 connections
-        'retry_on_timeout': True,
-        'socket_timeout': 20,
-    }
-)
-
-
-@celery_app.task(name="process_transcription_task", bind=True)
-def process_transcription_task(self, chat_id: int, user_id: int, enhanced_file_info: dict):
-    """Задача для маленьких файлов через Redis (≤15MB)"""
-    try:
-        file_size_mb = enhanced_file_info.get('file_size', 0) / (1024 * 1024)
-        logger.info(f"Обработка маленького файла: {file_size_mb:.1f}MB через Redis")
-
-        self.update_state(state='PROGRESS', meta={
-            'progress': 0,
-            'status': f'Обработка файла {file_size_mb:.1f}MB через Redis...'
-        })
-
-        result = asyncio.run(
-            _async_process_small_file(self, chat_id, user_id, enhanced_file_info)
-        )
-
-        gc.collect()
-        return result
-
-    except Exception as e:
-        logger.critical(f"Критическая ошибка в обработке маленького файла: {e}", exc_info=True)
-
+    def cleanup_temp_files(self, file_path: str):
+        """
+        ИСПРАВЛЕНО: НЕ удаляет файл сразу, оставляет на 24 часа для Celery
+        """
         try:
-            asyncio.run(_notify_user_error(chat_id, str(e)))
-        except Exception as notify_error:
-            logger.error(f"Не удалось уведомить пользователя: {notify_error}")
+            if file_path and os.path.exists(file_path):
+                # НЕ УДАЛЯЕМ ФАЙЛ СРАЗУ!
+                logger.info(f"📁 Файл оставлен для Celery на 24 часа: {file_path}")
 
-        gc.collect()
-        return {"status": "error", "error": str(e)}
+                # Можно добавить метку времени для мониторинга
+                import time
+                current_time = time.time()
+                logger.info(f"🕐 Время создания файла: {current_time}")
 
+                # Файл удалится автоматически через функцию cleanup_old_audio_files()
 
-@celery_app.task(name="process_large_file_task", bind=True)
-def process_large_file_task(self, chat_id: int, user_id: int, enhanced_file_info: dict):
-    """НОВАЯ задача для больших файлов через R2 (>15MB)"""
-    try:
-        file_size_mb = enhanced_file_info.get('file_size', 0) / (1024 * 1024)
-        logger.info(f"Обработка большого файла: {file_size_mb:.1f}MB через R2")
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка обработки файла {file_path}: {e}")
 
-        self.update_state(state='PROGRESS', meta={
-            'progress': 0,
-            'status': f'Скачивание файла {file_size_mb:.1f}MB из R2...'
-        })
-
-        result = asyncio.run(
-            _async_process_large_file(self, chat_id, user_id, enhanced_file_info)
-        )
-
-        gc.collect()
-        return result
-
-    except Exception as e:
-        logger.critical(f"Критическая ошибка в обработке большого файла: {e}", exc_info=True)
-
-        # Очистка не нужна для R2 - файлы остаются в облаке
-        # Только уведомляем пользователя
-        try:
-            asyncio.run(_notify_user_error(chat_id, str(e)))
-        except Exception as notify_error:
-            logger.error(f"Не удалось уведомить пользователя: {notify_error}")
-
-        gc.collect()
-        return {"status": "error", "error": str(e)}
-
-
-async def _async_process_small_file(task_instance, chat_id: int, user_id: int, enhanced_file_info: dict):
-    """
-    ИСПРАВЛЕННАЯ обработка маленьких файлов через Redis (base64) или локально
-    Теперь поддерживает все возможные варианты передачи файла
-    """
-
-    from services.database import DatabaseService
-    from services.audio_processor import AudioProcessor
-    from services.telegram_client import TelegramClient
-    from ui.localization import LocalizationService
-    from ui.keyboards import create_post_transcription_keyboard
-
-    db_service = None
-    telegram_client = None
-    transcription_service = None
-    audio_processor = AudioProcessor()
-    localization_service = LocalizationService()
-
-    temp_file_path = None
-    processed_audio_path = None
-
-    try:
-        task_instance.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Подготовка файла...'})
-
-        # 🔹 Вариант 1: файл передан как base64 (Redis-режим)
-        if 'file_content_b64' in enhanced_file_info:
-            logger.info("📦 Декодируем файл из base64")
-            file_content = base64.b64decode(enhanced_file_info['file_content_b64'])
-            logger.info(f"Декодировано {len(file_content)} байт из base64")
-            del enhanced_file_info['file_content_b64']
-            gc.collect()
-
-            file_extension = enhanced_file_info.get('original_extension', 'oga') or 'oga'
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}", dir='/tmp',
-                                             prefix='small_file_') as tmp:
-                tmp.write(file_content)
-                temp_file_path = tmp.name
-            del file_content
-            gc.collect()
-
-        # 🔹 Вариант 2: есть локальный путь к файлу (local_file_path)
-        elif 'local_file_path' in enhanced_file_info and os.path.exists(enhanced_file_info['local_file_path']):
-            temp_file_path = enhanced_file_info['local_file_path']
-            logger.info(f"📂 Используем локальный файл: {temp_file_path}")
-
-        # 🔹 Вариант 3: проверяем другие возможные ключи для файла
-        elif 'file_path' in enhanced_file_info and os.path.exists(enhanced_file_info['file_path']):
-            temp_file_path = enhanced_file_info['file_path']
-            logger.info(f"📂 Используем файл по пути file_path: {temp_file_path}")
-
-        # 🔹 Вариант 4: проверяем shared_file_path (на случай если это локальный путь, а не URL)
-        elif 'shared_file_path' in enhanced_file_info:
-            shared_path = enhanced_file_info['shared_file_path']
-            # Проверяем, является ли это локальным файлом или URL
-            if os.path.exists(shared_path):
-                temp_file_path = shared_path
-                logger.info(f"📂 Используем файл по пути shared_file_path: {temp_file_path}")
-            else:
-                # Это URL, попробуем скачать
-                logger.info(f"🌐 shared_file_path является URL: {shared_path}")
-                temp_file_path = await _download_file_from_url(shared_path)
-
-        else:
-            # Выводим подробную диагностику
-            logger.error("❌ Файл не найден. Доступные ключи в enhanced_file_info:")
-            for key, value in enhanced_file_info.items():
-                if isinstance(value, str) and len(value) > 100:
-                    logger.error(f"  - {key}: {type(value)} (длина: {len(value)})")
-                else:
-                    logger.error(f"  - {key}: {value}")
-
-            raise ValueError(
-                "Файл не найден: отсутствуют все возможные пути к файлу (file_content_b64, local_file_path, file_path, shared_file_path)")
-
-        # Проверяем что файл действительно существует
-        if not temp_file_path or not os.path.exists(temp_file_path):
-            raise ValueError(f"Файл не существует: {temp_file_path}")
-
-        logger.info(f"✅ Файл найден: {temp_file_path} ({os.path.getsize(temp_file_path)} байт)")
-
-        # 🔹 Далее идёт общая логика
-        await _common_transcription_processing(
-            task_instance, chat_id, user_id, temp_file_path, enhanced_file_info,
-            db_service, telegram_client, transcription_service, audio_processor, localization_service
-        )
-
-        return {"status": "success", "processing_method": "redis", "file_type": "small"}
-
-    except Exception as e:
-        logger.error(f"Ошибка в обработке маленького файла: {e}", exc_info=True)
-        return {"status": "error", "error": str(e)}
-
-    finally:
-        await _cleanup_resources(temp_file_path, processed_audio_path,
-                                 db_service, telegram_client, transcription_service)
-
-
-async def _download_file_from_url(url: str) -> str:
-    """Скачивает файл по URL и возвращает путь к временному файлу"""
-    import aiohttp
-    import tempfile
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                response.raise_for_status()
-
-                # Создаём временный файл
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
-                    async for chunk in response.content.iter_chunked(8192):
-                        tmp_file.write(chunk)
-
-                    logger.info(f"📥 Файл скачан по URL: {tmp_file.name}")
-                    return tmp_file.name
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка скачивания файла по URL {url}: {e}")
-        raise
-
-
-async def _async_process_large_file(task, chat_id: int, user_id: int, enhanced_file_info: dict):
-    """Асинхронная обработка большого файла из R2"""
-    import tempfile
-    import requests
-
-    # Получаем R2 URL вместо локального пути
-    r2_url = enhanced_file_info.get('shared_file_path')  # Теперь это R2 URL
-    if not r2_url:
-        raise ValueError("R2 URL не найден в enhanced_file_info")
-
-    # Создаем временный файл для скачивания
-    temp_file = None
-    try:
-        # Обновляем прогресс
-        task.update_state(state='PROGRESS', meta={
-            'progress': 10,
-            'status': 'Скачивание файла из облачного хранилища...'
-        })
-
-        # Скачиваем файл из R2
-        logger.info(f"🔥 Скачивание из R2: {r2_url}")
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_f:
-            temp_file = tmp_f.name
-
-            response = requests.get(r2_url, timeout=300, stream=True)
-            response.raise_for_status()
-
-            # Скачиваем с отображением прогресса
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
-
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    tmp_f.write(chunk)
-                    downloaded += len(chunk)
-
-                    # Обновляем прогресс скачивания (10-30%)
-                    if total_size > 0:
-                        progress = 10 + int((downloaded / total_size) * 20)
-                        task.update_state(state='PROGRESS', meta={
-                            'progress': progress,
-                            'status': f'Скачивание: {progress - 10}%'
-                        })
-
-        logger.info(f"✅ Файл скачан во временную папку: {temp_file}")
-
-        # Обновляем прогресс
-        task.update_state(state='PROGRESS', meta={
-            'progress': 35,
-            'status': 'Начинаем транскрипцию...'
-        })
-
-        # Инициализируем сервисы для обработки большого файла
-        from services.database import DatabaseService
-        from services.audio_processor import AudioProcessor
-        from services.telegram_client import TelegramClient
-        from ui.localization import LocalizationService
-        from ui.keyboards import create_post_transcription_keyboard
-
-        db_service = DatabaseService()
-        await db_service.initialize()
-
-        telegram_client = TelegramClient(settings.TELEGRAM_TOKEN)
-        transcription_service = TranscriptionService(settings.OPENAI_API_KEY)
-        audio_processor = AudioProcessor()
-
-        # Получаем пользователя
-        user = await db_service.get_user_by_telegram_id(enhanced_file_info.get('user_id'))
-        if not user:
-            raise ValueError("Пользователь не найден")
-
-        # Валидация файла
-        is_valid, validation_message = await audio_processor.validate_audio_file(
-            temp_file, max_size_mb=2048  # 2GB лимит
-        )
-        if not is_valid:
-            raise ValueError(f"Файл не прошел валидацию: {validation_message}")
-
-        # Обработка аудио файла
-        task.update_state(state='PROGRESS', meta={
-            'progress': 45,
-            'status': 'Обработка аудио...'
-        })
-
-        processed_audio_path = await audio_processor.process_file(temp_file)
-        if not processed_audio_path:
-            raise ValueError("Ошибка обработки файла")
-
-        # Транскрипция
-        task.update_state(state='PROGRESS', meta={
-            'progress': 60,
-            'status': 'Выполняется транскрипция...'
-        })
-
-        transcription_result = await transcription_service.transcribe_audio(processed_audio_path)
-
-        if not transcription_result.get('success'):
-            raise ValueError(f"Ошибка транскрипции: {transcription_result.get('error')}")
-
-        # Валидация результата транскрипции
-        text = transcription_result['text'].strip()
-        language = transcription_result['language']
-
-        if len(text) < 3:
-            raise ValueError(f"Транскрипция слишком короткая: {len(text)} символов")
-
-        # Сохранение результатов в БД
-        task.update_state(state='PROGRESS', meta={
-            'progress': 85,
-            'status': 'Сохранение результатов...'
-        })
-
-        db_file = await db_service.create_audio_file(
-            user_id=enhanced_file_info.get('user_id'),
-            telegram_file_id=enhanced_file_info.get('file_id', 'large_file'),
-            file_type=enhanced_file_info.get('original_extension', 'mp3'),
-            duration_seconds=enhanced_file_info.get('duration', 0),
-            file_size_mb=enhanced_file_info.get('file_size', 0) / (1024 * 1024)
-        )
-
-        db_transcription = await db_service.create_transcription(
-            audio_file_id=db_file['id'],
-            user_id=enhanced_file_info.get('user_id'),
-            text=text,
-            language=language,
-            confidence=transcription_result.get('confidence')
-        )
-
-        # Списание баланса за транскрипцию
-        transcription_cost = max(1, enhanced_file_info.get('duration', 0) // 60)
-        current_balance = user.get('balance_minutes', 0)
-        new_balance = max(0, current_balance - transcription_cost)
-
-        await db_service.update_user(enhanced_file_info.get('user_id'), {'balance_minutes': new_balance})
-        logger.info(f"💰 Списано {transcription_cost} мин за транскрипцию, остаток: {new_balance} мин")
-
-        # Отправка результата
-        task.update_state(state='PROGRESS', meta={
-            'progress': 95,
-            'status': 'Отправка результата...'
-        })
-
-        await _send_transcription_result_new_ux(
-            telegram_client, chat_id, text, language,
-            enhanced_file_info, new_balance, db_transcription['id']
-        )
-
-        # Очистка ресурсов
-        await _cleanup_resources(processed_audio_path, None, db_service, telegram_client, transcription_service)
-
-        task.update_state(state='PROGRESS', meta={
-            'progress': 100,
-            'status': 'Завершено!'
-        })
-
+    def get_capabilities(self) -> Dict[str, bool]:
+        """Возвращает информацию о возможностях сервиса"""
         return {
-            'status': 'success',
-            'processing_method': 'r2_cloud',
-            'file_type': 'large',
-            'transcription_id': str(db_transcription['id']),
-            'text_length': len(text),
-            'r2_url': r2_url
+            'subtitles': self.subtitles_available,
+            'audio_download': self.download_available,
+            'tor_available': self.tor.is_enabled,
+            'tor_running': self.tor.is_running()
         }
 
-    except requests.RequestException as e:
-        logger.error(f"❌ Ошибка скачивания из R2: {e}")
-        raise ValueError(f"Не удалось скачать файл из облачного хранилища: {e}")
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки большого файла: {e}")
-        raise
-
-    finally:
-        # Очищаем временный файл
-        if temp_file and os.path.exists(temp_file):
-            try:
-                os.remove(temp_file)
-                logger.info(f"🧹 Временный файл удален: {temp_file}")
-            except Exception as cleanup_error:
-                logger.warning(f"⚠️ Не удалось удалить временный файл: {cleanup_error}")
+    async def shutdown(self):
+        """Остановка сервиса"""
+        if self.tor:
+            await self.tor.stop()
+        if self.executor:
+            self.executor.shutdown(wait=True)
 
 
-async def _common_transcription_processing(task_instance, chat_id: int, user_id: int, file_path: str,
-                                           enhanced_file_info: dict, db_service, telegram_client,
-                                           transcription_service, audio_processor, localization_service):
-    """Общая логика транскрипции для маленьких и больших файлов с новой моделью ценообразования"""
-
-    processed_audio_path = None
-
-    try:
-        # Инициализация сервисов
-        task_instance.update_state(state='PROGRESS', meta={'progress': 15, 'status': 'Подключение к сервисам...'})
-
-        db_service = DatabaseService()
-        await db_service.initialize()
-
-        telegram_client = TelegramClient(settings.TELEGRAM_TOKEN)
-        transcription_service = TranscriptionService(settings.OPENAI_API_KEY)
-
-        # Получаем пользователя
-        user = await db_service.get_user_by_telegram_id(user_id)
-        if not user:
-            raise ValueError("Пользователь не найден")
-
-        lang = user.get('language', 'ru')
-
-        # Валидация файла
-        task_instance.update_state(state='PROGRESS', meta={'progress': 25, 'status': 'Проверяю файл...'})
-
-        is_valid, validation_message = await audio_processor.validate_audio_file(
-            file_path, max_size_mb=2048  # 2GB лимит
-        )
-        if not is_valid:
-            raise ValueError(f"Файл не прошел валидацию: {validation_message}")
-
-        # Обработка файла
-        task_instance.update_state(state='PROGRESS', meta={'progress': 35, 'status': 'Конвертация файла...'})
-
-        processed_audio_path = await audio_processor.process_file(file_path)
-        if not processed_audio_path:
-            raise ValueError("Ошибка обработки файла")
-
-        # Транскрипция
-        task_instance.update_state(state='PROGRESS', meta={'progress': 60, 'status': 'Транскрипция...'})
-
-        transcription_result = await transcription_service.transcribe_audio(processed_audio_path)
-        if not transcription_result.get('success'):
-            raise Exception(f"Ошибка транскрипции: {transcription_result.get('error')}")
-
-        # ИСПРАВЛЕННАЯ ВАЛИДАЦИЯ ТРАНСКРИПЦИИ
-        text = transcription_result['text'].strip()
-        language = transcription_result['language']
-
-        # Функция для определения является ли символ китайским/японским/корейским
-        def is_cjk_character(char):
-            """Проверяет является ли символ китайским, японским или корейским"""
-            return '\u4e00' <= char <= '\u9fff' or '\u3400' <= char <= '\u4dbf' or '\u20000' <= char <= '\u2a6df'
-
-        # Считаем количество CJK символов в тексте
-        cjk_count = sum(1 for char in text if is_cjk_character(char))
-        total_chars = len(text)
-        non_space_chars = len(text.replace(' ', ''))
-
-        # Умная валидация в зависимости от языка и содержимого
-        if total_chars == 0:
-            raise ValueError("Транскрипция пустая")
-
-        # Для текстов с китайскими/японскими/корейскими символами
-        if cjk_count > 0:
-            # Если больше половины символов - CJK, то даже 1-2 символа могут быть значимыми
-            if cjk_count >= total_chars * 0.5:
-                min_chars = 1  # Один иероглиф может быть словом
-                logger.info(f"CJK текст обнаружен: {cjk_count} иероглифов из {total_chars}")
-            else:
-                min_chars = 2  # Смешанный текст
-        else:
-            # Для латинских языков нужно больше символов
-            if language in ['ar', 'he']:
-                min_chars = 2  # Арабский/иврит
-            else:
-                min_chars = 3  # Английский, русский и др.
-
-        if non_space_chars < min_chars:
-            raise ValueError(f"Транскрипция слишком короткая: {non_space_chars} символов (минимум {min_chars})")
-
-        # Логирование результата
-        logger.info(f"✅ Транскрипция принята: {total_chars} символов ({cjk_count} CJK), язык: {language}")
-        if total_chars < 20:
-            logger.info(f"🔍 Содержимое: '{text}'")
-
-        # Сохранение в БД
-        task_instance.update_state(state='PROGRESS', meta={'progress': 80, 'status': 'Сохранение...'})
-
-        db_file = await db_service.create_audio_file(
-            user_id=user_id,
-            telegram_file_id=enhanced_file_info.get('file_id', 'unknown'),
-            file_type=enhanced_file_info.get('original_extension', 'mp4'),
-            duration_seconds=enhanced_file_info.get('duration', 0),
-            file_size_mb=enhanced_file_info.get('file_size', 0) / (1024 * 1024)
-        )
-
-        db_transcription = await db_service.create_transcription(
-            audio_file_id=db_file['id'],
-            user_id=user_id,
-            text=text,
-            language=language,
-            confidence=transcription_result.get('confidence')
-        )
-
-        # НОВАЯ МОДЕЛЬ: Списываем баланс ТОЛЬКО за транскрипцию
-        transcription_cost = max(1, enhanced_file_info.get('duration', 0) // 60)  # Минимум 1 минута
-        current_balance = user.get('balance_minutes', 0)
-        new_balance = max(0, current_balance - transcription_cost)
-
-        # Обновляем баланс пользователя
-        await db_service.update_user(user_id, {'balance_minutes': new_balance})
-        logger.info(f"💰 Списано {transcription_cost} мин за ТРАНСКРИПЦИЮ, остаток: {new_balance} мин")
-
-        # Отправка результата с НОВЫМ UX
-        task_instance.update_state(state='PROGRESS', meta={'progress': 95, 'status': 'Отправка результата...'})
-
-        await _send_transcription_result_new_ux(
-            telegram_client, chat_id, text, language,
-            enhanced_file_info, new_balance, db_transcription['id']
-        )
-
-        task_instance.update_state(state='SUCCESS', meta={'progress': 100, 'status': 'Готово!'})
-
-    except Exception as e:
-        logger.error(f"Ошибка в общей обработке: {e}", exc_info=True)
-
-        if telegram_client:
-            await telegram_client.send_message(chat_id, "❌ Произошла ошибка при обработке файла.")
-
-        raise e
-
-
-async def _send_transcription_result_new_ux(telegram_client, chat_id: int, text: str, language: str,
-                                            file_info: dict, user_balance: int, transcription_id: str):
+def cleanup_old_audio_files():
     """
-    НОВАЯ отправка результата с четким разделением платежей
+    УЛУЧШЕННАЯ версия: удаляет файлы старше 24 часов + логирование
     """
-    from ui.keyboards import create_post_transcription_keyboard
-
-    clean_text = text.replace('<', '&lt;').replace('>', '&gt;').replace('&', '&amp;')
-    file_size_mb = file_info.get('file_size', 0) / (1024 * 1024)
-    duration_seconds = file_info.get('duration', 0)
-
-    # Определяем тип языка для правильной статистики
-    is_cjk = language in ['zh', 'ja', 'ko']
-
-    if is_cjk:
-        stats_line = f"📊 Символов: {len(text)}"
-    else:
-        word_count = len(text.split())
-        stats_line = f"📊 Слов: {word_count}"
-
-    # Форматируем длительность
-    if duration_seconds < 60:
-        duration_str = f"{duration_seconds}с"
-    elif duration_seconds < 3600:
-        minutes = duration_seconds // 60
-        seconds = duration_seconds % 60
-        duration_str = f"{minutes}м {seconds}с" if seconds else f"{minutes}м"
-    else:
-        hours = duration_seconds // 3600
-        minutes = (duration_seconds % 3600) // 60
-        duration_str = f"{hours}ч {minutes}м" if minutes else f"{hours}ч"
-
-    # НОВОЕ: Показываем что именно было оплачено
-    transcription_cost = max(1, duration_seconds // 60)
-
-    # Основное сообщение с результатом и четким разделением платежей
-    result_header = f"""✅ Транскрипция готова!
-
-📁 Размер: {file_size_mb:.1f}MB • ⏱️ {duration_str}
-🌍 Язык: {language.upper()} • {stats_line}
-
-💰 Списано за транскрипцию: {transcription_cost} мин
-💳 Остаток баланса: {user_balance} мин
-✨ Дальнейшая обработка БЕСПЛАТНА!"""
-
-    # Добавляем подсказку для коротких текстов
-    if len(text) < 15:
-        if is_cjk:
-            result_header += f"\n💡 Короткий текст нормален для {language.upper()}"
-        else:
-            result_header += f"\n💡 Для более длинного результата говорите громче"
-
-    # Проверяем длину текста для отправки
-    max_message_length = 3200  # Безопасный лимит для Telegram с учетом заголовка
-
-    if len(clean_text) > max_message_length:
-        # Длинный текст - отправляем заголовок отдельно
-        await telegram_client.send_message(chat_id, result_header)
-
-        # Разбиваем текст на части
-        chunks = [clean_text[i:i + max_message_length] for i in range(0, len(clean_text), max_message_length)]
-
-        for i, chunk in enumerate(chunks):
-            chunk_message = f"📄 Часть {i + 1}/{len(chunks)}:\n\n{chunk}"
-            await telegram_client.send_message(chat_id, chunk_message)
-
-            # Пауза между частями
-            if i < len(chunks) - 1:
-                await asyncio.sleep(0.5)
-    else:
-        # Короткий текст - всё в одном сообщении
-        full_message = f"""{result_header}
-
-📝 Текст:
-{clean_text}"""
-
-        await telegram_client.send_message(chat_id, full_message)
-
-    # ГЛАВНАЯ ФИШКА: отправляем клавиатуру с популярными форматами + акцент на бесплатность
-    keyboard = create_post_transcription_keyboard(transcription_id, user_balance)
-
-    menu_message = """🎯 Что делаем дальше?
-
-✨ ВСЯ ОБРАБОТКА БЕСПЛАТНА!
-Выберите нужный формат:"""
-
-    await telegram_client.send_message(chat_id, menu_message, reply_markup=keyboard)
-
-
-async def _send_full_transcription_text(telegram_client, chat_id: int, transcription_id: str,
-                                        text: str, language: str, file_info: dict):
-    """Отправка полного текста транскрипции при нажатии кнопки 'Показать полный текст'"""
-
-    clean_text = text.replace('<', '&lt;').replace('>', '&gt;').replace('&', '&amp;')
-
-    # Информация о файле
-    file_size_mb = file_info.get('file_size', 0) / (1024 * 1024)
-    duration_seconds = file_info.get('duration', 0)
-
-    # Статистика
-    if language in ['zh', 'ja', 'ko']:
-        stats = f"{len(text)} символов"
-    else:
-        stats = f"{len(text.split())} слов"
-
-    header = f"""📝 Полный текст транскрипции
-
-📁 {file_size_mb:.1f}MB • 🌍 {language.upper()} • 📊 {stats}
-
-───────────────────────────────"""
-
-    # Отправляем заголовок
-    await telegram_client.send_message(chat_id, header)
-
-    # Разбиваем текст если нужно
-    max_length = 3800  # Оставляем место для форматирования
-
-    if len(clean_text) > max_length:
-        chunks = [clean_text[i:i + max_length] for i in range(0, len(clean_text), max_length)]
-
-        for i, chunk in enumerate(chunks):
-            await telegram_client.send_message(chat_id, chunk)
-            if i < len(chunks) - 1:
-                await asyncio.sleep(0.3)
-    else:
-        await telegram_client.send_message(chat_id, clean_text)
-
-    # Кнопка возврата
-    back_keyboard = {
-        "inline_keyboard": [[
-            {"text": "🔙 К выбору форматов", "callback_data": f"back_to_main:{transcription_id}"}
-        ]]
-    }
-
-    await telegram_client.send_message(
-        chat_id,
-        "👆 Полный текст выше",
-        reply_markup=back_keyboard
-    )
-
-
-async def _cleanup_resources(temp_file_path, processed_audio_path, db_service, telegram_client, transcription_service):
-    """Очистка ресурсов"""
     try:
-        # Очистка файлов
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
-            logger.info(f"🧹 Удален временный файл: {temp_file_path}")
-        if processed_audio_path and processed_audio_path != temp_file_path and os.path.exists(processed_audio_path):
-            os.remove(processed_audio_path)
-            logger.info(f"🧹 Удален обработанный файл: {processed_audio_path}")
-
-        # Закрытие соединений
-        if db_service:
-            await db_service.close()
-        if telegram_client:
-            await telegram_client.close()
-        if transcription_service:
-            await transcription_service.close()
-
-    except Exception as cleanup_error:
-        logger.warning(f"Ошибка при очистке ресурсов: {cleanup_error}")
-
-    # Принудительная очистка памяти
-    gc.collect()
-
-
-async def _notify_user_error(chat_id: int, error_message: str):
-    """Уведомление пользователя об ошибке"""
-    try:
-        from services.telegram_client import TelegramClient
-        temp_client = TelegramClient(settings.TELEGRAM_TOKEN)
-        await temp_client.send_message(
-            chat_id,
-            "❌ Произошла ошибка при обработке файла. Пожалуйста, попробуйте еще раз."
-        )
-        await temp_client.close()
-    except Exception as e:
-        logger.error(f"Не удалось уведомить пользователя об ошибке: {e}")
-
-
-async def _notify_processing_is_free(chat_id: int, telegram_client):
-    """Уведомление о том, что обработка бесплатна"""
-    message = """💡 Подсказка:
-
-💰 ТРАНСКРИПЦИЯ = платно (по минутам)
-✨ ОБРАБОТКА ТЕКСТА = всегда бесплатна!
-
-🎯 Создавайте сколько угодно:
-• Протоколы совещаний
-• Instagram посты  
-• Конспекты лекций
-• Переводы на любые языки
-• И многое другое!
-
-Плата только за превращение речи в текст! 🎤➡️📝"""
-
-    await telegram_client.send_message(chat_id, message)
-
-
-# Дополнительные вспомогательные функции для работы с большими файлами
-
-async def get_transcription_status(task_id: str) -> Dict[str, Any]:
-    """Получает статус задачи транскрипции"""
-    try:
-        from celery.result import AsyncResult
-        result = AsyncResult(task_id, app=celery_app)
-
-        if result.ready():
-            if result.successful():
-                return {
-                    'status': 'completed',
-                    'result': result.get(),
-                    'progress': 100
-                }
-            else:
-                return {
-                    'status': 'failed',
-                    'error': str(result.info),
-                    'progress': 0
-                }
-        else:
-            # Задача еще выполняется
-            meta = result.info if result.info else {}
-            return {
-                'status': 'processing',
-                'progress': meta.get('progress', 0),
-                'current_status': meta.get('status', 'Обработка...'),
-                'meta': meta
-            }
-
-    except Exception as e:
-        logger.error(f"Ошибка получения статуса задачи {task_id}: {e}")
-        return {
-            'status': 'error',
-            'error': f'Ошибка получения статуса: {e}',
-            'progress': 0
-        }
-
-
-async def cancel_transcription_task(task_id: str) -> bool:
-    """Отменяет задачу транскрипции"""
-    try:
-        from celery.result import AsyncResult
-        result = AsyncResult(task_id, app=celery_app)
-        result.revoke(terminate=True)
-        logger.info(f"Задача {task_id} отменена")
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка отмены задачи {task_id}: {e}")
-        return False
-
-
-# Функция для проверки доступности OpenAI API
-async def test_openai_connection() -> bool:
-    """Тестирует подключение к OpenAI API"""
-    try:
-        test_service = TranscriptionService(settings.OPENAI_API_KEY)
-        # Создаем минимальный аудио файл для теста (1 секунда тишины)
-        import tempfile
-        import wave
-
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-            with wave.open(tmp.name, 'w') as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(16000)
-                wav_file.writeframes(b'\x00' * 32000)  # 1 секунда тишины
-
-            # Пробуем транскрибировать тестовый файл
-            result = await test_service.transcribe_audio(tmp.name)
-            os.unlink(tmp.name)
-
-            await test_service.close()
-            return result.get('success', False)
-
-    except Exception as e:
-        logger.error(f"Ошибка тестирования OpenAI API: {e}")
-        return False
-
-
-# Функция для мониторинга использования ресурсов
-def get_worker_stats() -> Dict[str, Any]:
-    """Получает статистику использования worker'ов"""
-    try:
-        import psutil
-        process = psutil.Process()
-
-        return {
-            'memory_usage_mb': process.memory_info().rss / 1024 / 1024,
-            'cpu_percent': process.cpu_percent(),
-            'num_threads': process.num_threads(),
-            'open_files': len(process.open_files()),
-            'connections': len(process.connections())
-        }
-    except Exception as e:
-        logger.error(f"Ошибка получения статистики worker'а: {e}")
-        return {}
-
-
-# Утилиты для работы с файлами
-def clean_temp_files(max_age_hours: int = 2):
-    """Очищает временные файлы старше указанного возраста"""
-    try:
-        import time
-        temp_dir = '/tmp'
-        current_time = time.time()
-        max_age_seconds = max_age_hours * 3600
+        now = time.time()
+        os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
 
         cleaned_count = 0
-        for filename in os.listdir(temp_dir):
-            if filename.startswith(('small_file_', 'youtube_audio_', 'processed_')):
-                file_path = os.path.join(temp_dir, filename)
-                if os.path.isfile(file_path):
-                    file_age = current_time - os.path.getctime(file_path)
-                    if file_age > max_age_seconds:
-                        try:
-                            os.remove(file_path)
-                            cleaned_count += 1
-                        except Exception as e:
-                            logger.warning(f"Не удалось удалить {file_path}: {e}")
+        total_files = 0
+
+        logger.info(f"🧹 Запуск очистки старых файлов в {AUDIO_STORAGE_DIR}")
+
+        for filename in os.listdir(AUDIO_STORAGE_DIR):
+            filepath = os.path.join(AUDIO_STORAGE_DIR, filename)
+
+            try:
+                if os.path.isfile(filepath):
+                    total_files += 1
+                    file_age = now - os.path.getmtime(filepath)
+                    file_age_hours = file_age / 3600
+
+                    if file_age > MAX_FILE_AGE_SECONDS:  # 24 часа = 86400 секунд
+                        file_size = os.path.getsize(filepath)
+                        os.remove(filepath)
+                        cleaned_count += 1
+                        logger.info(
+                            f"🗑️ Удален файл: {filename} (возраст: {file_age_hours:.1f}ч, размер: {file_size / 1024 / 1024:.1f}MB)")
+                    else:
+                        logger.debug(f"📁 Файл сохранен: {filename} (возраст: {file_age_hours:.1f}ч)")
+
+            except Exception as e:
+                logger.warning(f"❌ Не удалось обработать {filepath}: {e}")
 
         if cleaned_count > 0:
-            logger.info(f"🧹 Очищено {cleaned_count} временных файлов")
+            logger.info(f"✅ Очищено {cleaned_count} из {total_files} файлов")
+        else:
+            logger.info(f"ℹ️ Все {total_files} файлов актуальны (младше 24ч)")
 
     except Exception as e:
-        logger.error(f"Ошибка очистки временных файлов: {e}")
+        logger.error(f"❌ Ошибка очистки временных файлов: {e}")
 
 
-# Запуск периодической очистки при старте worker'а
-@celery_app.on_after_configure.connect
-def setup_periodic_tasks(sender, **kwargs):
-    """Настройка периодических задач"""
-    # Очистка временных файлов каждые 30 минут
-    sender.add_periodic_task(
-        1800.0,  # 30 минут
-        cleanup_temp_files_task.s(),
-        name='cleanup temp files every 30 minutes'
-    )
+async def schedule_cleanup():
+    """Автоматическая очистка каждые 6 часов"""
+    while True:
+        try:
+            logger.info("🔄 Запланированная очистка файлов...")
+            cleanup_old_audio_files()
+
+            # Следующая очистка через 6 часов
+            await asyncio.sleep(6 * 3600)  # 6 часов = 21600 секунд
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка в schedule_cleanup: {e}")
+            await asyncio.sleep(3600)  # При ошибке повтор через 1 час
 
 
-@celery_app.task(name="cleanup_temp_files_task")
-def cleanup_temp_files_task():
-    """Периодическая задача очистки временных файлов"""
+# Предзагрузка системы для ускорения
+async def preload_system():
+    """Предварительная загрузка системы для ускорения"""
+    logger.info("⚡ Предварительная загрузка системы...")
+
+    tasks = []
+
+    # Предзагрузка Tor
+    if USE_TOR:
+        tasks.append(asyncio.create_task(_preload_tor()))
+
+    # Предзагрузка R2 соединения
+    tasks.append(asyncio.create_task(_preload_r2()))
+
+    # Предзагрузка FFmpeg
+    tasks.append(asyncio.create_task(_preload_ffmpeg()))
+
+    # Ждем все задачи
+    await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info("⚡ Система предзагружена")
+
+
+async def _preload_tor():
+    """Предзагрузка Tor"""
     try:
-        clean_temp_files(max_age_hours=2)
-        return {"status": "success", "message": "Temporary files cleaned"}
-    except Exception as e:
-        logger.error(f"Ошибка в задаче очистки: {e}")
-        return {"status": "error", "error": str(e)}
+        service = SmartVideoService()
+        await service.tor.initialize()
+        logger.info("⚡ Tor предзагружен")
+    except:
+        pass
 
 
-# Healthcheck для мониторинга состояния сервиса
-@celery_app.task(name="health_check_task")
-def health_check_task():
-    """Задача для проверки здоровья сервиса"""
+async def _preload_r2():
+    """Предзагрузка R2"""
     try:
-        stats = get_worker_stats()
+        if R2_ACCOUNT_ID and R2_BUCKET:
+            import boto3
+            client = boto3.client('s3',
+                                  endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
+                                  aws_access_key_id=R2_ACCESS_KEY_ID,
+                                  aws_secret_access_key=R2_SECRET_ACCESS_KEY)
+            # Тестовый запрос
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: client.list_objects_v2(Bucket=R2_BUCKET, MaxKeys=1)
+            )
+            logger.info("⚡ R2 соединение предзагружено")
+    except:
+        pass
 
-        # Проверяем критичные параметры
-        memory_mb = stats.get('memory_usage_mb', 0)
-        if memory_mb > 200:  # 200MB лимит для Redis Starter
-            logger.warning(f"Высокое использование памяти: {memory_mb:.1f}MB")
 
-        return {
-            "status": "healthy",
-            "timestamp": asyncio.get_event_loop().time(),
-            "stats": stats
+async def _preload_ffmpeg():
+    """Предзагрузка FFmpeg"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'ffmpeg', '-version',
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL
+        )
+        await proc.wait()
+        logger.info("⚡ FFmpeg предзагружен")
+    except:
+        pass
+
+
+# Удобная функция для инициализации
+async def create_smart_video_service() -> SmartVideoService:
+    """Создает и инициализирует SmartVideoService"""
+    service = SmartVideoService()
+    await service.initialize()
+    return service
+
+
+async def get_system_status() -> Dict[str, Any]:
+    """Получает статус системы для health check"""
+    return {
+        'components': {
+            'yt_dlp': _yt_dlp_ok,
+            'youtube_transcript_api': _yta_ok,
+            'boto3': _boto_ok,
+            'tor_libs': _tor_ok
+        },
+        'tor': {
+            'enabled': USE_TOR,
+            'port': TOR_SOCKS_PORT
+        },
+        'r2': {
+            'configured': bool(R2_ACCOUNT_ID and R2_BUCKET)
         }
+    }
+
+
+async def diagnose_system() -> Dict[str, Any]:
+    """Диагностика системы для отладки проблем"""
+    diagnosis = {
+        'python_imports': {
+            'yt_dlp': _yt_dlp_ok,
+            'youtube_transcript_api': _yta_ok,
+            'boto3': _boto_ok,
+            'tor_libs': _tor_ok,
+        },
+        'system_commands': {},
+        'environment': {},
+        'tor_status': {},
+        'errors': []
+    }
+
+    # Проверяем системные команды
+    commands_to_check = ['tor', 'nc', 'ffmpeg', 'which']
+    for cmd in commands_to_check:
+        try:
+            result = subprocess.run(['which', cmd], capture_output=True, text=True, timeout=5)
+            diagnosis['system_commands'][cmd] = {
+                'available': result.returncode == 0,
+                'path': result.stdout.strip() if result.returncode == 0 else None
+            }
+        except Exception as e:
+            diagnosis['system_commands'][cmd] = {'available': False, 'error': str(e)}
+
+    # Проверяем переменные окружения
+    env_vars = ['USE_TOR', 'YT_PROXY', 'YT_COOKIES_DATA', 'TOR_PORT', 'TOR_CONTROL_PORT']
+    for var in env_vars:
+        value = os.getenv(var)
+        diagnosis['environment'][var] = {
+            'set': value is not None,
+            'value': value if var != 'YT_COOKIES_DATA' else ('***hidden***' if value else None)
+        }
+
+    # Проверяем Tor
+    try:
+        service = SmartVideoService()
+        if service.tor.is_enabled:
+            diagnosis['tor_status']['enabled'] = True
+            diagnosis['tor_status']['can_start'] = await service.tor.initialize()
+            diagnosis['tor_status']['running'] = service.tor.is_running()
+            diagnosis['tor_status']['ip'] = service.tor.current_ip
+            await service.tor.stop()
+        else:
+            diagnosis['tor_status']['enabled'] = False
     except Exception as e:
-        logger.error(f"Ошибка health check: {e}")
-        return {
-            "status": "unhealthy",
-            "error": str(e)
-        }
+        diagnosis['errors'].append(f"Tor check failed: {e}")
+
+    return diagnosis
