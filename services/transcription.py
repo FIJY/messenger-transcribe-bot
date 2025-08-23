@@ -1,4 +1,4 @@
-# services/transcription.py - ПОЛНАЯ версия с новой моделью ценообразования
+# services/transcription.py - ПОЛНАЯ ИСПРАВЛЕННАЯ версия с новой моделью ценообразования
 import logging
 import asyncio
 import os
@@ -26,7 +26,7 @@ try:
     from ui.localization import LocalizationService
     from ui.keyboards import create_post_transcription_keyboard
 except ImportError:
-    # Эти импорты выполнятся внутри функций при необходимости
+    # Эти импорты выполняются внутри функций при необходимости
     DatabaseService = None
     AudioProcessor = None
     TelegramClient = None
@@ -216,7 +216,10 @@ def process_large_file_task(self, chat_id: int, user_id: int, enhanced_file_info
 
 
 async def _async_process_small_file(task_instance, chat_id: int, user_id: int, enhanced_file_info: dict):
-    """Обработка маленьких файлов через Redis (base64) или локально, если base64 отсутствует"""
+    """
+    ИСПРАВЛЕННАЯ обработка маленьких файлов через Redis (base64) или локально
+    Теперь поддерживает все возможные варианты передачи файла
+    """
 
     from services.database import DatabaseService
     from services.audio_processor import AudioProcessor
@@ -238,27 +241,61 @@ async def _async_process_small_file(task_instance, chat_id: int, user_id: int, e
 
         # 🔹 Вариант 1: файл передан как base64 (Redis-режим)
         if 'file_content_b64' in enhanced_file_info:
+            logger.info("📦 Декодируем файл из base64")
             file_content = base64.b64decode(enhanced_file_info['file_content_b64'])
             logger.info(f"Декодировано {len(file_content)} байт из base64")
             del enhanced_file_info['file_content_b64']
             gc.collect()
 
             file_extension = enhanced_file_info.get('original_extension', 'oga') or 'oga'
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}", dir='/tmp', prefix='small_file_') as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}", dir='/tmp',
+                                             prefix='small_file_') as tmp:
                 tmp.write(file_content)
                 temp_file_path = tmp.name
             del file_content
             gc.collect()
 
-        # 🔹 Вариант 2: base64 нет, но есть локальный путь
+        # 🔹 Вариант 2: есть локальный путь к файлу (local_file_path)
         elif 'local_file_path' in enhanced_file_info and os.path.exists(enhanced_file_info['local_file_path']):
             temp_file_path = enhanced_file_info['local_file_path']
-            logger.warning(f"⚠️ base64 отсутствует, использую локальный файл: {temp_file_path}")
+            logger.info(f"📂 Используем локальный файл: {temp_file_path}")
+
+        # 🔹 Вариант 3: проверяем другие возможные ключи для файла
+        elif 'file_path' in enhanced_file_info and os.path.exists(enhanced_file_info['file_path']):
+            temp_file_path = enhanced_file_info['file_path']
+            logger.info(f"📂 Используем файл по пути file_path: {temp_file_path}")
+
+        # 🔹 Вариант 4: проверяем shared_file_path (на случай если это локальный путь, а не URL)
+        elif 'shared_file_path' in enhanced_file_info:
+            shared_path = enhanced_file_info['shared_file_path']
+            # Проверяем, является ли это локальным файлом или URL
+            if os.path.exists(shared_path):
+                temp_file_path = shared_path
+                logger.info(f"📂 Используем файл по пути shared_file_path: {temp_file_path}")
+            else:
+                # Это URL, попробуем скачать
+                logger.info(f"🌐 shared_file_path является URL: {shared_path}")
+                temp_file_path = await _download_file_from_url(shared_path)
 
         else:
-            raise ValueError("Файл не найден: отсутствует base64 и local_file_path")
+            # Выводим подробную диагностику
+            logger.error("❌ Файл не найден. Доступные ключи в enhanced_file_info:")
+            for key, value in enhanced_file_info.items():
+                if isinstance(value, str) and len(value) > 100:
+                    logger.error(f"  - {key}: {type(value)} (длина: {len(value)})")
+                else:
+                    logger.error(f"  - {key}: {value}")
 
-        # 🔹 Дальше идёт общая логика
+            raise ValueError(
+                "Файл не найден: отсутствуют все возможные пути к файлу (file_content_b64, local_file_path, file_path, shared_file_path)")
+
+        # Проверяем что файл действительно существует
+        if not temp_file_path or not os.path.exists(temp_file_path):
+            raise ValueError(f"Файл не существует: {temp_file_path}")
+
+        logger.info(f"✅ Файл найден: {temp_file_path} ({os.path.getsize(temp_file_path)} байт)")
+
+        # 🔹 Далее идёт общая логика
         await _common_transcription_processing(
             task_instance, chat_id, user_id, temp_file_path, enhanced_file_info,
             db_service, telegram_client, transcription_service, audio_processor, localization_service
@@ -273,6 +310,29 @@ async def _async_process_small_file(task_instance, chat_id: int, user_id: int, e
     finally:
         await _cleanup_resources(temp_file_path, processed_audio_path,
                                  db_service, telegram_client, transcription_service)
+
+
+async def _download_file_from_url(url: str) -> str:
+    """Скачивает файл по URL и возвращает путь к временному файлу"""
+    import aiohttp
+    import tempfile
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                response.raise_for_status()
+
+                # Создаём временный файл
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
+                    async for chunk in response.content.iter_chunked(8192):
+                        tmp_file.write(chunk)
+
+                    logger.info(f"📥 Файл скачан по URL: {tmp_file.name}")
+                    return tmp_file.name
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка скачивания файла по URL {url}: {e}")
+        raise
 
 
 async def _async_process_large_file(task, chat_id: int, user_id: int, enhanced_file_info: dict):
@@ -295,7 +355,7 @@ async def _async_process_large_file(task, chat_id: int, user_id: int, enhanced_f
         })
 
         # Скачиваем файл из R2
-        logger.info(f"📥 Скачивание из R2: {r2_url}")
+        logger.info(f"🔥 Скачивание из R2: {r2_url}")
 
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_f:
             temp_file = tmp_f.name
@@ -317,7 +377,7 @@ async def _async_process_large_file(task, chat_id: int, user_id: int, enhanced_f
                         progress = 10 + int((downloaded / total_size) * 20)
                         task.update_state(state='PROGRESS', meta={
                             'progress': progress,
-                            'status': f'Скачивание: {progress-10}%'
+                            'status': f'Скачивание: {progress - 10}%'
                         })
 
         logger.info(f"✅ Файл скачан во временную папку: {temp_file}")
@@ -328,45 +388,103 @@ async def _async_process_large_file(task, chat_id: int, user_id: int, enhanced_f
             'status': 'Начинаем транскрипцию...'
         })
 
-        # Инициализируем сервисы
-        localization = LocalizationService()
-        transcription_service = TranscriptionService()
+        # Инициализируем сервисы для обработки большого файла
+        from services.database import DatabaseService
+        from services.audio_processor import AudioProcessor
+        from services.telegram_client import TelegramClient
+        from ui.localization import LocalizationService
+        from ui.keyboards import create_post_transcription_keyboard
+
+        db_service = DatabaseService()
+        await db_service.initialize()
+
+        telegram_client = TelegramClient(settings.TELEGRAM_TOKEN)
+        transcription_service = TranscriptionService(settings.OPENAI_API_KEY)
+        audio_processor = AudioProcessor()
+
+        # Получаем пользователя
+        user = await db_service.get_user_by_telegram_id(enhanced_file_info.get('user_id'))
+        if not user:
+            raise ValueError("Пользователь не найден")
 
         # Валидация файла
-        validated_info = transcription_service.validate_file(temp_file)
-        if not validated_info['valid']:
-            raise ValueError(f"Файл не прошел валидацию: {validated_info['error']}")
+        is_valid, validation_message = await audio_processor.validate_audio_file(
+            temp_file, max_size_mb=2048  # 2GB лимит
+        )
+        if not is_valid:
+            raise ValueError(f"Файл не прошел валидацию: {validation_message}")
 
-        # Обновляем enhanced_file_info для локального файла
-        local_file_info = enhanced_file_info.copy()
-        local_file_info['file_path'] = temp_file
-        local_file_info['shared_file_path'] = temp_file  # Для совместимости
+        # Обработка аудио файла
+        task.update_state(state='PROGRESS', meta={
+            'progress': 45,
+            'status': 'Обработка аудио...'
+        })
+
+        processed_audio_path = await audio_processor.process_file(temp_file)
+        if not processed_audio_path:
+            raise ValueError("Ошибка обработки файла")
 
         # Транскрипция
         task.update_state(state='PROGRESS', meta={
-            'progress': 40,
+            'progress': 60,
             'status': 'Выполняется транскрипция...'
         })
 
-        transcription_result = await transcription_service.transcribe_audio_async(
-            temp_file,
-            local_file_info,
-            progress_callback=lambda p: task.update_state(
-                state='PROGRESS',
-                meta={'progress': 40 + int(p * 0.5), 'status': f'Транскрипция: {int(p)}%'}
-            )
-        )
+        transcription_result = await transcription_service.transcribe_audio(processed_audio_path)
 
         if not transcription_result.get('success'):
             raise ValueError(f"Ошибка транскрипции: {transcription_result.get('error')}")
 
+        # Валидация результата транскрипции
+        text = transcription_result['text'].strip()
+        language = transcription_result['language']
+
+        if len(text) < 3:
+            raise ValueError(f"Транскрипция слишком короткая: {len(text)} символов")
+
         # Сохранение результатов в БД
         task.update_state(state='PROGRESS', meta={
-            'progress': 90,
+            'progress': 85,
             'status': 'Сохранение результатов...'
         })
 
-        # ... остальная логика сохранения в БД ...
+        db_file = await db_service.create_audio_file(
+            user_id=enhanced_file_info.get('user_id'),
+            telegram_file_id=enhanced_file_info.get('file_id', 'large_file'),
+            file_type=enhanced_file_info.get('original_extension', 'mp3'),
+            duration_seconds=enhanced_file_info.get('duration', 0),
+            file_size_mb=enhanced_file_info.get('file_size', 0) / (1024 * 1024)
+        )
+
+        db_transcription = await db_service.create_transcription(
+            audio_file_id=db_file['id'],
+            user_id=enhanced_file_info.get('user_id'),
+            text=text,
+            language=language,
+            confidence=transcription_result.get('confidence')
+        )
+
+        # Списание баланса за транскрипцию
+        transcription_cost = max(1, enhanced_file_info.get('duration', 0) // 60)
+        current_balance = user.get('balance_minutes', 0)
+        new_balance = max(0, current_balance - transcription_cost)
+
+        await db_service.update_user(enhanced_file_info.get('user_id'), {'balance_minutes': new_balance})
+        logger.info(f"💰 Списано {transcription_cost} мин за транскрипцию, остаток: {new_balance} мин")
+
+        # Отправка результата
+        task.update_state(state='PROGRESS', meta={
+            'progress': 95,
+            'status': 'Отправка результата...'
+        })
+
+        await _send_transcription_result_new_ux(
+            telegram_client, chat_id, text, language,
+            enhanced_file_info, new_balance, db_transcription['id']
+        )
+
+        # Очистка ресурсов
+        await _cleanup_resources(processed_audio_path, None, db_service, telegram_client, transcription_service)
 
         task.update_state(state='PROGRESS', meta={
             'progress': 100,
@@ -377,8 +495,8 @@ async def _async_process_large_file(task, chat_id: int, user_id: int, enhanced_f
             'status': 'success',
             'processing_method': 'r2_cloud',
             'file_type': 'large',
-            'transcription_id': str(transcription_result.get('transcription_id')),
-            'text_length': len(transcription_result.get('text', '')),
+            'transcription_id': str(db_transcription['id']),
+            'text_length': len(text),
             'r2_url': r2_url
         }
 
@@ -398,6 +516,7 @@ async def _async_process_large_file(task, chat_id: int, user_id: int, enhanced_f
                 logger.info(f"🧹 Временный файл удален: {temp_file}")
             except Exception as cleanup_error:
                 logger.warning(f"⚠️ Не удалось удалить временный файл: {cleanup_error}")
+
 
 async def _common_transcription_processing(task_instance, chat_id: int, user_id: int, file_path: str,
                                            enhanced_file_info: dict, db_service, telegram_client,
@@ -485,14 +604,14 @@ async def _common_transcription_processing(task_instance, chat_id: int, user_id:
         # Логирование результата
         logger.info(f"✅ Транскрипция принята: {total_chars} символов ({cjk_count} CJK), язык: {language}")
         if total_chars < 20:
-            logger.info(f"📝 Содержимое: '{text}'")
+            logger.info(f"🔍 Содержимое: '{text}'")
 
         # Сохранение в БД
         task_instance.update_state(state='PROGRESS', meta={'progress': 80, 'status': 'Сохранение...'})
 
         db_file = await db_service.create_audio_file(
             user_id=user_id,
-            telegram_file_id=enhanced_file_info['file_id'],
+            telegram_file_id=enhanced_file_info.get('file_id', 'unknown'),
             file_type=enhanced_file_info.get('original_extension', 'mp4'),
             duration_seconds=enhanced_file_info.get('duration', 0),
             file_size_mb=enhanced_file_info.get('file_size', 0) / (1024 * 1024)
@@ -544,16 +663,6 @@ async def _send_transcription_result_new_ux(telegram_client, chat_id: int, text:
     clean_text = text.replace('<', '&lt;').replace('>', '&gt;').replace('&', '&amp;')
     file_size_mb = file_info.get('file_size', 0) / (1024 * 1024)
     duration_seconds = file_info.get('duration', 0)
-
-    # В services/transcription.py добавить:
-    if file_info.get('processing_method') == 'local_file':
-        # Читаем файл напрямую без скачивания
-        local_file_path = file_info.get('local_file_path')
-        if os.path.exists(local_file_path):
-            # Обрабатываем файл напрямую
-            process_audio_file(local_file_path)
-        else:
-            raise FileNotFoundError(f"Локальный файл не найден: {local_file_path}")
 
     # Определяем тип языка для правильной статистики
     is_cjk = language in ['zh', 'ja', 'ko']
@@ -653,7 +762,7 @@ async def _send_full_transcription_text(telegram_client, chat_id: int, transcrip
 
 📁 {file_size_mb:.1f}MB • 🌍 {language.upper()} • 📊 {stats}
 
-───────────────────────────"""
+───────────────────────────────"""
 
     # Отправляем заголовок
     await telegram_client.send_message(chat_id, header)
@@ -691,8 +800,10 @@ async def _cleanup_resources(temp_file_path, processed_audio_path, db_service, t
         # Очистка файлов
         if temp_file_path and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
+            logger.info(f"🧹 Удален временный файл: {temp_file_path}")
         if processed_audio_path and processed_audio_path != temp_file_path and os.path.exists(processed_audio_path):
             os.remove(processed_audio_path)
+            logger.info(f"🧹 Удален обработанный файл: {processed_audio_path}")
 
         # Закрытие соединений
         if db_service:
@@ -716,7 +827,7 @@ async def _notify_user_error(chat_id: int, error_message: str):
         temp_client = TelegramClient(settings.TELEGRAM_TOKEN)
         await temp_client.send_message(
             chat_id,
-            "❌ Произошла ошибка при обработке файла. Пожалуйте, попробуйте еще раз."
+            "❌ Произошла ошибка при обработке файла. Пожалуйста, попробуйте еще раз."
         )
         await temp_client.close()
     except Exception as e:
@@ -737,6 +848,183 @@ async def _notify_processing_is_free(chat_id: int, telegram_client):
 • Переводы на любые языки
 • И многое другое!
 
-Плата только за превращение речи в текст! 🎤→📝"""
+Плата только за превращение речи в текст! 🎤➡️📝"""
 
     await telegram_client.send_message(chat_id, message)
+
+
+# Дополнительные вспомогательные функции для работы с большими файлами
+
+async def get_transcription_status(task_id: str) -> Dict[str, Any]:
+    """Получает статус задачи транскрипции"""
+    try:
+        from celery.result import AsyncResult
+        result = AsyncResult(task_id, app=celery_app)
+
+        if result.ready():
+            if result.successful():
+                return {
+                    'status': 'completed',
+                    'result': result.get(),
+                    'progress': 100
+                }
+            else:
+                return {
+                    'status': 'failed',
+                    'error': str(result.info),
+                    'progress': 0
+                }
+        else:
+            # Задача еще выполняется
+            meta = result.info if result.info else {}
+            return {
+                'status': 'processing',
+                'progress': meta.get('progress', 0),
+                'current_status': meta.get('status', 'Обработка...'),
+                'meta': meta
+            }
+
+    except Exception as e:
+        logger.error(f"Ошибка получения статуса задачи {task_id}: {e}")
+        return {
+            'status': 'error',
+            'error': f'Ошибка получения статуса: {e}',
+            'progress': 0
+        }
+
+
+async def cancel_transcription_task(task_id: str) -> bool:
+    """Отменяет задачу транскрипции"""
+    try:
+        from celery.result import AsyncResult
+        result = AsyncResult(task_id, app=celery_app)
+        result.revoke(terminate=True)
+        logger.info(f"Задача {task_id} отменена")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка отмены задачи {task_id}: {e}")
+        return False
+
+
+# Функция для проверки доступности OpenAI API
+async def test_openai_connection() -> bool:
+    """Тестирует подключение к OpenAI API"""
+    try:
+        test_service = TranscriptionService(settings.OPENAI_API_KEY)
+        # Создаем минимальный аудио файл для теста (1 секунда тишины)
+        import tempfile
+        import wave
+
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+            with wave.open(tmp.name, 'w') as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(16000)
+                wav_file.writeframes(b'\x00' * 32000)  # 1 секунда тишины
+
+            # Пробуем транскрибировать тестовый файл
+            result = await test_service.transcribe_audio(tmp.name)
+            os.unlink(tmp.name)
+
+            await test_service.close()
+            return result.get('success', False)
+
+    except Exception as e:
+        logger.error(f"Ошибка тестирования OpenAI API: {e}")
+        return False
+
+
+# Функция для мониторинга использования ресурсов
+def get_worker_stats() -> Dict[str, Any]:
+    """Получает статистику использования worker'ов"""
+    try:
+        import psutil
+        process = psutil.Process()
+
+        return {
+            'memory_usage_mb': process.memory_info().rss / 1024 / 1024,
+            'cpu_percent': process.cpu_percent(),
+            'num_threads': process.num_threads(),
+            'open_files': len(process.open_files()),
+            'connections': len(process.connections())
+        }
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики worker'а: {e}")
+        return {}
+
+
+# Утилиты для работы с файлами
+def clean_temp_files(max_age_hours: int = 2):
+    """Очищает временные файлы старше указанного возраста"""
+    try:
+        import time
+        temp_dir = '/tmp'
+        current_time = time.time()
+        max_age_seconds = max_age_hours * 3600
+
+        cleaned_count = 0
+        for filename in os.listdir(temp_dir):
+            if filename.startswith(('small_file_', 'youtube_audio_', 'processed_')):
+                file_path = os.path.join(temp_dir, filename)
+                if os.path.isfile(file_path):
+                    file_age = current_time - os.path.getctime(file_path)
+                    if file_age > max_age_seconds:
+                        try:
+                            os.remove(file_path)
+                            cleaned_count += 1
+                        except Exception as e:
+                            logger.warning(f"Не удалось удалить {file_path}: {e}")
+
+        if cleaned_count > 0:
+            logger.info(f"🧹 Очищено {cleaned_count} временных файлов")
+
+    except Exception as e:
+        logger.error(f"Ошибка очистки временных файлов: {e}")
+
+
+# Запуск периодической очистки при старте worker'а
+@celery_app.on_after_configure.connect
+def setup_periodic_tasks(sender, **kwargs):
+    """Настройка периодических задач"""
+    # Очистка временных файлов каждые 30 минут
+    sender.add_periodic_task(
+        1800.0,  # 30 минут
+        cleanup_temp_files_task.s(),
+        name='cleanup temp files every 30 minutes'
+    )
+
+
+@celery_app.task(name="cleanup_temp_files_task")
+def cleanup_temp_files_task():
+    """Периодическая задача очистки временных файлов"""
+    try:
+        clean_temp_files(max_age_hours=2)
+        return {"status": "success", "message": "Temporary files cleaned"}
+    except Exception as e:
+        logger.error(f"Ошибка в задаче очистки: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+# Healthcheck для мониторинга состояния сервиса
+@celery_app.task(name="health_check_task")
+def health_check_task():
+    """Задача для проверки здоровья сервиса"""
+    try:
+        stats = get_worker_stats()
+
+        # Проверяем критичные параметры
+        memory_mb = stats.get('memory_usage_mb', 0)
+        if memory_mb > 200:  # 200MB лимит для Redis Starter
+            logger.warning(f"Высокое использование памяти: {memory_mb:.1f}MB")
+
+        return {
+            "status": "healthy",
+            "timestamp": asyncio.get_event_loop().time(),
+            "stats": stats
+        }
+    except Exception as e:
+        logger.error(f"Ошибка health check: {e}")
+        return {
+            "status": "unhealthy",
+            "error": str(e)
+        }
