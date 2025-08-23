@@ -10,10 +10,12 @@ from typing import Optional, Dict, Any, Tuple, List
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import signal
+from datetime import datetime, timedelta
 
 # ==== Диагностика импортов ====
 try:
     import yt_dlp
+
     _yt_dlp_ok = True
 except Exception:
     yt_dlp = None
@@ -22,6 +24,7 @@ except Exception:
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
     from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled
+
     _yta_ok = True
 except Exception:
     YouTubeTranscriptApi = None
@@ -32,6 +35,7 @@ except Exception:
 try:
     import boto3
     from botocore.client import Config
+
     _boto_ok = True
 except Exception:
     boto3 = None
@@ -42,6 +46,7 @@ try:
     import requests
     from stem import Signal
     from stem.control import Controller
+
     _tor_ok = True
 except Exception:
     requests = None
@@ -53,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 # ==== Настройки ====
 AUDIO_STORAGE_DIR = os.environ.get("AUDIO_STORAGE_DIR", "/tmp/youtube_audio")
-MAX_FILE_AGE_SECONDS = int(os.environ.get("AUDIO_MAX_AGE_SEC", "86400"))  # 24h
+MAX_FILE_AGE_SECONDS = int(os.environ.get("AUDIO_MAX_AGE_SEC", "86400"))  # 24 часа
 USE_TOR = os.getenv("USE_TOR", "true").lower() == "true"
 TOR_SOCKS_PORT = int(os.getenv("TOR_PORT", "9050"))
 TOR_CONTROL_PORT = int(os.getenv("TOR_CONTROL_PORT", "9051"))
@@ -68,8 +73,14 @@ R2_PUBLIC_BASEURL = os.getenv("R2_PUBLIC_BASEURL", "")
 
 
 class SmartVideoError(Exception): pass
+
+
 class SubtitleNotFoundError(SmartVideoError): pass
+
+
 class DownloadError(SmartVideoError): pass
+
+
 class YouTubeBlockedError(SmartVideoError): pass
 
 
@@ -206,7 +217,7 @@ class TorService:
                 preexec_fn=os.setsid  # Создаем новую группу процессов
             )
 
-            logger.info(f"📄 Tor запускается (PID: {self._tor_process.pid})...")
+            logger.info(f"🔄 Tor запускается (PID: {self._tor_process.pid})...")
 
             # Ждем готовности с уменьшенным таймаутом
             max_wait = 45  # Уменьшаем с 60 до 45 секунд
@@ -325,14 +336,18 @@ class SmartVideoService:
             logger.warning("yt-dlp не установлен. Загрузка аудио недоступна.")
 
     async def initialize(self):
-        """Инициализирует сервис и запускает Tor"""
+        """Инициализирует сервис и запускает Tor + автоочистку"""
         if self.tor.is_enabled:
             # Пытаемся запустить Tor
             await self.tor.initialize()
             if self.tor.is_running():
-                logger.info(f"🌐 Tor запущен. IP: {self.tor.current_ip}")
+                logger.info(f"🌍 Tor запущен. IP: {self.tor.current_ip}")
             else:
                 logger.warning("⚠️ Tor не удалось запустить, работаем без прокси")
+
+        # НОВОЕ: Запускаем автоочистку в фоне
+        asyncio.create_task(schedule_cleanup())
+        logger.info("🗑️ Автоочистка файлов запущена (каждые 6 часов)")
 
     def _init_r2_client(self):
         if not all([_boto_ok, R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
@@ -528,6 +543,8 @@ class SmartVideoService:
 
                     # ИСПРАВЛЕНИЕ: НЕ загружаем в R2, возвращаем локальный путь
                     logger.info(f"🚨 EMERGENCY MODE: R2 отключен, используем локальные файлы")
+
+                    # НЕ ВЫЗЫВАЕМ cleanup_temp_files - файл должен остаться!
                     return final_path
                 else:
                     raise DownloadError("Файл не был создан после скачивания.")
@@ -667,13 +684,23 @@ class SmartVideoService:
         return local_audio_path, 'audio_file', metadata
 
     def cleanup_temp_files(self, file_path: str):
-        """Удаляет временные файлы"""
+        """
+        ИСПРАВЛЕНО: НЕ удаляет файл сразу, оставляет на 24 часа для Celery
+        """
         try:
             if file_path and os.path.exists(file_path):
-                os.remove(file_path)
-                logger.info(f"🧹 Временный файл удален: {file_path}")
+                # НЕ УДАЛЯЕМ ФАЙЛ СРАЗУ!
+                logger.info(f"📁 Файл оставлен для Celery на 24 часа: {file_path}")
+
+                # Можно добавить метку времени для мониторинга
+                import time
+                current_time = time.time()
+                logger.info(f"🕐 Время создания файла: {current_time}")
+
+                # Файл удалится автоматически через функцию cleanup_old_audio_files()
+
         except Exception as e:
-            logger.warning(f"⚠️ Не удалось удалить временный файл {file_path}: {e}")
+            logger.warning(f"⚠️ Ошибка обработки файла {file_path}: {e}")
 
     def get_capabilities(self) -> Dict[str, bool]:
         """Возвращает информацию о возможностях сервиса"""
@@ -693,19 +720,61 @@ class SmartVideoService:
 
 
 def cleanup_old_audio_files():
-    """Удаляет локальные аудиофайлы старше MAX_FILE_AGE_SECONDS."""
-    now = time.time()
-    os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
-    for filename in os.listdir(AUDIO_STORAGE_DIR):
-        filepath = os.path.join(AUDIO_STORAGE_DIR, filename)
+    """
+    УЛУЧШЕННАЯ версия: удаляет файлы старше 24 часов + логирование
+    """
+    try:
+        now = time.time()
+        os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
+
+        cleaned_count = 0
+        total_files = 0
+
+        logger.info(f"🧹 Запуск очистки старых файлов в {AUDIO_STORAGE_DIR}")
+
+        for filename in os.listdir(AUDIO_STORAGE_DIR):
+            filepath = os.path.join(AUDIO_STORAGE_DIR, filename)
+
+            try:
+                if os.path.isfile(filepath):
+                    total_files += 1
+                    file_age = now - os.path.getmtime(filepath)
+                    file_age_hours = file_age / 3600
+
+                    if file_age > MAX_FILE_AGE_SECONDS:  # 24 часа = 86400 секунд
+                        file_size = os.path.getsize(filepath)
+                        os.remove(filepath)
+                        cleaned_count += 1
+                        logger.info(
+                            f"🗑️ Удален файл: {filename} (возраст: {file_age_hours:.1f}ч, размер: {file_size / 1024 / 1024:.1f}MB)")
+                    else:
+                        logger.debug(f"📁 Файл сохранен: {filename} (возраст: {file_age_hours:.1f}ч)")
+
+            except Exception as e:
+                logger.warning(f"❌ Не удалось обработать {filepath}: {e}")
+
+        if cleaned_count > 0:
+            logger.info(f"✅ Очищено {cleaned_count} из {total_files} файлов")
+        else:
+            logger.info(f"ℹ️ Все {total_files} файлов актуальны (младше 24ч)")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка очистки временных файлов: {e}")
+
+
+async def schedule_cleanup():
+    """Автоматическая очистка каждые 6 часов"""
+    while True:
         try:
-            if os.path.isfile(filepath):
-                file_age = now - os.path.getmtime(filepath)
-                if file_age > MAX_FILE_AGE_SECONDS:
-                    os.remove(filepath)
-                    logger.info(f"🗑️ Удален старый файл: {filepath}")
+            logger.info("🔄 Запланированная очистка файлов...")
+            cleanup_old_audio_files()
+
+            # Следующая очистка через 6 часов
+            await asyncio.sleep(6 * 3600)  # 6 часов = 21600 секунд
+
         except Exception as e:
-            logger.warning(f"Не удалось удалить {filepath}: {e}")
+            logger.error(f"❌ Ошибка в schedule_cleanup: {e}")
+            await asyncio.sleep(3600)  # При ошибке повтор через 1 час
 
 
 # Предзагрузка системы для ускорения
