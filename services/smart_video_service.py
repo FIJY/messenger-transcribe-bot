@@ -610,7 +610,7 @@ class SmartVideoService:
             logger.error(f"❌ Ошибка скачивания из R2: {e}")
             raise DownloadError(f"Не удалось скачать из R2: {e}")
 
-    aasync def enhanced_download_youtube_content(self, url: str) -> Dict[str, Any]:
+    async def enhanced_download_youtube_content(self, url: str) -> Dict[str, Any]:
         """🚨 ИСПРАВЛЕННЫЙ МЕТОД с R2 URL в метаданных"""
         video_id = self.extract_video_id(url)
         logger.info(f"🎬 Начинаем обработку видео {video_id}: {url}")
