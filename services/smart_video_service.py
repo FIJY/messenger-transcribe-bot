@@ -506,8 +506,8 @@ class SmartVideoService:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(self.executor, _get_sync)
 
-    async def download_audio(self, url: str) -> str:
-        """🚨 ИСПРАВЛЕННАЯ версия - скачивает аудио и возвращает ЛОКАЛЬНЫЙ путь"""
+    async def download_audio(self, url: str) -> Tuple[str, Optional[str]]:
+        """🚨 ИСПРАВЛЕННАЯ версия - возвращает (локальный_путь, r2_url)"""
         if not self.download_available:
             raise DownloadError("yt-dlp не установлен")
 
@@ -515,32 +515,14 @@ class SmartVideoService:
         if not video_id:
             raise SmartVideoError("Не удалось извлечь ID видео")
 
-        # 🚨 ИСПРАВЛЕНИЕ 1: Проверяем наличие в R2, но НЕ используем для транскрипции
-        if self.s3:
-            r2_key = f"youtube_audio/{video_id}.mp3"
-            if R2_PUBLIC_BASEURL:
-                r2_url = f"{R2_PUBLIC_BASEURL}/{r2_key}"
-            else:
-                r2_url = f"https://{R2_BUCKET}.{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{r2_key}"
-
-            # Проверяем существование файла в R2
-            try:
-                response = requests.head(r2_url, timeout=10)
-                if response.status_code == 200:
-                    logger.info(f"✅ Файл уже существует в R2: {r2_url}")
-                    # 🚨 НО скачиваем локально для транскрипции
-                    logger.info("📥 Скачиваем из R2 для локальной обработки...")
-                    return await self._download_from_r2_to_local(r2_url, video_id)
-            except:
-                pass
-
         # Создаем локальную папку
         os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
         local_path = os.path.join(AUDIO_STORAGE_DIR, f"{video_id}.mp3")
 
-        # 🚨 ИСПРАВЛЕНИЕ 2: Скачиваем как раньше (ваш существующий код)
+        # Скачиваем как раньше (ваш существующий код)
         loop = asyncio.get_event_loop()
         max_retries = 3
+        r2_url = None
 
         for attempt in range(1, max_retries + 1):
             cookies_file = None
@@ -560,20 +542,17 @@ class SmartVideoService:
                 if os.path.exists(final_path):
                     logger.info(f"✅ Аудио скачано локально: {final_path}")
 
-                    # 🚨 ИСПРАВЛЕНИЕ 3: Загружаем в R2, НО НЕ УДАЛЯЕМ локальный файл!
+                    # 🚨 ИСПРАВЛЕНИЕ: Загружаем в R2 и получаем URL
                     if self.s3:
                         try:
                             r2_url = await self.upload_to_r2(final_path, video_id)
-                            logger.info(f"✅ Файл дублирован в R2: {r2_url}")
-                            # 🚨 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: НЕ удаляем локальный файл!
-                            # os.remove(final_path)  # ❌ УБИРАЕМ ЭТУ СТРОКУ!
-                            logger.info(f"📁 Локальный файл сохранен для транскрипции: {final_path}")
+                            logger.info(f"✅ Файл загружен в R2: {r2_url}")
                         except Exception as r2_error:
                             logger.warning(f"⚠️ Не удалось загрузить в R2: {r2_error}")
-                            # Продолжаем с локальным файлом
+                            r2_url = None
 
-                    # 🚨 ИСПРАВЛЕНИЕ 4: ВСЕГДА возвращаем локальный путь!
-                    return final_path
+                    # 🚨 ВОЗВРАЩАЕМ И ЛОКАЛЬНЫЙ ПУТЬ И R2 URL
+                    return final_path, r2_url
 
                 else:
                     raise DownloadError("Файл не был создан после скачивания.")
@@ -631,10 +610,8 @@ class SmartVideoService:
             logger.error(f"❌ Ошибка скачивания из R2: {e}")
             raise DownloadError(f"Не удалось скачать из R2: {e}")
 
-    async def enhanced_download_youtube_content(self, url: str) -> Dict[str, Any]:
-        """
-        🚨 ИСПРАВЛЕННЫЙ МЕТОД: Сразу скачиваем аудио, минуя субтитры
-        """
+    aasync def enhanced_download_youtube_content(self, url: str) -> Dict[str, Any]:
+        """🚨 ИСПРАВЛЕННЫЙ МЕТОД с R2 URL в метаданных"""
         video_id = self.extract_video_id(url)
         logger.info(f"🎬 Начинаем обработку видео {video_id}: {url}")
 
@@ -644,7 +621,7 @@ class SmartVideoService:
             video_info = await self.get_video_info(url)
             logger.info(f"✅ Информация получена: '{video_info.get('title', 'Unknown')}'")
 
-            # 🚨 ИСПРАВЛЕНИЕ: СРАЗУ ПЕРЕХОДИМ К СКАЧИВАНИЮ АУДИО (пропускаем субтитры)
+            # Скачиваем аудио
             logger.info(f"🎵 Скачиваем аудио для {video_id}...")
 
             # Проверяем статус Tor перед скачиванием
@@ -654,20 +631,26 @@ class SmartVideoService:
 
             try:
                 logger.info(f"⬇️ Начинаем скачивание аудио для {video_id}...")
-                local_audio_path = await self.download_audio(url)
+                # 🚨 ПОЛУЧАЕМ И ЛОКАЛЬНЫЙ ПУТЬ И R2 URL
+                local_audio_path, r2_url = await self.download_audio(url)
                 logger.info(f"✅ Аудио скачано: {local_audio_path}")
 
-                # 🚨 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем что файл действительно существует
+                if r2_url:
+                    logger.info(f"☁️ R2 URL: {r2_url}")
+
+                # Проверяем что файл действительно существует
                 if not os.path.exists(local_audio_path):
                     raise DownloadError(f"Скачанный файл не найден: {local_audio_path}")
 
                 file_size = os.path.getsize(local_audio_path)
-                logger.info(f"📊 Размер файла: {file_size} байт ({file_size / 1024 / 1024:.1f} МБ)")
+                logger.info(f"📊 Размер файла: {file_size} байт ({file_size/1024/1024:.1f} МБ)")
 
+                # 🚨 ДОБАВЛЯЕМ R2 URL В МЕТАДАННЫЕ
                 metadata = {
                     'method': 'audio_download',
                     'video_id': video_id,
                     'audio_path': local_audio_path,
+                    'r2_url': r2_url,  # 🔑 КЛЮЧЕВОЕ ДОБАВЛЕНИЕ!
                     'tor_used': self.tor.is_running(),
                     'current_ip': self.tor.current_ip,
                     'file_exists': os.path.exists(local_audio_path),
@@ -681,9 +664,9 @@ class SmartVideoService:
                     'duration': video_info.get('duration', 0),
                     'uploader': video_info.get('uploader', 'Unknown'),
                     'content_type': 'audio_file',
-                    'content': local_audio_path,  # 🚨 ВСЕГДА локальный путь
-                    'metadata': metadata,
-                    'has_subtitles': False,  # Игнорируем субтитры
+                    'content': local_audio_path,  # Локальный путь для совместимости
+                    'metadata': metadata,  # 🔑 R2 URL здесь!
+                    'has_subtitles': False,
                     'video_info': video_info
                 }
 
@@ -705,7 +688,6 @@ class SmartVideoService:
         except Exception as e:
             logger.error(f"❌ КРИТИЧЕСКАЯ ошибка в enhanced_download_youtube_content для {video_id}")
             logger.error(f"❌ Ошибка: {str(e)}")
-            logger.error(f"❌ Тип ошибки: {type(e).__name__}")
 
             import traceback
             logger.error(f"❌ Полный стек трейс:")
@@ -721,11 +703,9 @@ class SmartVideoService:
                     'tor_enabled': self.tor.is_enabled,
                     'tor_running': self.tor.is_running(),
                     'current_ip': self.tor.current_ip,
-                    'download_available': self.download_available,
-                    'subtitles_available': False  # Отключаем субтитры
+                    'download_available': self.download_available
                 }
             }
-
     async def get_text_smart(self, url: str) -> Tuple[str, str, Dict[str, Any]]:
         """
         🚨 ИСПРАВЛЕННЫЙ МЕТОД: Сразу скачиваем аудио (пропускаем субтитры)

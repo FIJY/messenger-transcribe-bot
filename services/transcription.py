@@ -224,151 +224,144 @@ async def _async_process_file_fixed(task_instance, chat_id: int, user_id: int, e
                         logger.info(f"    ✅ Файл существует!")
                     elif isinstance(value, str) and value.startswith('/'):
                         logger.warning(f"    ❌ Файл НЕ существует: {value}")
-        # 🔹 Вариант 0: файл хранится в R2 (облачное хранилище)
-        if 'r2_url' in enhanced_file_info:
-            r2_url = enhanced_file_info['r2_url']
-            logger.info(f"🌐 Скачиваем файл из R2: {r2_url}")
+                # 🚨 ИСПРАВЛЕНИЕ: R2_URL должен проверяться ПЕРВЫМ!
 
-            # объект = youtube/yt_xxx.mp3
-            object_name = "/".join(r2_url.split("/")[-2:])
-            tmp_path = f"/tmp/{os.path.basename(object_name)}"
+                # 🔹 Вариант 0: R2 URL (ПРИОРИТЕТНЫЙ!)
+                if 'r2_url' in enhanced_file_info:
+                    r2_url = enhanced_file_info['r2_url']
+                    logger.info(f"🌐 Используем R2 URL: {r2_url}")
+                    temp_file_path = await _download_file_from_url(r2_url)
+                    should_cleanup_file = True  # Скачанный из R2 файл удаляем
+                    logger.info(f"✅ Файл скачан из R2: {temp_file_path}")
 
-            try:
-                download_from_r2(object_name, tmp_path)
-                temp_file_path = tmp_path
-                should_cleanup_file = True  # после обработки удаляем
-                logger.info(f"✅ Файл скачан из R2: {temp_file_path}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка скачивания из R2: {e}")
-                raise ValueError(f"Не удалось скачать файл из R2: {r2_url}")
+                # 🔹 Вариант 1: файл передан как base64 (Redis-режим)
+                elif 'file_content_b64' in enhanced_file_info:
+                    logger.info("📦 Декодируем файл из base64")
+                    file_content = base64.b64decode(enhanced_file_info['file_content_b64'])
+                    logger.info(f"Декодировано {len(file_content)} байт из base64")
+                    del enhanced_file_info['file_content_b64']
+                    gc.collect()
 
+                    file_extension = enhanced_file_info.get('original_extension', 'oga') or 'oga'
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}", dir='/tmp',
+                                                     prefix='small_file_') as tmp:
+                        tmp.write(file_content)
+                        temp_file_path = tmp.name
+                    del file_content
+                    gc.collect()
+                    should_cleanup_file = True  # Нужно удалить временный файл
 
-        # 🔹 Вариант 1: файл передан как base64 (Redis-режим)
-        if 'file_content_b64' in enhanced_file_info:
-            logger.info("📦 Декодируем файл из base64")
-            file_content = base64.b64decode(enhanced_file_info['file_content_b64'])
-            logger.info(f"Декодировано {len(file_content)} байт из base64")
-            del enhanced_file_info['file_content_b64']
-            gc.collect()
+                # 🔹 Вариант 2: есть локальный путь к файлу (local_file_path)
+                elif 'local_file_path' in enhanced_file_info:
+                    potential_path = enhanced_file_info['local_file_path']
+                    logger.info(f"📂 Проверяем local_file_path: {potential_path}")
 
-            file_extension = enhanced_file_info.get('original_extension', 'oga') or 'oga'
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}", dir='/tmp',
-                                             prefix='small_file_') as tmp:
-                tmp.write(file_content)
-                temp_file_path = tmp.name
-            del file_content
-            gc.collect()
-            should_cleanup_file = True  # 🚨 Нужно удалить временный файл
+                    if os.path.exists(potential_path):
+                        temp_file_path = potential_path
+                        logger.info(f"✅ Используем локальный файл: {temp_file_path}")
 
-        # 🔹 Вариант 2: есть локальный путь к файлу (local_file_path)
-        elif 'local_file_path' in enhanced_file_info:
-            potential_path = enhanced_file_info['local_file_path']
-            logger.info(f"📂 Проверяем local_file_path: {potential_path}")
+                        # Определяем нужна ли очистка
+                        if 'youtube_audio' in potential_path or enhanced_file_info.get('source') == 'youtube_audio':
+                            should_cleanup_file = True  # YouTube файлы удаляем после обработки
+                            logger.info("🗑️ YouTube файл - будет удален после обработки")
+                        else:
+                            should_cleanup_file = False  # Обычные файлы не удаляем
+                            logger.info("📁 Обычный файл - не будет удален")
 
-            if os.path.exists(potential_path):
-                temp_file_path = potential_path
-                logger.info(f"✅ Используем локальный файл: {temp_file_path}")
+                    else:
+                        # Файл не существует - возможно удален после скачивания
+                        logger.error(f"❌ local_file_path не существует: {potential_path}")
 
-                # 🚨 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Определяем нужна ли очистка
-                if 'youtube_audio' in potential_path or enhanced_file_info.get('source') == 'youtube_audio':
-                    should_cleanup_file = True  # YouTube файлы удаляем после обработки
-                    logger.info("🗑️ YouTube файл - будет удален после обработки")
-                else:
+                        # Пытаемся найти файл в других местах
+                        possible_paths = [
+                            potential_path,
+                            potential_path.replace('/tmp/youtube_audio/', '/tmp/'),
+                            f"/tmp/{os.path.basename(potential_path)}",
+                            f"/tmp/youtube_audio/{enhanced_file_info.get('video_id', 'unknown')}.mp3"
+                        ]
+
+                        logger.info("🔍 Ищем файл в альтернативных местах:")
+                        for path in possible_paths:
+                            logger.info(f"  Проверяем: {path}")
+                            if os.path.exists(path):
+                                temp_file_path = path
+                                logger.info(f"  ✅ НАЙДЕН: {path}")
+                                should_cleanup_file = True  # Найденный файл удаляем
+                                break
+                        else:
+                            # Файл совсем не найден
+                            logger.error("❌ Файл не найден ни в одном из мест!")
+
+                            # Показываем что есть в /tmp
+                            logger.info("🔍 Содержимое /tmp:")
+                            try:
+                                for item in os.listdir('/tmp'):
+                                    if 'youtube' in item.lower() or enhanced_file_info.get('video_id', '') in item:
+                                        logger.info(f"  📄 {item}")
+                            except Exception as e:
+                                logger.error(f"Ошибка чтения /tmp: {e}")
+
+                # 🔹 Вариант 3: проверяем другие возможные ключи для файла
+                elif 'file_path' in enhanced_file_info and os.path.exists(enhanced_file_info['file_path']):
+                    temp_file_path = enhanced_file_info['file_path']
+                    logger.info(f"📂 Используем файл по пути file_path: {temp_file_path}")
                     should_cleanup_file = False  # Обычные файлы не удаляем
-                    logger.info("📁 Обычный файл - не будет удален")
 
-            else:
-                # Файл не существует - возможно удален после скачивания
-                logger.error(f"❌ local_file_path не существует: {potential_path}")
+                # 🔹 Вариант 4: проверяем shared_file_path
+                elif 'shared_file_path' in enhanced_file_info:
+                    shared_path = enhanced_file_info['shared_file_path']
+                    if os.path.exists(shared_path):
+                        temp_file_path = shared_path
+                        logger.info(f"📂 Используем файл по пути shared_file_path: {temp_file_path}")
+                        should_cleanup_file = False
+                    else:
+                        # Это URL, пробуем скачать
+                        logger.info(f"🌐 shared_file_path является URL: {shared_path}")
+                        temp_file_path = await _download_file_from_url(shared_path)
+                        should_cleanup_file = True  # Скачанный файл удаляем
 
-                # Пытаемся найти файл в других местах
-                possible_paths = [
-                    potential_path,
-                    potential_path.replace('/tmp/youtube_audio/', '/tmp/'),
-                    f"/tmp/{os.path.basename(potential_path)}",
-                    f"/tmp/youtube_audio/{enhanced_file_info.get('video_id', 'unknown')}.mp3"
-                ]
-
-                logger.info("🔍 Ищем файл в альтернативных местах:")
-                for path in possible_paths:
-                    logger.info(f"  Проверяем: {path}")
-                    if os.path.exists(path):
-                        temp_file_path = path
-                        logger.info(f"  ✅ НАЙДЕН: {path}")
-                        should_cleanup_file = True  # Найденный файл удаляем
-                        break
                 else:
-                    # Файл совсем не найден
-                    logger.error("❌ Файл не найден ни в одном из мест!")
+                    # КРИТИЧЕСКАЯ СИТУАЦИЯ: файл точно должен быть, но не найден
+                    logger.critical("🚨 КРИТИЧЕСКАЯ СИТУАЦИЯ: файл не найден!")
 
-                    # Показываем что есть в /tmp
-                    logger.info("🔍 Содержимое /tmp:")
-                    try:
-                        for item in os.listdir('/tmp'):
-                            if 'youtube' in item.lower() or enhanced_file_info.get('video_id', '') in item:
-                                logger.info(f"  📄 {item}")
-                    except Exception as e:
-                        logger.error(f"Ошибка чтения /tmp: {e}")
+                    # Последняя попытка - найти любой файл с video_id
+                    video_id = enhanced_file_info.get('video_id')
+                    if video_id:
+                        logger.info(f"🔍 Последняя попытка: ищем файлы с video_id '{video_id}'")
 
-        # 🔹 Вариант 3: проверяем другие возможные ключи для файла
-        elif 'file_path' in enhanced_file_info and os.path.exists(enhanced_file_info['file_path']):
-            temp_file_path = enhanced_file_info['file_path']
-            logger.info(f"📂 Используем файл по пути file_path: {temp_file_path}")
-            should_cleanup_file = False  # Обычные файлы не удаляем
+                        search_dirs = ['/tmp', '/tmp/youtube_audio']
+                        for search_dir in search_dirs:
+                            if not os.path.exists(search_dir):
+                                continue
 
-        # 🔹 Вариант 4: проверяем shared_file_path
-        elif 'shared_file_path' in enhanced_file_info:
-            shared_path = enhanced_file_info['shared_file_path']
-            if os.path.exists(shared_path):
-                temp_file_path = shared_path
-                logger.info(f"📂 Используем файл по пути shared_file_path: {temp_file_path}")
-                should_cleanup_file = False
-            else:
-                # Это URL, пробуем скачать
-                logger.info(f"🌐 shared_file_path является URL: {shared_path}")
-                temp_file_path = await _download_file_from_url(shared_path)
-                should_cleanup_file = True  # Скачанный файл удаляем
+                            for filename in os.listdir(search_dir):
+                                if video_id in filename and filename.endswith(('.mp3', '.mp4', '.webm')):
+                                    found_path = os.path.join(search_dir, filename)
+                                    if os.path.exists(found_path):
+                                        temp_file_path = found_path
+                                        logger.info(f"🎯 НАЙДЕН файл: {found_path}")
+                                        should_cleanup_file = True
+                                        break
 
-        else:
-            # КРИТИЧЕСКАЯ СИТУАЦИЯ: файл точно должен быть, но не найден
-            logger.critical("🚨 КРИТИЧЕСКАЯ СИТУАЦИЯ: файл не найден!")
-
-            # Последняя попытка - найти любой файл с video_id
-            video_id = enhanced_file_info.get('video_id')
-            if video_id:
-                logger.info(f"🔍 Последняя попытка: ищем файлы с video_id '{video_id}'")
-
-                search_dirs = ['/tmp', '/tmp/youtube_audio']
-                for search_dir in search_dirs:
-                    if not os.path.exists(search_dir):
-                        continue
-
-                    for filename in os.listdir(search_dir):
-                        if video_id in filename and filename.endswith(('.mp3', '.mp4', '.webm')):
-                            found_path = os.path.join(search_dir, filename)
-                            if os.path.exists(found_path):
-                                temp_file_path = found_path
-                                logger.info(f"🎯 НАЙДЕН файл: {found_path}")
-                                should_cleanup_file = True
+                            if temp_file_path:
                                 break
 
-                    if temp_file_path:
-                        break
+                    # Если всё еще не найден
+                    if not temp_file_path:
+                        # Показываем полную диагностику
+                        logger.error("❌ ФАЙЛ НЕ НАЙДЕН. Полная диагностика:")
+                        logger.error(f"  - r2_url: {enhanced_file_info.get('r2_url', 'НЕТ')}")
+                        logger.error(f"  - local_file_path: {enhanced_file_info.get('local_file_path', 'НЕТ')}")
+                        logger.error(f"  - Video ID: {enhanced_file_info.get('video_id', 'НЕТ')}")
+                        logger.error(f"  - Размер файла: {enhanced_file_info.get('file_size', 0)} байт")
+                        logger.error(f"  - Метод обработки: {enhanced_file_info.get('processing_method', 'НЕТ')}")
 
-            # Если всё еще не найден
-            if not temp_file_path:
-                # Показываем полную диагностику
-                logger.error("❌ ФАЙЛ НЕ НАЙДЕН. Полная диагностика:")
-                logger.error(f"  - Ожидаемый путь: {enhanced_file_info.get('local_file_path', 'НЕТ')}")
-                logger.error(f"  - Video ID: {enhanced_file_info.get('video_id', 'НЕТ')}")
-                logger.error(f"  - Размер файла: {enhanced_file_info.get('file_size', 0)} байт")
-
-                raise ValueError(
-                    f"ФАЙЛ НЕ НАЙДЕН! "
-                    f"Ожидался: {enhanced_file_info.get('local_file_path', 'НЕИЗВЕСТНО')}. "
-                    f"Возможно файл был удален после скачивания. "
-                    f"Video ID: {enhanced_file_info.get('video_id', 'НЕИЗВЕСТНО')}"
-                )
+                        raise ValueError(
+                            f"ФАЙЛ НЕ НАЙДЕН! "
+                            f"R2: {enhanced_file_info.get('r2_url', 'НЕТ')}, "
+                            f"Локальный: {enhanced_file_info.get('local_file_path', 'НЕТ')}, "
+                            f"Video ID: {enhanced_file_info.get('video_id', 'НЕТ')}"
+                        )
 
         # Финальная проверка что файл действительно существует
         if not temp_file_path or not os.path.exists(temp_file_path):

@@ -164,7 +164,7 @@ class TextHandler:
 
     async def _handle_audio_result_fixed(self, chat_id: int, user: dict, message_id: int,
                                          audio_path: str, result: dict, url: str):
-        """🚨 ИСПРАВЛЕННАЯ обработка аудио результата - БЕЗ преждевременного удаления"""
+        """🚨 ИСПРАВЛЕННАЯ обработка аудио - ПЕРЕХОД НА R2 URL"""
 
         video_id = result.get('video_id', 'unknown')
 
@@ -214,11 +214,9 @@ class TextHandler:
                 f"💰 У вас: {user_balance_minutes:.1f} мин\n\n"
                 f"Купите минуты: /subscription"
             )
-            # 🚨 ИСПРАВЛЕНИЕ: Удаление файла перенесено в конец функции
-            self.smart_video_service.cleanup_temp_files(audio_path)
             return
 
-        # Обновляем статус с ПРАВИЛЬНЫМ размером
+        # Обновляем статус
         status_text = f"🔥 Аудио загружено из YouTube!\n\n"
         status_text += f"🎬 Видео: {video_id}\n"
         status_text += f"📁 {file_size_mb:.1f} МБ\n"
@@ -242,7 +240,7 @@ class TextHandler:
         )
 
         try:
-            # 🚨 ИСПРАВЛЕНИЕ: Создаем file_info с правильным методом обработки
+            # 🚨 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Создаем file_info с R2 URL
             file_info = {
                 'file_id': f'youtube_{video_id}',
                 'file_unique_id': f'yt_{video_id}',
@@ -257,42 +255,52 @@ class TextHandler:
                 'title': result.get('title'),
                 'method': metadata.get('method'),
                 'ip_used': metadata.get('current_ip'),
-                'user_id': user['telegram_id']  # 🚨 ДОБАВИЛИ user_id
+                'user_id': user['telegram_id']
             }
 
-            logger.info(f"📦 Отправляем в транскрипцию: размер={file_size}, длительность={duration_seconds}")
+            # 🚨 НОВАЯ ЛОГИКА: Проверяем есть ли R2 URL в метаданных
+            if 'r2_url' in metadata:
+                # ВАРИАНТ A: Есть R2 URL - используем его
+                file_info['r2_url'] = metadata['r2_url']
+                file_info['processing_method'] = 'r2_download'
+                logger.info(f"🌐 Используем R2 URL: {metadata['r2_url']}")
 
-            # 🚨 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Определяем способ обработки правильно
-            if file_size_mb <= 15:
-                # Небольшой файл - через Redis с base64
+                # Удаляем локальный файл - он больше не нужен
+                try:
+                    os.remove(audio_path)
+                    logger.info(f"🗑️ Локальный файл удален: {audio_path}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось удалить локальный файл: {e}")
+
+            elif file_size_mb <= 15:
+                # ВАРИАНТ B: Небольшой файл - через Redis с base64
                 import base64
                 with open(audio_path, 'rb') as f:
                     file_content = f.read()
                 file_content_b64 = base64.b64encode(file_content).decode('utf-8')
                 file_info['file_content_b64'] = file_content_b64
                 file_info['processing_method'] = 'redis'
-
-                # 🚨 ИСПРАВЛЕНИЕ: НЕ удаляем файл здесь!
-                # Удаление произойдет в transcription.py после обработки
                 logger.info(f"📦 Файл упакован в base64 ({len(file_content_b64)} символов)")
 
-                # Используем обычную задачу транскрипции
-                from services.transcription import process_transcription_task
-                process_transcription_task.delay(chat_id, user['telegram_id'], file_info)
+                # Удаляем локальный файл
+                try:
+                    os.remove(audio_path)
+                    logger.info(f"🗑️ Локальный файл удален после упаковки в base64")
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось удалить файл: {e}")
 
             else:
-                # 🚨 ИСПРАВЛЕНИЕ: Большой файл - НЕ перемещаем, а передаем прямой путь
-                # Система транскрипции должна читать файл НАПРЯМУЮ, а не скачивать
-
-                file_info['local_file_path'] = audio_path  # Прямой путь к файлу
-                file_info['processing_method'] = 'local_file'  # Новый метод
+                # ВАРИАНТ C: Большой файл без R2 - оставляем локальный путь
+                file_info['local_file_path'] = audio_path
+                file_info['processing_method'] = 'local_file'
                 file_info['is_large_file'] = True
+                logger.info(f"📂 Большой файл - оставляем локальный путь: {audio_path}")
 
-                # Используем обычную задачу вместо process_large_file_task
-                from services.transcription import process_transcription_task
-                process_transcription_task.delay(chat_id, user['telegram_id'], file_info)
+            logger.info(f"📦 Отправляем в транскрипцию: размер={file_size}, метод={file_info['processing_method']}")
 
-                logger.info(f"📂 Передан прямой путь к файлу: {audio_path}")
+            # Используем единую задачу транскрипции
+            from services.transcription import process_transcription_task
+            process_transcription_task.delay(chat_id, user['telegram_id'], file_info)
 
             # Финальный статус
             final_status = f"✅ YouTube аудио передано в обработку!\n\n"
@@ -307,14 +315,15 @@ class TextHandler:
             if result.get('title'):
                 final_status += f"🎭 {result['title'][:50]}...\n"
 
+            final_status += f"📡 Метод: {file_info['processing_method']}\n"
             final_status += f"\n⏳ Ожидайте результат через ~1-2 минуты"
-            final_status += f"\n\n📁 ID задачи: {video_id}"
 
             await self.telegram.edit_message_text(
                 chat_id, message_id, final_status
             )
 
-            logger.info(f"✅ YouTube аудио передано в систему транскрипции: {video_id}, размер: {file_size_mb:.1f}MB")
+            logger.info(
+                f"✅ YouTube аудио передано в систему транскрипции: {video_id}, метод: {file_info['processing_method']}")
 
         except Exception as e:
             logger.error(f"Ошибка интеграции с системой транскрипции: {e}", exc_info=True)
@@ -323,9 +332,11 @@ class TextHandler:
                 f"❌ Ошибка передачи в систему транскрипции: {str(e)}\n\n"
                 f"📁 Для отладки: {video_id}"
             )
-            # 🚨 ИСПРАВЛЕНИЕ: Удаляем файл только при ошибке
-            self.smart_video_service.cleanup_temp_files(audio_path)
-
+            # Удаляем файл при ошибке
+            try:
+                os.remove(audio_path)
+            except:
+                pass
     async def _handle_regular_text(self, chat_id: int, user: dict, text: str):
         """Обработка обычного текста"""
         youtube_status = "✅ YouTube ссылки" if self.smart_video_service else "❌ YouTube (нет зависимостей)"
