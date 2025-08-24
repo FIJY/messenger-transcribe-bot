@@ -194,6 +194,7 @@ async def _async_process_file_fixed(task_instance, chat_id: int, user_id: int, e
     from services.telegram_client import TelegramClient
     from ui.localization import LocalizationService
     from ui.keyboards import create_post_transcription_keyboard
+    from services.r2_client import download_from_r2
 
     db_service = None
     telegram_client = None
@@ -223,6 +224,24 @@ async def _async_process_file_fixed(task_instance, chat_id: int, user_id: int, e
                         logger.info(f"    ✅ Файл существует!")
                     elif isinstance(value, str) and value.startswith('/'):
                         logger.warning(f"    ❌ Файл НЕ существует: {value}")
+        # 🔹 Вариант 0: файл хранится в R2 (облачное хранилище)
+        if 'r2_url' in enhanced_file_info:
+            r2_url = enhanced_file_info['r2_url']
+            logger.info(f"🌐 Скачиваем файл из R2: {r2_url}")
+
+            # объект = youtube/yt_xxx.mp3
+            object_name = "/".join(r2_url.split("/")[-2:])
+            tmp_path = f"/tmp/{os.path.basename(object_name)}"
+
+            try:
+                download_from_r2(object_name, tmp_path)
+                temp_file_path = tmp_path
+                should_cleanup_file = True  # после обработки удаляем
+                logger.info(f"✅ Файл скачан из R2: {temp_file_path}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка скачивания из R2: {e}")
+                raise ValueError(f"Не удалось скачать файл из R2: {r2_url}")
+
 
         # 🔹 Вариант 1: файл передан как base64 (Redis-режим)
         if 'file_content_b64' in enhanced_file_info:
