@@ -6,7 +6,9 @@ import sys
 import gc
 import base64
 import tempfile
-from typing import Dict, Any
+import subprocess
+import math
+from typing import Dict, Any, List
 
 # Добавляем текущую директорию в путь Python
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -37,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 class TranscriptionService:
-    """Сервис для транскрипции аудио через OpenAI Whisper"""
+    """Сервис для транскрипции аудио через OpenAI Whisper с поддержкой больших файлов"""
 
     def __init__(self, api_key: str):
         if not api_key:
@@ -50,19 +52,32 @@ class TranscriptionService:
         logger.info("🎤 TranscriptionService инициализирован")
 
     async def transcribe_audio(self, file_path: str) -> Dict[str, Any]:
-        """Транскрибирует аудио файл с оптимизацией памяти"""
+        """Транскрибирует аудио файл с оптимизацией памяти и поддержкой больших файлов"""
         try:
             file_size = os.path.getsize(file_path)
             max_size = 25 * 1024 * 1024  # 25MB лимит OpenAI
-            if file_size > max_size:
-                return {
-                    'success': False,
-                    'error': f'Файл слишком большой: {file_size / 1024 / 1024:.1f}MB. Максимум: 25MB для OpenAI Whisper',
-                    'text': '',
-                    'language': 'unknown',
-                    'duration': None
-                }
 
+            if file_size > max_size:
+                logger.info(f"🔄 Файл превышает лимит {max_size / 1024 / 1024:.1f}MB, разбиваем на части...")
+                return await self._transcribe_large_file(file_path)
+            else:
+                return await self._transcribe_single_file(file_path)
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка транскрипции: {e}", exc_info=True)
+            gc.collect()
+            return {
+                'success': False,
+                'error': str(e),
+                'text': '',
+                'language': 'unknown',
+                'duration': None
+            }
+
+    async def _transcribe_single_file(self, file_path: str) -> Dict[str, Any]:
+        """Транскрибирует один файл"""
+        try:
+            file_size = os.path.getsize(file_path)
             logger.info(f"🎤 Начинаю транскрипцию: {file_path} ({file_size / 1024 / 1024:.1f}MB)")
 
             with open(file_path, "rb") as audio_file:
@@ -85,15 +100,164 @@ class TranscriptionService:
             return result
 
         except Exception as e:
-            logger.error(f"❌ Ошибка транскрипции: {e}", exc_info=True)
-            gc.collect()
-            return {
-                'success': False,
-                'error': str(e),
-                'text': '',
-                'language': 'unknown',
-                'duration': None
+            logger.error(f"❌ Ошибка транскрипции одного файла: {e}", exc_info=True)
+            raise e
+
+    async def _transcribe_large_file(self, file_path: str) -> Dict[str, Any]:
+        """Разбивает большой файл на части и транскрибирует каждую часть"""
+        temp_chunks = []
+        try:
+            # Разбиваем файл на части
+            chunks = await self._split_audio_file(file_path)
+            temp_chunks = chunks  # Сохраняем для очистки
+
+            if not chunks:
+                raise ValueError("Не удалось разбить файл на части")
+
+            logger.info(f"🔄 Файл разбит на {len(chunks)} частей")
+
+            all_texts = []
+            detected_language = 'unknown'
+            total_duration = 0
+
+            # Транскрибируем каждую часть
+            for i, chunk_path in enumerate(chunks):
+                logger.info(f"🎤 Обрабатываю часть {i + 1}/{len(chunks)}: {chunk_path}")
+
+                chunk_result = await self._transcribe_single_file(chunk_path)
+
+                if not chunk_result.get('success'):
+                    logger.error(f"❌ Ошибка транскрипции части {i + 1}: {chunk_result.get('error')}")
+                    continue
+
+                chunk_text = chunk_result['text'].strip()
+                if chunk_text:
+                    all_texts.append(chunk_text)
+
+                # Берем язык с первой успешной части
+                if detected_language == 'unknown' and chunk_result.get('language'):
+                    detected_language = chunk_result['language']
+
+                # Суммируем длительность
+                if chunk_result.get('duration'):
+                    total_duration += chunk_result['duration']
+
+            # Объединяем все тексты
+            combined_text = ' '.join(all_texts).strip()
+
+            if not combined_text:
+                raise ValueError("Не удалось получить текст ни из одной части файла")
+
+            result = {
+                'success': True,
+                'text': combined_text,
+                'language': detected_language,
+                'duration': total_duration if total_duration > 0 else None
             }
+
+            logger.info(
+                f"✅ Транскрипция больших файлов завершена: {len(combined_text)} символов из {len(chunks)} частей")
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка транскрипции большого файла: {e}", exc_info=True)
+            raise e
+
+        finally:
+            # Очищаем временные файлы-части
+            for chunk_path in temp_chunks:
+                try:
+                    if os.path.exists(chunk_path):
+                        os.remove(chunk_path)
+                        logger.debug(f"🧹 Удален чанк: {chunk_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Ошибка удаления чанка {chunk_path}: {cleanup_error}")
+
+            gc.collect()
+
+    async def _split_audio_file(self, file_path: str, max_size_mb: int = 20) -> List[str]:
+        """Разбивает аудио файл на части с помощью ffmpeg"""
+        try:
+            file_size = os.path.getsize(file_path)
+            file_size_mb = file_size / (1024 * 1024)
+
+            logger.info(f"🔄 Разбиваю файл {file_size_mb:.1f}MB на части по {max_size_mb}MB")
+
+            # Получаем информацию о файле
+            probe_cmd = [
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_format', file_path
+            ]
+
+            try:
+                probe_result = subprocess.run(
+                    probe_cmd, capture_output=True, text=True, check=True, timeout=30
+                )
+                import json
+                file_info = json.loads(probe_result.stdout)
+                duration = float(file_info['format']['duration'])
+            except Exception as probe_error:
+                logger.warning(f"Не удалось получить длительность файла: {probe_error}")
+                # Используем приблизительную оценку: файлы обычно ~1MB на минуту для разговорной речи
+                duration = file_size_mb * 60  # Приблизительная оценка
+
+            # Вычисляем количество частей
+            num_chunks = math.ceil(file_size_mb / max_size_mb)
+            chunk_duration = duration / num_chunks
+
+            logger.info(f"📊 Длительность: {duration:.1f}с, разбиваем на {num_chunks} частей по {chunk_duration:.1f}с")
+
+            chunks = []
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+
+            for i in range(num_chunks):
+                start_time = i * chunk_duration
+
+                # Путь для части
+                chunk_path = os.path.join(
+                    tempfile.gettempdir(),
+                    f"{base_name}_chunk_{i + 1}of{num_chunks}.mp3"
+                )
+
+                # Команда ffmpeg для извлечения части
+                ffmpeg_cmd = [
+                    'ffmpeg', '-i', file_path,
+                    '-ss', str(start_time),
+                    '-t', str(chunk_duration),
+                    '-acodec', 'libmp3lame',
+                    '-b:a', '64k',  # Сжимаем для гарантии
+                    '-y',  # Перезаписываем если существует
+                    chunk_path
+                ]
+
+                logger.info(
+                    f"🎬 Создаю часть {i + 1}/{num_chunks}: {start_time:.1f}с - {start_time + chunk_duration:.1f}с")
+
+                try:
+                    subprocess.run(ffmpeg_cmd, check=True, capture_output=True, timeout=300)
+
+                    if os.path.exists(chunk_path):
+                        chunk_size = os.path.getsize(chunk_path)
+                        logger.info(f"✅ Создана часть: {chunk_path} ({chunk_size / 1024 / 1024:.1f}MB)")
+                        chunks.append(chunk_path)
+                    else:
+                        logger.error(f"❌ Часть не создана: {chunk_path}")
+
+                except subprocess.TimeoutExpired:
+                    logger.error(f"❌ Таймаут при создании части {i + 1}")
+                except subprocess.CalledProcessError as e:
+                    logger.error(
+                        f"❌ Ошибка ffmpeg при создании части {i + 1}: {e.stderr.decode() if e.stderr else str(e)}")
+
+            if not chunks:
+                raise ValueError("Не удалось создать ни одной части файла")
+
+            logger.info(f"✅ Файл успешно разбит на {len(chunks)} частей")
+            return chunks
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка разбиения файла: {e}", exc_info=True)
+            raise ValueError(f"Не удалось разбить файл: {e}")
 
     async def close(self):
         """Закрываем соединения для освобождения памяти"""
@@ -224,144 +388,145 @@ async def _async_process_file_fixed(task_instance, chat_id: int, user_id: int, e
                         logger.info(f"    ✅ Файл существует!")
                     elif isinstance(value, str) and value.startswith('/'):
                         logger.warning(f"    ❌ Файл НЕ существует: {value}")
-                # 🚨 ИСПРАВЛЕНИЕ: R2_URL должен проверяться ПЕРВЫМ!
 
-                # 🔹 Вариант 0: R2 URL (ПРИОРИТЕТНЫЙ!)
-                if 'r2_url' in enhanced_file_info:
-                    r2_url = enhanced_file_info['r2_url']
-                    logger.info(f"🌐 Используем R2 URL: {r2_url}")
-                    temp_file_path = await _download_file_from_url(r2_url)
-                    should_cleanup_file = True  # Скачанный из R2 файл удаляем
-                    logger.info(f"✅ Файл скачан из R2: {temp_file_path}")
+        # 🚨 ИСПРАВЛЕНИЕ: R2_URL должен проверяться ПЕРВЫМ!
 
-                # 🔹 Вариант 1: файл передан как base64 (Redis-режим)
-                elif 'file_content_b64' in enhanced_file_info:
-                    logger.info("📦 Декодируем файл из base64")
-                    file_content = base64.b64decode(enhanced_file_info['file_content_b64'])
-                    logger.info(f"Декодировано {len(file_content)} байт из base64")
-                    del enhanced_file_info['file_content_b64']
-                    gc.collect()
+        # 🔹 Вариант 0: R2 URL (ПРИОРИТЕТНЫЙ!)
+        if 'r2_url' in enhanced_file_info:
+            r2_url = enhanced_file_info['r2_url']
+            logger.info(f"🌐 Используем R2 URL: {r2_url}")
+            temp_file_path = await _download_file_from_url(r2_url)
+            should_cleanup_file = True  # Скачанный из R2 файл удаляем
+            logger.info(f"✅ Файл скачан из R2: {temp_file_path}")
 
-                    file_extension = enhanced_file_info.get('original_extension', 'oga') or 'oga'
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}", dir='/tmp',
-                                                     prefix='small_file_') as tmp:
-                        tmp.write(file_content)
-                        temp_file_path = tmp.name
-                    del file_content
-                    gc.collect()
-                    should_cleanup_file = True  # Нужно удалить временный файл
+        # 🔹 Вариант 1: файл передан как base64 (Redis-режим)
+        elif 'file_content_b64' in enhanced_file_info:
+            logger.info("📦 Декодируем файл из base64")
+            file_content = base64.b64decode(enhanced_file_info['file_content_b64'])
+            logger.info(f"Декодировано {len(file_content)} байт из base64")
+            del enhanced_file_info['file_content_b64']
+            gc.collect()
 
-                # 🔹 Вариант 2: есть локальный путь к файлу (local_file_path)
-                elif 'local_file_path' in enhanced_file_info:
-                    potential_path = enhanced_file_info['local_file_path']
-                    logger.info(f"📂 Проверяем local_file_path: {potential_path}")
+            file_extension = enhanced_file_info.get('original_extension', 'oga') or 'oga'
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}", dir='/tmp',
+                                             prefix='small_file_') as tmp:
+                tmp.write(file_content)
+                temp_file_path = tmp.name
+            del file_content
+            gc.collect()
+            should_cleanup_file = True  # Нужно удалить временный файл
 
-                    if os.path.exists(potential_path):
-                        temp_file_path = potential_path
-                        logger.info(f"✅ Используем локальный файл: {temp_file_path}")
+        # 🔹 Вариант 2: есть локальный путь к файлу (local_file_path)
+        elif 'local_file_path' in enhanced_file_info:
+            potential_path = enhanced_file_info['local_file_path']
+            logger.info(f"📂 Проверяем local_file_path: {potential_path}")
 
-                        # Определяем нужна ли очистка
-                        if 'youtube_audio' in potential_path or enhanced_file_info.get('source') == 'youtube_audio':
-                            should_cleanup_file = True  # YouTube файлы удаляем после обработки
-                            logger.info("🗑️ YouTube файл - будет удален после обработки")
-                        else:
-                            should_cleanup_file = False  # Обычные файлы не удаляем
-                            logger.info("📁 Обычный файл - не будет удален")
+            if os.path.exists(potential_path):
+                temp_file_path = potential_path
+                logger.info(f"✅ Используем локальный файл: {temp_file_path}")
 
-                    else:
-                        # Файл не существует - возможно удален после скачивания
-                        logger.error(f"❌ local_file_path не существует: {potential_path}")
-
-                        # Пытаемся найти файл в других местах
-                        possible_paths = [
-                            potential_path,
-                            potential_path.replace('/tmp/youtube_audio/', '/tmp/'),
-                            f"/tmp/{os.path.basename(potential_path)}",
-                            f"/tmp/youtube_audio/{enhanced_file_info.get('video_id', 'unknown')}.mp3"
-                        ]
-
-                        logger.info("🔍 Ищем файл в альтернативных местах:")
-                        for path in possible_paths:
-                            logger.info(f"  Проверяем: {path}")
-                            if os.path.exists(path):
-                                temp_file_path = path
-                                logger.info(f"  ✅ НАЙДЕН: {path}")
-                                should_cleanup_file = True  # Найденный файл удаляем
-                                break
-                        else:
-                            # Файл совсем не найден
-                            logger.error("❌ Файл не найден ни в одном из мест!")
-
-                            # Показываем что есть в /tmp
-                            logger.info("🔍 Содержимое /tmp:")
-                            try:
-                                for item in os.listdir('/tmp'):
-                                    if 'youtube' in item.lower() or enhanced_file_info.get('video_id', '') in item:
-                                        logger.info(f"  📄 {item}")
-                            except Exception as e:
-                                logger.error(f"Ошибка чтения /tmp: {e}")
-
-                # 🔹 Вариант 3: проверяем другие возможные ключи для файла
-                elif 'file_path' in enhanced_file_info and os.path.exists(enhanced_file_info['file_path']):
-                    temp_file_path = enhanced_file_info['file_path']
-                    logger.info(f"📂 Используем файл по пути file_path: {temp_file_path}")
-                    should_cleanup_file = False  # Обычные файлы не удаляем
-
-                # 🔹 Вариант 4: проверяем shared_file_path
-                elif 'shared_file_path' in enhanced_file_info:
-                    shared_path = enhanced_file_info['shared_file_path']
-                    if os.path.exists(shared_path):
-                        temp_file_path = shared_path
-                        logger.info(f"📂 Используем файл по пути shared_file_path: {temp_file_path}")
-                        should_cleanup_file = False
-                    else:
-                        # Это URL, пробуем скачать
-                        logger.info(f"🌐 shared_file_path является URL: {shared_path}")
-                        temp_file_path = await _download_file_from_url(shared_path)
-                        should_cleanup_file = True  # Скачанный файл удаляем
-
+                # Определяем нужна ли очистка
+                if 'youtube_audio' in potential_path or enhanced_file_info.get('source') == 'youtube_audio':
+                    should_cleanup_file = True  # YouTube файлы удаляем после обработки
+                    logger.info("🗑️ YouTube файл - будет удален после обработки")
                 else:
-                    # КРИТИЧЕСКАЯ СИТУАЦИЯ: файл точно должен быть, но не найден
-                    logger.critical("🚨 КРИТИЧЕСКАЯ СИТУАЦИЯ: файл не найден!")
+                    should_cleanup_file = False  # Обычные файлы не удаляем
+                    logger.info("📁 Обычный файл - не будет удален")
 
-                    # Последняя попытка - найти любой файл с video_id
-                    video_id = enhanced_file_info.get('video_id')
-                    if video_id:
-                        logger.info(f"🔍 Последняя попытка: ищем файлы с video_id '{video_id}'")
+            else:
+                # Файл не существует - возможно удален после скачивания
+                logger.error(f"❌ local_file_path не существует: {potential_path}")
 
-                        search_dirs = ['/tmp', '/tmp/youtube_audio']
-                        for search_dir in search_dirs:
-                            if not os.path.exists(search_dir):
-                                continue
+                # Пытаемся найти файл в других местах
+                possible_paths = [
+                    potential_path,
+                    potential_path.replace('/tmp/youtube_audio/', '/tmp/'),
+                    f"/tmp/{os.path.basename(potential_path)}",
+                    f"/tmp/youtube_audio/{enhanced_file_info.get('video_id', 'unknown')}.mp3"
+                ]
 
-                            for filename in os.listdir(search_dir):
-                                if video_id in filename and filename.endswith(('.mp3', '.mp4', '.webm')):
-                                    found_path = os.path.join(search_dir, filename)
-                                    if os.path.exists(found_path):
-                                        temp_file_path = found_path
-                                        logger.info(f"🎯 НАЙДЕН файл: {found_path}")
-                                        should_cleanup_file = True
-                                        break
+                logger.info("🔍 Ищем файл в альтернативных местах:")
+                for path in possible_paths:
+                    logger.info(f"  Проверяем: {path}")
+                    if os.path.exists(path):
+                        temp_file_path = path
+                        logger.info(f"  ✅ НАЙДЕН: {path}")
+                        should_cleanup_file = True  # Найденный файл удаляем
+                        break
+                else:
+                    # Файл совсем не найден
+                    logger.error("❌ Файл не найден ни в одном из мест!")
 
-                            if temp_file_path:
+                    # Показываем что есть в /tmp
+                    logger.info("🔍 Содержимое /tmp:")
+                    try:
+                        for item in os.listdir('/tmp'):
+                            if 'youtube' in item.lower() or enhanced_file_info.get('video_id', '') in item:
+                                logger.info(f"  📄 {item}")
+                    except Exception as e:
+                        logger.error(f"Ошибка чтения /tmp: {e}")
+
+        # 🔹 Вариант 3: проверяем другие возможные ключи для файла
+        elif 'file_path' in enhanced_file_info and os.path.exists(enhanced_file_info['file_path']):
+            temp_file_path = enhanced_file_info['file_path']
+            logger.info(f"📂 Используем файл по пути file_path: {temp_file_path}")
+            should_cleanup_file = False  # Обычные файлы не удаляем
+
+        # 🔹 Вариант 4: проверяем shared_file_path
+        elif 'shared_file_path' in enhanced_file_info:
+            shared_path = enhanced_file_info['shared_file_path']
+            if os.path.exists(shared_path):
+                temp_file_path = shared_path
+                logger.info(f"📂 Используем файл по пути shared_file_path: {temp_file_path}")
+                should_cleanup_file = False
+            else:
+                # Это URL, пробуем скачать
+                logger.info(f"🌐 shared_file_path является URL: {shared_path}")
+                temp_file_path = await _download_file_from_url(shared_path)
+                should_cleanup_file = True  # Скачанный файл удаляем
+
+        else:
+            # КРИТИЧЕСКАЯ СИТУАЦИЯ: файл точно должен быть, но не найден
+            logger.critical("🚨 КРИТИЧЕСКАЯ СИТУАЦИЯ: файл не найден!")
+
+            # Последняя попытка - найти любой файл с video_id
+            video_id = enhanced_file_info.get('video_id')
+            if video_id:
+                logger.info(f"🔍 Последняя попытка: ищем файлы с video_id '{video_id}'")
+
+                search_dirs = ['/tmp', '/tmp/youtube_audio']
+                for search_dir in search_dirs:
+                    if not os.path.exists(search_dir):
+                        continue
+
+                    for filename in os.listdir(search_dir):
+                        if video_id in filename and filename.endswith(('.mp3', '.mp4', '.webm')):
+                            found_path = os.path.join(search_dir, filename)
+                            if os.path.exists(found_path):
+                                temp_file_path = found_path
+                                logger.info(f"🎯 НАЙДЕН файл: {found_path}")
+                                should_cleanup_file = True
                                 break
 
-                    # Если всё еще не найден
-                    if not temp_file_path:
-                        # Показываем полную диагностику
-                        logger.error("❌ ФАЙЛ НЕ НАЙДЕН. Полная диагностика:")
-                        logger.error(f"  - r2_url: {enhanced_file_info.get('r2_url', 'НЕТ')}")
-                        logger.error(f"  - local_file_path: {enhanced_file_info.get('local_file_path', 'НЕТ')}")
-                        logger.error(f"  - Video ID: {enhanced_file_info.get('video_id', 'НЕТ')}")
-                        logger.error(f"  - Размер файла: {enhanced_file_info.get('file_size', 0)} байт")
-                        logger.error(f"  - Метод обработки: {enhanced_file_info.get('processing_method', 'НЕТ')}")
+                    if temp_file_path:
+                        break
 
-                        raise ValueError(
-                            f"ФАЙЛ НЕ НАЙДЕН! "
-                            f"R2: {enhanced_file_info.get('r2_url', 'НЕТ')}, "
-                            f"Локальный: {enhanced_file_info.get('local_file_path', 'НЕТ')}, "
-                            f"Video ID: {enhanced_file_info.get('video_id', 'НЕТ')}"
-                        )
+            # Если всё еще не найден
+            if not temp_file_path:
+                # Показываем полную диагностику
+                logger.error("❌ ФАЙЛ НЕ НАЙДЕН. Полная диагностика:")
+                logger.error(f"  - r2_url: {enhanced_file_info.get('r2_url', 'НЕТ')}")
+                logger.error(f"  - local_file_path: {enhanced_file_info.get('local_file_path', 'НЕТ')}")
+                logger.error(f"  - Video ID: {enhanced_file_info.get('video_id', 'НЕТ')}")
+                logger.error(f"  - Размер файла: {enhanced_file_info.get('file_size', 0)} байт")
+                logger.error(f"  - Метод обработки: {enhanced_file_info.get('processing_method', 'НЕТ')}")
+
+                raise ValueError(
+                    f"ФАЙЛ НЕ НАЙДЕН! "
+                    f"R2: {enhanced_file_info.get('r2_url', 'НЕТ')}, "
+                    f"Локальный: {enhanced_file_info.get('local_file_path', 'НЕТ')}, "
+                    f"Video ID: {enhanced_file_info.get('video_id', 'НЕТ')}"
+                )
 
         # Финальная проверка что файл действительно существует
         if not temp_file_path or not os.path.exists(temp_file_path):
@@ -613,7 +778,7 @@ async def _send_transcription_result_new_ux(telegram_client, chat_id: int, text:
     # Основное сообщение с результатом и четким разделением платежей
     result_header = f"""✅ Транскрипция готова!
 
-📁 Размер: {file_size_mb:.1f}MB • ⏱️ {duration_str}
+📏 Размер: {file_size_mb:.1f}MB • ⏱️ {duration_str}
 🌐 Язык: {language.upper()} • {stats_line}
 
 💰 Списано за транскрипцию: {transcription_cost} мин
@@ -648,7 +813,7 @@ async def _send_transcription_result_new_ux(telegram_client, chat_id: int, text:
         # Короткий текст - всё в одном сообщении
         full_message = f"""{result_header}
 
-📁 Текст:
+📝 Текст:
 {clean_text}"""
 
         await telegram_client.send_message(chat_id, full_message)
