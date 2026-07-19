@@ -23,7 +23,7 @@ services:
     name: celery-worker
     env: python # Исправлено с python3
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "celery -A services.transcription.celery_app worker --loglevel=info --concurrency=1"
+    startCommand: "python -m services.render_worker_supervisor"
     envVars:
       - key: REDIS_URL
         fromService:
@@ -32,6 +32,8 @@ services:
           property: connectionString
       - key: PYTHONPATH
         value: "/opt/render/project/src"
+      - key: KHMER_PAYMENT_LISTENER_ENABLED
+        value: "false"
 
   # 3. Redis
   - type: redis
