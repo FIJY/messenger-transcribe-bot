@@ -40,7 +40,7 @@ def test_missing_env_at_true_gives_clear_error():
 class FakeProcess:
     instances = []
 
-    def __init__(self, command):
+    def __init__(self, command, **_kwargs):
         self.command = command
         self.terminated = False
         self.killed = False
@@ -75,7 +75,7 @@ def test_supervisor_stops_second_process_if_first_crashes(monkeypatch):
 class LongRunningProcess:
     instances = []
 
-    def __init__(self, command):
+    def __init__(self, command, **_kwargs):
         self.command = command
         self.terminated = False
         self._return_code = None

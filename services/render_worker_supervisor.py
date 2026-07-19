@@ -42,18 +42,31 @@ def build_process_specs(env: dict[str, str] | None = None) -> list[tuple[str, li
     return specs
 
 
+def send_process_signal(process: subprocess.Popen, signum: int) -> None:
+    """Signal a child process group when possible, falling back to the process."""
+    try:
+        os.killpg(process.pid, signum)
+    except Exception:
+        if signum == signal.SIGTERM:
+            process.terminate()
+        elif signum == signal.SIGKILL:
+            process.kill()
+        else:
+            process.send_signal(signum)
+
+
 def terminate_processes(processes: list[tuple[str, subprocess.Popen]], grace_seconds: float = 10.0) -> None:
     for name, process in processes:
         if process.poll() is None:
             LOGGER.info("[render-worker-supervisor] stopping %s", name)
-            process.terminate()
+            send_process_signal(process, signal.SIGTERM)
     deadline = time.monotonic() + grace_seconds
     for name, process in processes:
         while process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.1)
         if process.poll() is None:
             LOGGER.warning("[render-worker-supervisor] killing %s after graceful timeout", name)
-            process.kill()
+            send_process_signal(process, signal.SIGKILL)
     for _, process in processes:
         try:
             process.wait(timeout=1)
@@ -75,6 +88,12 @@ def run() -> int:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
+    listener_enabled = is_enabled(os.getenv("KHMER_PAYMENT_LISTENER_ENABLED"))
+    LOGGER.info(
+        "[render-worker-supervisor] khmer payment listener %s",
+        "enabled" if listener_enabled else "disabled",
+    )
+
     try:
         specs = build_process_specs()
     except RuntimeError as exc:
@@ -84,7 +103,7 @@ def run() -> int:
     LOGGER.info("[render-worker-supervisor] starting %s", ", ".join(name for name, _ in specs))
     try:
         for name, command in specs:
-            processes.append((name, subprocess.Popen(command)))
+            processes.append((name, subprocess.Popen(command, start_new_session=True)))
 
         while True:
             for name, process in processes:

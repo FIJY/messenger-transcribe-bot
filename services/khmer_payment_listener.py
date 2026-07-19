@@ -50,7 +50,7 @@ class ListenerConfig:
 def is_enabled(value: str | None = None) -> bool:
     """Return True only for an explicit, case-insensitive 'true'."""
     raw_value = os.getenv("KHMER_PAYMENT_LISTENER_ENABLED") if value is None else value
-    return (raw_value or "").lower() == "true"
+    return (raw_value or "").strip().lower() == "true"
 
 
 def require_config(env: dict[str, str] | None = None) -> ListenerConfig:
@@ -93,12 +93,15 @@ def sign_body(timestamp: str, raw_body: bytes, secret: str) -> str:
 
 
 def is_payway_alert(text: str | None) -> bool:
-    return bool(text and PAYWAY_ALERT_RE.search(text.strip()))
+    if not text:
+        return False
+    normalized_text = " ".join(text.strip().split())
+    return bool(PAYWAY_ALERT_RE.search(normalized_text))
 
 
 def sender_username_matches(sender: Any) -> bool:
     username = getattr(sender, "username", None)
-    return username is None or username == EXPECTED_PAYWAY_USERNAME
+    return username is None or username.lower() == EXPECTED_PAYWAY_USERNAME.lower()
 
 
 async def should_process_event(event: Any, config: ListenerConfig) -> bool:
@@ -148,7 +151,10 @@ async def run_listener(config: ListenerConfig) -> None:
     async def handle_payment_alert(event: Any) -> None:
         if not await should_process_event(event, config):
             return
-        await post_ingest(build_payload(event), config)
+        try:
+            await post_ingest(build_payload(event), config)
+        except Exception as exc:
+            LOGGER.warning("[khmer-payment-listener] ingest failed: %s", exc.__class__.__name__)
 
     while True:
         try:
